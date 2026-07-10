@@ -52,12 +52,22 @@ class GazetteerNormalizeTests(SimpleTestCase):
         self.assertEqual(gazetteer.normalize("S Charleston"), "SOUTH CHARLESTON")
 
     def test_no_fuzzy_matching_dependency(self):
-        # gazetteer.py must not import any fuzzy-matching library
+        # gazetteer.py must not IMPORT any fuzzy-matching library (checked via
+        # AST, not substring search, so mentioning these names in a comment
+        # or docstring doesn't trip a false positive).
+        import ast
+
         import routing.pipeline.gazetteer as mod
 
-        source = Path(mod.__file__).read_text(encoding="utf-8")
-        for forbidden in ("difflib", "rapidfuzz", "Levenshtein", "fuzzywuzzy"):
-            self.assertNotIn(forbidden, source)
+        forbidden_modules = {"difflib", "rapidfuzz", "Levenshtein", "fuzzywuzzy"}
+        tree = ast.parse(Path(mod.__file__).read_text(encoding="utf-8"))
+        imported = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
+        self.assertEqual(imported & forbidden_modules, set())
 
 
 class GazetteerLookupTests(SimpleTestCase):
