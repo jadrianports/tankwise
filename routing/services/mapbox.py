@@ -17,6 +17,8 @@ from shapely.geometry import LineString
 # Mapbox convention: longitude first in the path segment.
 DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{lon1},{lat1};{lon2},{lat2}"
 
+GEOCODING_URL = "https://api.mapbox.com/search/geocode/v6/forward"
+
 
 class MapboxError(Exception):
     """Base class for all Mapbox Directions client errors."""
@@ -93,6 +95,58 @@ def get_route(start, finish) -> Route:
         )
 
     return _parse_directions_response(response.json())
+
+
+def geocode(address) -> tuple:
+    """Resolve a free-text address to a (latitude, longitude) Decimal pair
+    via exactly one Mapbox Geocoding v6 forward call (API-05, D-16).
+
+    Uses the v6 endpoint's default temporary-geocoding tier -- the result
+    must only ever flow into an in-memory `get_route()` call and the
+    response payload, never a DB write (D-16 ToS constraint).
+
+    Raises `ImproperlyConfigured` if `settings.MAPBOX_TOKEN` is unset,
+    before any HTTP call is attempted. Raises `MapboxRequestError` on a
+    non-200 status or a `requests` transport failure. Raises
+    `RouteNotFoundError` when no geocoding result is found for `address`.
+    """
+    if not settings.MAPBOX_TOKEN:
+        raise ImproperlyConfigured(
+            "MAPBOX_TOKEN is not set -- cannot call the Mapbox Geocoding API"
+        )
+
+    try:
+        response = requests.get(
+            GEOCODING_URL,
+            params={
+                "q": address,
+                "country": "us",
+                "limit": 1,
+                "access_token": settings.MAPBOX_TOKEN,
+            },
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise MapboxRequestError("Mapbox Geocoding request failed") from exc
+
+    if response.status_code != 200:
+        raise MapboxRequestError(
+            f"Mapbox Geocoding request failed with status {response.status_code}"
+        )
+
+    return _parse_geocoding_response(response.json())
+
+
+def _parse_geocoding_response(data) -> tuple:
+    """Parse a Mapbox Geocoding v6 JSON response into a (lat, lng) Decimal
+    pair, kept separable from the transport call so it is unit-testable
+    against a recorded fixture without a real request."""
+    features = data.get("features") or []
+    if not features:
+        raise RouteNotFoundError("No geocoding result for address")
+
+    lng, lat = features[0]["geometry"]["coordinates"]
+    return Decimal(str(lat)), Decimal(str(lng))
 
 
 def _parse_directions_response(data) -> Route:
