@@ -1,0 +1,112 @@
+"""RouteView: the `POST /api/route` orchestrator (D-01).
+
+A thin composition of already-tested seams -- validate, cache-aside,
+resolve endpoints (coordinate pass-through or geocode + bounds re-check),
+get_route, corridor.candidates, solver.solve, build_map_url, serialize,
+cache.set. The pipeline is never wrapped in try/except: domain exceptions
+(`RouteNotFoundError`, `MapboxRequestError`, `InfeasibleRouteError`,
+`InvalidRouteInputError`, `ImproperlyConfigured`) propagate uncaught to
+`routing.exceptions.custom_exception_handler` (registered via
+`REST_FRAMEWORK["EXCEPTION_HANDLER"]`), which is the sole translation
+layer from those exceptions to HTTP (RESEARCH.md Pitfall 2).
+"""
+from django.conf import settings
+from django.core.cache import cache
+from rest_framework import serializers
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from routing.cache import build_cache_key
+from routing.map_url import build_map_url
+from routing.models import Station
+from routing.pipeline.bbox import is_valid as bbox_is_valid
+from routing.serializers import RouteRequestSerializer, RouteResponseSerializer
+from routing.services import corridor, solver
+from routing.services.mapbox import geocode, get_route
+
+
+class RouteView(APIView):
+    """`POST /api/route` -- see module docstring."""
+
+    def post(self, request):
+        serializer = RouteRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated = serializer.validated_data
+
+        cache_key = build_cache_key(validated)
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return Response(cached)
+
+        start_coords = self._resolve_endpoint(validated["start"])
+        finish_coords = self._resolve_endpoint(validated["finish"])
+
+        route = get_route(
+            (start_coords["latitude"], start_coords["longitude"]),
+            (finish_coords["latitude"], finish_coords["longitude"]),
+        )
+        cands = corridor.candidates(route)
+        plan = solver.solve(cands, route.total_route_mi)
+
+        stop_coords = self._stop_coords(plan)
+        ordered_stop_coords = [
+            (stop_coords[s.opis_id]["latitude"], stop_coords[s.opis_id]["longitude"])
+            for s in plan.stops
+            if s.opis_id is not None and s.opis_id in stop_coords
+        ]
+
+        map_url = build_map_url(
+            route,
+            (start_coords["latitude"], start_coords["longitude"]),
+            (finish_coords["latitude"], finish_coords["longitude"]),
+            ordered_stop_coords,
+        )
+
+        response_serializer = RouteResponseSerializer(
+            {"route": route, "plan": plan, "map_url": map_url},
+            context={
+                "start_coords": start_coords,
+                "finish_coords": finish_coords,
+                "stop_coords": stop_coords,
+            },
+        )
+        payload = response_serializer.data
+
+        cache.set(cache_key, payload, timeout=settings.CACHE_TTL_SECONDS)
+        return Response(payload)
+
+    def _resolve_endpoint(self, endpoint):
+        """Resolve a validated `{"kind": "coordinate"|"address", ...}`
+        endpoint into a `{"latitude", "longitude"}` Decimal dict.
+
+        Coordinate inputs are already bounds-checked at the serializer
+        (`LocationField`, D-17). Address inputs are resolved via exactly
+        one `mapbox.geocode()` call (API-05) and re-bounds-checked here,
+        since a geocoded result can resolve outside the continental US
+        independent of Mapbox's own `country=us` filter (D-17).
+        """
+        if endpoint["kind"] == "coordinate":
+            return {"latitude": endpoint["lat"], "longitude": endpoint["lng"]}
+
+        lat, lng = geocode(endpoint["value"])
+        if not bbox_is_valid(lat, lng):
+            raise serializers.ValidationError(
+                f"Geocoded address resolved outside the continental US: "
+                f"({lat}, {lng})."
+            )
+        return {"latitude": lat, "longitude": lng}
+
+    def _stop_coords(self, plan):
+        """One indexed `filter(opis_id__in=...)` query for every stop's
+        lat/lng (Assumption A1) -- never a per-stop `.get()` in a loop."""
+        opis_ids = [s.opis_id for s in plan.stops if s.opis_id is not None]
+        if not opis_ids:
+            return {}
+        stations = Station.objects.filter(opis_id__in=opis_ids)
+        return {
+            station.opis_id: {
+                "latitude": station.latitude,
+                "longitude": station.longitude,
+            }
+            for station in stations
+        }
