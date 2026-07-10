@@ -1,0 +1,20 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "id": "dXJuOm1ieHBvaTpmaXh0dXJlLXRlc3Q",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [-87.6298, 41.8781]
+      },
+      "properties": {
+        "mapbox_id": "dXJuOm1ieHBvaTpmaXh0dXJlLXRlc3Q",
+        "feature_type": "address",
+        "name": "401 N Michigan Ave",
+        "full_address": "401 N Michigan Ave, Chicago, Illinois 60611, United States"
+      }
+    }
+  ],
+  "attribution": "NOTICE: © 2026 Mapbox and its suppliers. All rights reserved."
+}

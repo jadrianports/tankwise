@@ -19,6 +19,7 @@ from routing.services.mapbox import (
     MapboxRequestError,
     Route,
     RouteNotFoundError,
+    geocode,
     get_route,
 )
 
@@ -28,8 +29,15 @@ FIXTURE_PATH = (
 with open(FIXTURE_PATH, encoding="utf-8") as f:
     FIXTURE = json.load(f)
 
+GEOCODING_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "mapbox_geocoding_response.json"
+)
+with open(GEOCODING_FIXTURE_PATH, encoding="utf-8") as f:
+    GEOCODING_FIXTURE = json.load(f)
+
 START = (Decimal("41.8781"), Decimal("-87.6298"))
 FINISH = (Decimal("38.6270"), Decimal("-90.1994"))
+ADDRESS = "401 N Michigan Ave, Chicago, IL"
 
 
 class _StubResponse:
@@ -169,3 +177,106 @@ class MissingTokenTests(SimpleTestCase):
                 get_route(START, FINISH)
 
         mock_get.assert_not_called()
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GeocodeHappyPathTests(SimpleTestCase):
+    """API-05/D-16: geocode resolves an address to a (lat, lng) Decimal
+    pair in exactly one Mapbox Geocoding v6 forward call."""
+
+    def test_returns_lat_lng_decimal_pair_with_exactly_one_call(self):
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            return_value=_StubResponse(payload=GEOCODING_FIXTURE),
+        ) as mock_get:
+            lat, lng = geocode(ADDRESS)
+
+        mock_get.assert_called_once()
+        fixture_lng, fixture_lat = GEOCODING_FIXTURE["features"][0]["geometry"][
+            "coordinates"
+        ]
+        self.assertIsInstance(lat, Decimal)
+        self.assertIsInstance(lng, Decimal)
+        self.assertEqual(lat, Decimal(str(fixture_lat)))
+        self.assertEqual(lng, Decimal(str(fixture_lng)))
+
+    def test_request_params_include_country_us_and_limit_one(self):
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            return_value=_StubResponse(payload=GEOCODING_FIXTURE),
+        ) as mock_get:
+            geocode(ADDRESS)
+
+        _, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"]["country"], "us")
+        self.assertEqual(kwargs["params"]["limit"], 1)
+        self.assertEqual(kwargs["params"]["q"], ADDRESS)
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GeocodeTokenHandlingTests(SimpleTestCase):
+    """The access token rides in params, never the URL string."""
+
+    def test_token_in_params_not_in_url(self):
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            return_value=_StubResponse(payload=GEOCODING_FIXTURE),
+        ) as mock_get:
+            geocode(ADDRESS)
+
+        args, kwargs = mock_get.call_args
+        self.assertEqual(kwargs["params"]["access_token"], "test-token")
+        self.assertNotIn("test-token", args[0])
+
+
+class GeocodeMissingTokenTests(SimpleTestCase):
+    """An unset MAPBOX_TOKEN raises ImproperlyConfigured before any HTTP
+    call is attempted."""
+
+    @override_settings(MAPBOX_TOKEN=None)
+    def test_missing_token_raises_before_any_http_call(self):
+        with mock.patch("routing.services.mapbox.requests.get") as mock_get:
+            with self.assertRaises(ImproperlyConfigured):
+                geocode(ADDRESS)
+
+        mock_get.assert_not_called()
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GeocodeRequestErrorTests(SimpleTestCase):
+    """A non-200 status or a requests transport failure raises
+    MapboxRequestError; neither raised message contains the token."""
+
+    def test_non_200_status_raises_mapbox_request_error(self):
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            return_value=_StubResponse(status_code=500, payload=GEOCODING_FIXTURE),
+        ):
+            with self.assertRaises(MapboxRequestError) as ctx:
+                geocode(ADDRESS)
+
+        self.assertNotIn("test-token", str(ctx.exception))
+
+    def test_request_exception_raises_mapbox_request_error(self):
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            side_effect=requests.RequestException("boom"),
+        ):
+            with self.assertRaises(MapboxRequestError) as ctx:
+                geocode(ADDRESS)
+
+        self.assertNotIn("test-token", str(ctx.exception))
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GeocodeNoResultTests(SimpleTestCase):
+    """An empty features list raises RouteNotFoundError."""
+
+    def test_empty_features_raises_route_not_found(self):
+        empty_payload = {"type": "FeatureCollection", "features": []}
+        with mock.patch(
+            "routing.services.mapbox.requests.get",
+            return_value=_StubResponse(payload=empty_payload),
+        ):
+            with self.assertRaises(RouteNotFoundError):
+                geocode(ADDRESS)
