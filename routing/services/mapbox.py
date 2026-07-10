@@ -1,0 +1,115 @@
+"""Mapbox Directions v5 client: single-call route fetch (ROUTE-02, D-05/D-07).
+
+Request-path HTTP + Django settings only -- no `routing.models`/
+`routing.pipeline` import (D-12). Distance is exact, unrounded `Decimal`,
+consistent with the project's money/measure discipline; the `access_token`
+always rides in `requests.get(params=...)`, never interpolated into the
+URL string (D-07, Pitfall B).
+"""
+from dataclasses import dataclass
+from decimal import Decimal
+
+import requests
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from shapely.geometry import LineString
+
+# Mapbox convention: longitude first in the path segment.
+DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{lon1},{lat1};{lon2},{lat2}"
+
+
+class MapboxError(Exception):
+    """Base class for all Mapbox Directions client errors."""
+
+
+class RouteNotFoundError(MapboxError):
+    """No drivable route exists between the requested points: Mapbox
+    returned a `code` other than "Ok" (e.g. "NoRoute") or an empty
+    `routes` list. Phase 4 maps this to API-04."""
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+class MapboxRequestError(MapboxError):
+    """The Directions request itself failed: a non-200 HTTP status or a
+    transport-level failure (connection error, timeout). Phase 4 maps
+    this to an upstream-failure response."""
+
+    def __init__(self, message):
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class Route:
+    """A driving route resolved from Mapbox Directions."""
+
+    total_route_mi: Decimal
+    geometry: LineString
+    raw_coordinates: list
+
+
+def get_route(start, finish) -> Route:
+    """Fetch the driving route between `start` and `finish` in exactly one
+    Mapbox Directions call (ROUTE-02).
+
+    `start`/`finish` are `(latitude, longitude)` Decimal pairs -- note this
+    is the opposite order from the Mapbox path segment, which is built as
+    lon,lat below (Pitfall 5).
+
+    Raises `ImproperlyConfigured` if `settings.MAPBOX_TOKEN` is unset,
+    before any HTTP call is attempted (D-08). Raises `MapboxRequestError`
+    on a non-200 status or a `requests` transport failure. Raises
+    `RouteNotFoundError` when Mapbox reports no route (`code != "Ok"` or
+    an empty `routes` list).
+    """
+    if not settings.MAPBOX_TOKEN:
+        raise ImproperlyConfigured(
+            "MAPBOX_TOKEN is not set -- cannot call the Mapbox Directions API"
+        )
+
+    start_lat, start_lng = start
+    finish_lat, finish_lng = finish
+    url = DIRECTIONS_URL.format(
+        lon1=start_lng, lat1=start_lat, lon2=finish_lng, lat2=finish_lat
+    )
+
+    try:
+        response = requests.get(
+            url,
+            params={
+                "geometries": "geojson",
+                "overview": "full",
+                "access_token": settings.MAPBOX_TOKEN,
+            },
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        raise MapboxRequestError("Mapbox Directions request failed") from exc
+
+    if response.status_code != 200:
+        raise MapboxRequestError(
+            f"Mapbox Directions request failed with status {response.status_code}"
+        )
+
+    return _parse_directions_response(response.json())
+
+
+def _parse_directions_response(data) -> Route:
+    """Parse a Mapbox Directions v5 JSON response into a `Route`, kept
+    separable from the transport call so it is unit-testable against a
+    recorded fixture without a real request (D-13)."""
+    if data.get("code") != "Ok" or not data.get("routes"):
+        raise RouteNotFoundError(
+            f"Mapbox found no route: code={data.get('code')!r}"
+        )
+
+    route0 = data["routes"][0]
+    coords = route0["geometry"]["coordinates"]
+    total_route_mi = Decimal(str(route0["distance"])) / Decimal("1609.344")
+
+    return Route(
+        total_route_mi=total_route_mi,
+        geometry=LineString(coords),
+        raw_coordinates=coords,
+    )
