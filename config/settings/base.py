@@ -82,6 +82,14 @@ else:
         }
     }
 
+# Mapbox / corridor
+# No default for MAPBOX_TOKEN -- an unset token must stay falsy None so the
+# client can raise a clear config error, rather than silently defaulting to
+# an empty string.
+MAPBOX_TOKEN = os.environ.get("MAPBOX_TOKEN")
+CORRIDOR_ROOFTOP_MI = os.environ.get("CORRIDOR_ROOFTOP_MI", "5")
+CORRIDOR_CITY_MI = os.environ.get("CORRIDOR_CITY_MI", "20")
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
