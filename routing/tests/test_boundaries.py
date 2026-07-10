@@ -52,6 +52,29 @@ class ImportBoundaryTest(SimpleTestCase):
             f"routing/services/ must never import routing/pipeline/: {violations}",
         )
 
+    def test_mapbox_and_corridor_modules_are_scanned_and_pipeline_free(self):
+        """Phase 3 regression: mapbox.py and corridor.py legitimately
+        import django/routing.models/requests (deliberately NOT added to
+        SOLVER_FILES below -- they would trip SolverPurityTest's stricter
+        gate), but the broader ImportBoundaryTest scan above must still
+        cover them and confirm neither imports the offline geocoding
+        pipeline package (D-12).
+        """
+        scanned = set(SERVICES_DIR.rglob("*.py"))
+        mapbox_path = SERVICES_DIR / "mapbox.py"
+        corridor_path = SERVICES_DIR / "corridor.py"
+
+        self.assertIn(mapbox_path, scanned)
+        self.assertIn(corridor_path, scanned)
+
+        for path in (mapbox_path, corridor_path):
+            violations = [
+                name
+                for name in _collect_import_names(path)
+                if name.startswith(FORBIDDEN_PREFIX)
+            ]
+            self.assertEqual(violations, [], f"{path}: imports {violations}")
+
 
 class SolverPurityTest(SimpleTestCase):
     """Statically enforces FUEL-05: the solver (routing/services/solver.py
