@@ -90,6 +90,37 @@ MAPBOX_TOKEN = os.environ.get("MAPBOX_TOKEN")
 CORRIDOR_ROOFTOP_MI = os.environ.get("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = os.environ.get("CORRIDOR_CITY_MI", "20")
 
+# Cache
+# CACHE_BACKEND selects "redis" (django-redis, for the containerized demo)
+# or "locmem" (default, keeps a fresh clone's runserver/tests working with
+# zero Redis dependency). Branches BACKEND itself, not just LOCATION, so an
+# unset/local env never attempts a Redis connection.
+CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "locmem")
+REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
+
+if CACHE_BACKEND == "redis":
+    CACHES = {
+        "default": {
+            "BACKEND": "django_redis.cache.RedisCache",
+            "LOCATION": REDIS_URL,
+            "TIMEOUT": CACHE_TTL_SECONDS,
+            "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+        }
+    }
+else:
+    CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "TIMEOUT": CACHE_TTL_SECONDS,
+        }
+    }
+
+# Django REST Framework
+REST_FRAMEWORK = {
+    "EXCEPTION_HANDLER": "routing.exceptions.custom_exception_handler",
+}
+
 # Password validation
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},

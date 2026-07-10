@@ -3,3 +3,5 @@ djangorestframework==3.17.1
 requests==2.34.2
 shapely==2.1.2
 geopy==2.4.1
+django-redis==7.0.0
+polyline==2.0.4
