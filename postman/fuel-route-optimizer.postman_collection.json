@@ -340,6 +340,51 @@
           }
         }
       ]
+    },
+    {
+      "name": "9. Multi-stop happy path (1 call, several fuel stops)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"32.7767,-96.7970\",\n  \"finish\": \"34.0522,-118.2437\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Dallas, TX -> Los Angeles, CA -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (PERF-01's 1-call ideal, API-05). The ~1,437-mi trip far exceeds the 500-mi tank range, so the cheapest feasible plan spans several fuel stops (multiple `fuel_stops`, API-01) -- verified against this project's own station dataset (~5 stops). Shares the finish coordinate with scenario 7 (Catalina -> LA) for consistency, and uses the same fixed coords as the SPA's Dallas -> Los Angeles demo preset."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "",
+              "pm.test(\"fuel_stops has more than one stop\", function () {",
+              "    pm.expect(body.fuel_stops).to.be.an(\"array\");",
+              "    pm.expect(body.fuel_stops.length).to.be.above(1);",
+              "});",
+              "",
+              "pm.test(\"response carries total_cost and map_url\", function () {",
+              "    pm.expect(body).to.have.property(\"total_cost\");",
+              "    pm.expect(body.map_url).to.not.be.null;",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -1,0 +1,30 @@
+meta {
+  name: 9. Multi-stop happy path
+  type: http
+  seq: 9
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "32.7767,-96.7970",
+    "finish": "34.0522,-118.2437"
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("has multiple fuel stops, total cost, and map url", function() {
+    expect(res.body.fuel_stops).to.be.an('array');
+    expect(res.body.fuel_stops.length).to.be.above(1);
+    expect(res.body).to.have.property('total_cost');
+    expect(res.body).to.have.property('map_url');
+  });
+}
