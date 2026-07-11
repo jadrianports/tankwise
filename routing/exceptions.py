@@ -6,6 +6,8 @@ This module holds the request path's only DRF import for error handling --
 DRF-free and raise plain-Python exceptions; this handler is the sole
 translation layer from those exceptions to HTTP.
 """
+from decimal import ROUND_HALF_UP, Decimal
+
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework import status
 from rest_framework.response import Response
@@ -18,6 +20,15 @@ from routing.services.mapbox import MapboxRequestError, RouteNotFoundError
 def _envelope(code, message, detail=None):
     """The D-04 error envelope shape."""
     return {"error": {"code": code, "message": message, "detail": detail or {}}}
+
+
+def _quantize_miles(value) -> str:
+    """Round a Decimal distance to the nearest whole mile for the HTTP
+    response only -- the solver's own gap comparison against max range
+    already ran on the full-precision value before this exception was
+    ever constructed."""
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    return str(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def custom_exception_handler(exc, context):
@@ -49,7 +60,7 @@ def custom_exception_handler(exc, context):
                 {
                     "from_station": exc.from_station,
                     "to_station": exc.to_station,
-                    "gap_mi": str(exc.gap_mi),
+                    "gap_mi": _quantize_miles(exc.gap_mi),
                     "max_range_mi": str(exc.max_range_mi),
                 },
             ),

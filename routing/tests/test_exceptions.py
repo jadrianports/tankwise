@@ -41,7 +41,7 @@ class InfeasibleRouteMappingTests(SimpleTestCase):
         detail = response.data["error"]["detail"]
         self.assertEqual(detail["from_station"], "START")
         self.assertEqual(detail["to_station"], "STOP1")
-        self.assertEqual(detail["gap_mi"], "612.5")
+        self.assertEqual(detail["gap_mi"], "613")
         self.assertEqual(detail["max_range_mi"], "500")
 
 
