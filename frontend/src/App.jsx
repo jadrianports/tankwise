@@ -1,76 +1,111 @@
-import { useState, useEffect } from 'react'
-import { useColorScheme } from '@mui/material/styles'
-import AppBar from '@mui/material/AppBar'
-import Toolbar from '@mui/material/Toolbar'
-import Typography from '@mui/material/Typography'
-import IconButton from '@mui/material/IconButton'
-import Box from '@mui/material/Box'
-import Brightness4 from '@mui/icons-material/Brightness4'
-import Brightness7 from '@mui/icons-material/Brightness7'
+import { useCallback, useRef, useState } from 'react';
+import Box from '@mui/material/Box';
 
-// Dark-mode toggle wired to MUI's useColorScheme (not a hand-rolled
-// useState/localStorage). Guard the first render where `mode` is undefined to
-// avoid a hydration/SSR mismatch, per the current MUI dark-mode guidance.
-function ColorModeToggle() {
-  const { mode, setMode } = useColorScheme()
-  const [mounted, setMounted] = useState(false)
+import AppShell from './components/AppShell';
+import LocationForm from './components/LocationForm';
+import PresetRoutes from './components/PresetRoutes';
+import SummaryCard from './components/SummaryCard';
+import StopList from './components/StopList';
+import EmptyState from './components/EmptyState';
+import ErrorAlert from './components/ErrorAlert';
+import RouteMap from './components/RouteMap';
+import { useRoutePlan } from './hooks/useRoutePlan';
 
-  useEffect(() => {
-    setMounted(true)
-  }, [])
+const SIDEBAR_WIDTH = 380;
 
-  if (!mounted) {
-    return <IconButton color="inherit" aria-label="toggle color mode" />
-  }
-
-  const isDark = mode === 'dark'
-  return (
-    <IconButton
-      color="inherit"
-      aria-label={isDark ? 'switch to light mode' : 'switch to dark mode'}
-      onClick={() => setMode(isDark ? 'light' : 'dark')}
-    >
-      {isDark ? <Brightness7 /> : <Brightness4 />}
-    </IconButton>
-  )
-}
-
-// Placeholder shell — exercises the custom palette, the Space Grotesk / Inter
-// pairing, and a working dark toggle so the themed foundation is verifiable.
-// 05-03 replaces this with the full sidebar + map layout.
+// Full route-planner layout (D-07): AppBar on top; below it a permanent
+// non-overlay sidebar (form + presets + results) fixed at 380px on md+
+// (stacked column below 900px); the map fills the remaining width.
 function App() {
+  const { status, data, error, submit } = useRoutePlan();
+  const [start, setStart] = useState('');
+  const [finish, setFinish] = useState('');
+
+  // Shared marker map (station_id/index -> Leaflet marker instance) that
+  // RouteMap populates and StopList row clicks read from (D-08).
+  const markerRefs = useRef({});
+  const mapInstanceRef = useRef(null);
+
+  const handleMapReady = useCallback((map) => {
+    mapInstanceRef.current = map;
+  }, []);
+
+  const handlePresetSelect = useCallback(
+    (preset) => {
+      setStart(preset.start);
+      setFinish(preset.finish);
+      submit(preset.start, preset.finish);
+    },
+    [submit]
+  );
+
+  const focusStop = useCallback((key) => {
+    const marker = markerRefs.current[key];
+    const map = mapInstanceRef.current;
+    if (!marker || !map) return;
+    map.flyTo(marker.getLatLng(), 10);
+    marker.openPopup();
+  }, []);
+
+  const showResults = status === 'success' && data;
+  const showError = status === 'error' && error;
+  const showEmptyState = !showResults && !showError;
+
   return (
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
-      <AppBar position="static" color="primary">
-        <Toolbar sx={{ px: { xs: 2, sm: 4 } }}>
-          <Typography variant="h5" component="h1" sx={{ flexGrow: 1 }}>
-            Fuel Route Optimizer
-          </Typography>
-          <ColorModeToggle />
-        </Toolbar>
-      </AppBar>
+      <AppShell />
 
       <Box
         sx={{
           display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: 1,
-          height: 'calc(100vh - 64px)',
-          px: 3,
-          textAlign: 'center',
+          flexDirection: { xs: 'column', md: 'row' },
+          height: { md: 'calc(100vh - 64px)' },
         }}
       >
-        <Typography variant="h6" component="h2">
-          Plan a route
-        </Typography>
-        <Typography variant="body1" color="text.secondary">
-          Enter a start and finish location to see the cheapest fueling plan.
-        </Typography>
+        <Box
+          component="aside"
+          sx={{
+            width: { md: SIDEBAR_WIDTH },
+            flexShrink: 0,
+            p: 3,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 3,
+            overflowY: { md: 'auto' },
+            bgcolor: 'background.paper',
+            borderRight: { md: '1px solid' },
+            borderColor: 'divider',
+          }}
+        >
+          <LocationForm
+            start={start}
+            finish={finish}
+            onStartChange={setStart}
+            onFinishChange={setFinish}
+            status={status}
+            onSubmit={submit}
+          />
+
+          <PresetRoutes status={status} onSelect={handlePresetSelect} />
+
+          {showError && <ErrorAlert error={error} />}
+
+          {showResults && (
+            <>
+              <SummaryCard data={data} />
+              <StopList stops={data.fuel_stops} onSelectStop={focusStop} />
+            </>
+          )}
+
+          {showEmptyState && <EmptyState />}
+        </Box>
+
+        <Box component="main" sx={{ flexGrow: 1, height: { xs: 400, md: 'auto' }, minHeight: { xs: 400, md: 'auto' } }}>
+          <RouteMap data={showResults ? data : null} markerRefs={markerRefs} onMapReady={handleMapReady} />
+        </Box>
       </Box>
     </Box>
-  )
+  );
 }
 
-export default App
+export default App;
