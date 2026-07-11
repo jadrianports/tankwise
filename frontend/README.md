@@ -1,16 +1,28 @@
-# React + Vite
+# Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React + Material UI single-page app for the Fuel Route Optimizer map page. The root [README](../README.md) is the full project reference (architecture, API contract, Docker deployment) — this file only covers running the frontend on its own during local development.
 
-Currently, two official plugins are available:
+## Local dev loop
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+```bash
+npm install
+npm run dev
+```
 
-## React Compiler
+`npm run dev` starts the Vite dev server (defaults to `http://localhost:5173`). Its dev proxy forwards any relative `/api/*` request to `http://localhost:8000`, so the SPA code never has to know whether it's talking to the Django dev server or, in production, Nginx. Run the API alongside it:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+```bash
+# from the repo root, in a separate terminal
+python manage.py runserver
+```
 
-## Expanding the Oxlint configuration
+Make sure `MAPBOX_TOKEN` is set in the root `.env` before starting the Django dev server, or `/api/route` calls will 502.
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+## Other scripts
+
+```bash
+npm run build    # production bundle -> dist/
+npm run lint     # oxlint
+```
+
+In production, `npm run build`'s output is what the Docker/Nginx stack (see the root README's Quickstart and Architecture sections) actually serves — Nginx serves the built `dist/` bundle and reverse-proxies `/api/*` to gunicorn on the same origin.
