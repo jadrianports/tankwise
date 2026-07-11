@@ -104,6 +104,47 @@ class BuildMapUrlDenseGeometryTests(SimpleTestCase):
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
+class BuildMapUrlPolylineEncodingTests(SimpleTestCase):
+    """The encoded polyline is an opaque payload that can contain
+    URL-unsafe characters (`\\`, `|`, `?`, ...). Mapbox's Static Images
+    endpoint requires this payload to be percent-encoded, or a browser
+    silently corrupts the path (`\\` -> `/`) or truncates the query
+    string early (`?`), producing a "Not Authorized" response even with
+    a valid token."""
+
+    # Coordinates whose encoded polyline is known to contain a raw
+    # backslash and question mark (`??~`f@f{\\`), confirmed via
+    # `polyline.encode`.
+    BACKSLASH_COORDS = [[0.0, 0.0], [-0.153, -0.2]]
+
+    def test_unsafe_polyline_chars_are_percent_encoded_in_path(self):
+        url = build_map_url(
+            _route(self.BACKSLASH_COORDS), START, FINISH, []
+        )
+
+        path_segment = url.split("?access_token=")[0]
+
+        # The raw unsafe characters must never appear in the URL path --
+        # a raw `\` gets rewritten to `/` by browsers, corrupting the
+        # `/static/{overlay}/auto/{size}` path, and a raw `?` would start
+        # the query string early and orphan the real access_token param.
+        self.assertNotIn("\\", path_segment)
+        self.assertNotIn("?", path_segment)
+
+        # The percent-encoded forms must be present instead.
+        self.assertIn("%5C", url)
+        self.assertIn("%3F", url)
+
+    def test_access_token_param_survives_unsafe_polyline_chars(self):
+        url = build_map_url(
+            _route(self.BACKSLASH_COORDS), START, FINISH, []
+        )
+
+        self.assertTrue(url.endswith("access_token=test-token"))
+        self.assertEqual(url.count("access_token="), 1)
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
 class BuildMapUrlTokenSafetyTests(SimpleTestCase):
     """The access token rides only in the access_token query param, never
     inside the marker/path overlay segment."""

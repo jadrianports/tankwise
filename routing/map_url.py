@@ -7,6 +7,8 @@ access token rides only in the `access_token` query parameter, mirroring
 the token-never-in-URL-string discipline already used by
 `routing/services/mapbox.py`'s Directions/Geocoding calls.
 """
+from urllib.parse import quote
+
 from django.conf import settings
 
 import polyline as polyline_lib
@@ -61,7 +63,15 @@ def build_map_url(route, start, finish, stop_coords) -> str:
     tolerance = _INITIAL_TOLERANCE
     while True:
         encoded = _encode_geometry(route, tolerance)
-        overlay = ",".join(markers + [f"{_PATH_OVERLAY_STYLE}({encoded})"])
+        # The encoded polyline is an opaque payload that routinely contains
+        # URL-unsafe characters (`\`, `|`, `?`, ...). Percent-encode only
+        # this payload -- never the surrounding marker/path overlay syntax
+        # (pins, `path-3+ef4444-0.8`, parens, commas) which is literal
+        # Mapbox overlay grammar and must stay unescaped. This must happen
+        # before the length check below so MAX_URL_LENGTH is measured
+        # against the real, transmitted (percent-escaped) URL length.
+        encoded_safe = quote(encoded, safe="")
+        overlay = ",".join(markers + [f"{_PATH_OVERLAY_STYLE}({encoded_safe})"])
         url = (
             f"{STATIC_IMAGES_URL}/{overlay}/auto/{_IMAGE_SIZE}"
             f"?access_token={settings.MAPBOX_TOKEN}"
