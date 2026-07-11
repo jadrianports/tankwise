@@ -192,3 +192,9 @@ A scripted path through the same four presets built into the map page's sidebar 
 - Longer-term (not attempted here): a Mapbox permanent-geocoding fallback for the handful of station addresses the Census geocoder can't resolve, alternative (fastest-vs-cheapest) route options, a per-request configurable vehicle profile (range/mpg/tank size), and a live cloud deployment.
 
 (The pooled, retrying Mapbox HTTP session mentioned above is already implemented — not on this list.)
+
+## License
+
+© 2026 jadrianports. **All Rights Reserved.**
+
+This repository is shared publicly for portfolio and evaluation purposes only. It is **not** open-source software. No license — express or implied — is granted to any person to use, copy, reproduce, modify, publish, redistribute, sublicense, or create derivative works from any part of this code, in whole or in part, without the author's prior written permission. See the [`LICENSE`](LICENSE) file for the full notice.
