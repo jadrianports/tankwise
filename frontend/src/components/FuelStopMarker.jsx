@@ -3,6 +3,8 @@ import { Marker, Popup } from 'react-leaflet';
 import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
 
+import { formatGallons } from '../utils/format';
+
 // Fuel-stop marker colors per the Map & Marker Contract (light/dark).
 const COLORS = {
   light: { fill: '#F59E0B', text: '#FFFFFF', outline: '#B45309' },
@@ -38,7 +40,7 @@ function FuelStopMarker({ stop, number, mode, markerRef }) {
           <Typography variant="body2" sx={{ color: 'fuel.dark' }}>
             ${stop.price_per_gallon}/gal
           </Typography>
-          <Typography variant="body2">{stop.gallons} gal</Typography>
+          <Typography variant="body2">{formatGallons(stop.gallons)}</Typography>
           <Typography variant="body2" sx={{ color: 'fuel.dark' }}>
             ${stop.cost} total
           </Typography>

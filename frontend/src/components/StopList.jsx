@@ -5,6 +5,8 @@ import ListItemText from '@mui/material/ListItemText';
 import Avatar from '@mui/material/Avatar';
 import Typography from '@mui/material/Typography';
 
+import { formatGallons } from '../utils/format';
+
 // Ordered itinerary: one row per fuel stop, numbered avatar matching the
 // map marker's number, station name (Body), stop cost (Body, accent).
 // Clicking a row focuses the corresponding map marker (D-08). station_id can
@@ -27,7 +29,7 @@ function StopList({ stops, onSelectStop }) {
             </ListItemAvatar>
             <ListItemText
               primary={stop.name}
-              secondary={`${stop.gallons} gal @ $${stop.price_per_gallon}/gal`}
+              secondary={`${formatGallons(stop.gallons)} @ $${stop.price_per_gallon}/gal`}
             />
             <Typography variant="body1" sx={{ color: 'fuel.main', fontWeight: 600 }}>
               ${stop.cost}
