@@ -264,7 +264,7 @@
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"start\": \"48.1470,-88.4859\",\n  \"finish\": \"47.1211,-88.5669\"\n}",
+          "raw": "{\n  \"start\": \"33.3879,-118.4163\",\n  \"finish\": \"34.0522,-118.2437\"\n}",
           "options": { "raw": { "language": "json" } }
         },
         "url": {
@@ -272,7 +272,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Isle Royale, MI (Rock Harbor) -> Houghton, MI. Both points are well-formed, continental-US coordinates, but Isle Royale is a roadless wilderness island reachable only by ferry/seaplane -- Mapbox Directions' driving profile cannot compute a route between them. Returns 422 with error.code `route_not_found` (API-04). Guaranteed-reproducible proof of this mapping (independent of live Mapbox road data) is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_no_route_returns_422_route_not_found`."
+        "description": "Catalina Island, CA (Avalon) -> Los Angeles, CA. Both points are well-formed US coordinates, but Catalina is a ferry-only island whose road network is disconnected from the mainland -- Mapbox Directions' driving profile finds no route between them (returns code `NoRoute`). The API maps this to 422 with error.code `route_not_found` (API-04). Guaranteed-reproducible proof of this mapping (independent of live Mapbox road data) is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_no_route_returns_422_route_not_found`."
       },
       "event": [
         {
