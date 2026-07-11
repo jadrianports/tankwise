@@ -25,6 +25,15 @@ from routing.services import corridor, solver
 from routing.services.mapbox import geocode, get_route
 
 
+class HealthView(APIView):
+    """`GET /api/health` -- dependency-free liveness probe for the Docker
+    Compose healthcheck. Deliberately touches no DB, cache, or Mapbox so it
+    succeeds even with an empty database and no MAPBOX_TOKEN set."""
+
+    def get(self, request):
+        return Response({"status": "ok"})
+
+
 class RouteView(APIView):
     """`POST /api/route` -- see module docstring."""
 
