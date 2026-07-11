@@ -2,7 +2,7 @@
 
 A Django REST API that takes a start and finish location in the continental US and returns the driving route, the cheapest set of fuel stops along it, and the total fuel cost for the trip. It assumes a vehicle with a 500-mile range and 10 miles per gallon, and it picks stops from a fixed dataset of about 8,150 US truck-stop fuel prices to keep the total spend as low as possible. A React and Material UI single-page app draws the route and its stops on an interactive map, and the whole thing (API, cache, SPA) starts with one `docker compose up`.
 
-> Built as a take-home assessment for a full-stack engineering role, and published here as a portfolio piece.
+> Built as a take-home assessment for a full-stack engineering role.
 
 ## Quickstart
 
@@ -12,7 +12,7 @@ cd fuel-route-optimizer
 cp .env.example .env
 ```
 
-Open `.env` and paste a [Mapbox](https://www.mapbox.com/) access token into the `MAPBOX_TOKEN=` line. The free tier is plenty (sign up, copy your default public token). That is the only value you need to set. Everything else already has a working default in `docker-compose.yml`.
+Open `.env` and paste a [Mapbox](https://www.mapbox.com/) access token into the `MAPBOX_TOKEN=` line.
 
 ```bash
 docker compose up --build
@@ -186,17 +186,14 @@ A scripted path through the four presets built into the map page's sidebar. Each
 6. **Catalina Island → Los Angeles** (422 `route_not_found`). An island with no connecting road, so Mapbox itself reports no drivable route.
 7. **A quick code tour:** `routing/services/solver.py` (the greedy algorithm), `routing/services/corridor.py` (the bbox and perpendicular filter), `routing/views.py` (the orchestrator that ties it together), and `routing/cache.py` (the cache-key normalizer behind step 4).
 
-## What I'd do next
+## Notes
 
 - **Run the two address-geocoding calls concurrently.** When both `start` and `finish` are addresses, they're geocoded one after the other right now. Doing them at the same time would save roughly 150ms on address-only requests. I left it sequential to keep the request path a single, easy-to-follow synchronous chain within the assessment's timeline.
-- **Pre-warm the preset routes into Redis at boot.** Right now the first click on any preset pays the full cold-request cost. Warming those routes into the cache during `entrypoint.sh` would make even the first demo click instant.
-- **Look into thin West Coast station coverage.** A route like Seattle → San Diego is obviously drivable but currently reports `infeasible_route`, because the CSV has sparse station coverage along parts of the West Coast. Worth checking whether that's a real gap in the source data or a corridor-width tuning issue.
+- **Thin West Coast station coverage.** A route like Seattle → San Diego is obviously drivable but currently reports `infeasible_route`, because the CSV has sparse station coverage along parts of the West Coast. Worth checking whether that's a real gap in the source data or a corridor-width tuning issue.
 - Longer term (not attempted here): a Mapbox permanent-geocoding fallback for the handful of station addresses the Census geocoder can't resolve, alternative route options (fastest vs. cheapest), a per-request vehicle profile (range, mpg, tank size), and a live cloud deployment.
-
-(The pooled, retrying Mapbox session mentioned earlier is already implemented, so it's not on this list.)
 
 ## License
 
 © 2026 jadrianports. **All Rights Reserved.**
 
-This repository is shared publicly for portfolio and evaluation purposes only. It is **not** open-source software. No license, express or implied, is granted to any person to use, copy, reproduce, modify, publish, redistribute, sublicense, or create derivative works from any part of this code, in whole or in part, without the author's prior written permission. See the [`LICENSE`](LICENSE) file for the full notice.
+This repository is shared publicly for evaluation purposes only. It is **not** open-source software. No license, express or implied, is granted to any person to use, copy, reproduce, modify, publish, redistribute, sublicense, or create derivative works from any part of this code, in whole or in part, without the author's prior written permission. See the [`LICENSE`](LICENSE) file for the full notice.
