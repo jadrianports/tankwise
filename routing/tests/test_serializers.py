@@ -267,8 +267,8 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
         )
         data = serializer.data
 
-        self.assertEqual(data["total_route_mi"], "512.75")
-        self.assertEqual(data["total_gallons"], "0")
+        self.assertEqual(data["total_route_mi"], "513")
+        self.assertEqual(data["total_gallons"], "0.00")
         self.assertEqual(data["map_url"], "https://example.test/map")
         self.assertEqual(data["fuel_stops"], [])
 

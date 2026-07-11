@@ -4,9 +4,10 @@ D-13, D-14, D-15).
 `LocationField` sniffs a coordinate-or-address input without a caller
 -supplied type tag (D-02) and bounds-checks coordinates against the
 continental-US bbox (D-17). `RouteResponseSerializer`/`FuelStopSerializer`
-render the frontend-facing response contract, quantizing every money value
-to exactly 2 decimal places at this one boundary (D-14, Pitfall 4) -- the
-solver and Mapbox client upstream never round.
+render the frontend-facing response contract, quantizing money and gallons
+to exactly 2 decimal places and route distance to the nearest whole mile,
+all at this one boundary (D-14, Pitfall 4) -- the solver and Mapbox client
+upstream never round.
 """
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
@@ -25,6 +26,23 @@ def _quantize_money(value) -> str:
     client (D-14)."""
     d = value if isinstance(value, Decimal) else Decimal(str(value))
     return str(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _quantize_gallons(value) -> str:
+    """Same treatment as `_quantize_money` (2 decimal places,
+    ROUND_HALF_UP), applied to gallons at this one boundary -- the
+    solver's internal fuel-purchase math stays full precision."""
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    return str(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
+def _quantize_miles(value) -> str:
+    """Coerce a Decimal (or Decimal-able value) to a string quantized to
+    the nearest whole mile, ROUND_HALF_UP. Applied only at this
+    serializer boundary -- the route's exact distance is still what the
+    solver/corridor math uses upstream (D-14)."""
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    return str(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _location_repr(coords):
@@ -111,7 +129,7 @@ class FuelStopSerializer(serializers.Serializer):
             "station_id": instance.opis_id,
             "location": _location_repr(coords),
             "price_per_gallon": _quantize_money(instance.price_per_gallon),
-            "gallons": str(instance.gallons),
+            "gallons": _quantize_gallons(instance.gallons),
             "cost": _quantize_money(instance.cost),
         }
 
@@ -145,9 +163,9 @@ class RouteResponseSerializer(serializers.Serializer):
             "start": _location_repr(self.context.get("start_coords")),
             "finish": _location_repr(self.context.get("finish_coords")),
             "route_geometry": simplify_geometry(route),
-            "total_route_mi": str(route.total_route_mi),
+            "total_route_mi": _quantize_miles(route.total_route_mi),
             "fuel_stops": fuel_stops,
             "total_cost": _quantize_money(plan.total_cost),
-            "total_gallons": str(plan.total_gallons),
+            "total_gallons": _quantize_gallons(plan.total_gallons),
             "map_url": instance.get("map_url"),
         }
