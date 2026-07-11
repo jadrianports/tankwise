@@ -1,0 +1,27 @@
+meta {
+  name: 7. Route not found
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "48.1470,-88.4859",
+    "finish": "47.1211,-88.5669"
+  }
+}
+
+tests {
+  test("returns 422", function() {
+    expect(res.status).to.equal(422);
+  });
+  test("error code is route_not_found", function() {
+    expect(res.body.error.code).to.equal("route_not_found");
+  });
+}

@@ -1,0 +1,26 @@
+meta {
+  name: 5. Missing required field
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "39.7392,-104.9903"
+  }
+}
+
+tests {
+  test("returns 400", function() {
+    expect(res.status).to.equal(400);
+  });
+  test("error code is invalid_input", function() {
+    expect(res.body.error.code).to.equal("invalid_input");
+  });
+}

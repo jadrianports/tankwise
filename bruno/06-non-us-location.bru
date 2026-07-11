@@ -1,0 +1,27 @@
+meta {
+  name: 6. Non-US location
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "50.4452,-104.6189",
+    "finish": "39.0997,-94.5786"
+  }
+}
+
+tests {
+  test("returns 400", function() {
+    expect(res.status).to.equal(400);
+  });
+  test("error code is invalid_input", function() {
+    expect(res.body.error.code).to.equal("invalid_input");
+  });
+}

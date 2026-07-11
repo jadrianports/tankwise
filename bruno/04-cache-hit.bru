@@ -1,0 +1,29 @@
+meta {
+  name: 4. Cache hit (repeat of #1)
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "39.7392,-104.9903",
+    "finish": "39.0997,-94.5786"
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("has fuel stops, total cost, and map url", function() {
+    expect(res.body.fuel_stops).to.be.an('array');
+    expect(res.body).to.have.property('total_cost');
+    expect(res.body).to.have.property('map_url');
+  });
+}

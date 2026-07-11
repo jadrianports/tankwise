@@ -1,0 +1,27 @@
+meta {
+  name: 8. Infeasible route (gap exceeds 500 mi)
+  type: http
+  seq: 8
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "37.7749,-122.4194",
+    "finish": "47.6062,-122.3321"
+  }
+}
+
+tests {
+  test("returns 422", function() {
+    expect(res.status).to.equal(422);
+  });
+  test("error code is infeasible_route", function() {
+    expect(res.body.error.code).to.equal("infeasible_route");
+  });
+}
