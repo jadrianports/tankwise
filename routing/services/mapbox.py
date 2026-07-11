@@ -14,6 +14,7 @@ from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from requests.adapters import HTTPAdapter
 from shapely.geometry import LineString
+from urllib3.util.retry import Retry
 
 # Mapbox convention: longitude first in the path segment.
 DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{lon1},{lat1};{lon2},{lat2}"
@@ -24,8 +25,29 @@ GEOCODING_URL = "https://api.mapbox.com/search/geocode/v6/forward"
 # calls within a request and across requests (HTTP keep-alive). This
 # avoids a fresh TLS handshake per Mapbox call, which is the biggest
 # fixed cost on the mixed/address-input paths that make 2-3 calls.
+#
+# Pooled keep-alive connections can be closed by the remote during an
+# idle gap; without retries, reusing a now-dead connection surfaces as a
+# spurious ConnectionError -> upstream_error 502. A bounded Retry lets
+# both (idempotent GET) calls transparently recover on a fresh
+# connection, and also rides out transient Mapbox 5xx/429 blips. It does
+# NOT retry deterministic auth/4xx (401/403/404) or a Mapbox NoRoute,
+# which comes back as HTTP 200 with code != "Ok" and is handled in-app.
+_RETRY = Retry(
+    total=2,
+    connect=2,
+    read=2,  # retries RemoteDisconnected/reset on a reused GET (stale conn)
+    status=2,
+    backoff_factor=0.3,
+    status_forcelist=(429, 500, 502, 503, 504),
+    allowed_methods=frozenset({"GET"}),
+    raise_on_status=False,  # existing status_code != 200 check owns the final response
+)
 _SESSION = requests.Session()
-_SESSION.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=8))
+_SESSION.mount(
+    "https://",
+    HTTPAdapter(pool_connections=4, pool_maxsize=8, max_retries=_RETRY),
+)
 
 
 class MapboxError(Exception):
