@@ -1,0 +1,345 @@
+{
+  "info": {
+    "_postman_id": "6a2f9c1e-6b4d-4b1a-9a3e-2f5c8d0e7b41",
+    "name": "Fuel Route Optimizer API",
+    "description": "POST /api/route -- given a start and finish location within the USA, returns the driving route, the cost-optimal set of fuel stops along it (500-mile max range, 10 mpg), and the total fuel cost.\n\nAll requests target `{{base_url}}/api/route` (override `base_url` per-environment; defaults to `http://localhost:8000`).\n\nRequest body: `{\"start\": <location>, \"finish\": <location>}`. Each of `start`/`finish` independently accepts:\n- a `\"lat,lng\"` string (coordinate order is **lat,lng**, the human/Google-Maps convention -- NOT GeoJSON's lng,lat)\n- a `[lat, lng]` pair\n- a free-text US address string\n\nThe server sniffs the shape -- no type tag is required. Coordinate input costs 1 Mapbox Directions call; every address in the request adds one forward-geocoding call (2 addresses = 3 calls total), so the coordinate path is the 1-call ideal and the address path is the 3-call ceiling.\n\nError envelope on any 4xx/5xx: `{\"error\": {\"code\": \"<machine_code>\", \"message\": \"<human>\", \"detail\": {...}}}`.\n\n## Run order for the cache-hit demo\nRun \"1. Coordinate happy path\" first, then immediately run \"4. Cache hit (repeat of #1)\". The second call returns the identical payload with zero additional Mapbox calls (PERF-02) -- watch the response time drop and, if a server-side call counter/log is visible during the Loom walkthrough, confirm no new Directions call fired.\n\n## 502 upstream error (not included as a live request)\nA Mapbox transport failure (network error, non-200, or a missing/invalid `MAPBOX_TOKEN`) maps to `502` with `error.code == \"upstream_error\"`. This is impractical to trigger on demand against a live Mapbox account, so it is not included as a saved request here -- it is proven end-to-end by an automated endpoint test with a stubbed Mapbox transport failure (`routing/tests/test_views.py::RouteViewDomainErrorTests::test_upstream_transport_failure_returns_502_with_no_token_leak`). It is optionally demoable live by temporarily unsetting `MAPBOX_TOKEN` and re-running any request in this collection.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Coordinate happy path (1 call, forces a fuel stop)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"39.7392,-104.9903\",\n  \"finish\": \"39.0997,-94.5786\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Denver, CO -> Kansas City, MO -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (PERF-01's 1-call ideal, API-05). Real driving distance is ~560 mi via I-70, which exceeds the 500-mi tank range, so the cheapest feasible plan requires at least one fuel stop (non-empty `fuel_stops`, API-01) -- verified against this project's own station dataset (max corridor gap along this route is ~180 mi, well under the 500-mi range, so the trip is feasible with real, on-route Colorado/Kansas travel centers). Also asserts the response carries `map_url` (ROUTE-04) and route geometry (ROUTE-03)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "",
+              "pm.test(\"fuel_stops is a non-empty array\", function () {",
+              "    pm.expect(body.fuel_stops).to.be.an(\"array\").that.is.not.empty;",
+              "});",
+              "",
+              "pm.test(\"response carries route_geometry, total_cost, total_gallons, total_route_mi, map_url\", function () {",
+              "    pm.expect(body).to.have.property(\"route_geometry\");",
+              "    pm.expect(body).to.have.property(\"total_cost\");",
+              "    pm.expect(body).to.have.property(\"total_gallons\");",
+              "    pm.expect(body).to.have.property(\"total_route_mi\");",
+              "    pm.expect(body.map_url).to.not.be.null;",
+              "});",
+              "",
+              "pm.collectionVariables.set(\"scenario1_last_response\", JSON.stringify(body));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Address happy path (3 calls)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"1701 Bryant St, Denver, CO 80204\",\n  \"finish\": \"1 Arrowhead Dr, Kansas City, MO 64129\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Empower Field at Mile High, Denver -> Arrowhead Stadium, Kansas City -- both endpoints given as free-text US addresses. Costs 2 forward-geocoding calls (one per address) + 1 Directions call = 3 total, the PERF-01 ceiling (API-05)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test(\"response carries fuel_stops and total_cost\", function () {",
+              "    pm.expect(body).to.have.property(\"fuel_stops\");",
+              "    pm.expect(body).to.have.property(\"total_cost\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Mixed address + coordinate (2 calls)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"1701 Bryant St, Denver, CO 80204\",\n  \"finish\": \"39.0997,-94.5786\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Empower Field at Mile High, Denver (address) -> Kansas City, MO (coordinate). One field is an address, the other a coordinate -- costs 1 forward-geocoding call + 1 Directions call = 2 total (API-05's middle tier)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Cache hit (exact repeat of #1)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"39.7392,-104.9903\",\n  \"finish\": \"39.0997,-94.5786\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Byte-for-byte the same body as \"1. Coordinate happy path\". Run #1 first, then this -- the normalized cache key (D-11) matches, so this request is served from cache with zero additional Mapbox calls and an identical response body (PERF-02). Watch the response time: the first call includes a live Directions round-trip, this one does not."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "var previous = pm.collectionVariables.get(\"scenario1_last_response\");",
+              "if (previous) {",
+              "    pm.test(\"response body is identical to request #1 (cache hit, PERF-02)\", function () {",
+              "        pm.expect(JSON.stringify(body)).to.eql(previous);",
+              "    });",
+              "} else {",
+              "    console.log(\"Run '1. Coordinate happy path' first to compare cache-hit equality.\");",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. 400 - missing required field",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"39.7392,-104.9903\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "`finish` is omitted entirely. The request serializer rejects this before any Mapbox call is made -- 400 with error.code `invalid_input` (API-03)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 400\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test(\"error envelope has code invalid_input\", function () {",
+              "    pm.expect(body).to.have.property(\"error\");",
+              "    pm.expect(body.error.code).to.eql(\"invalid_input\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "6. 400 - non-US location",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"50.4452,-104.6189\",\n  \"finish\": \"39.0997,-94.5786\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "`start` is Regina, Saskatchewan (Canada) -- outside the continental-US bounding box, even though it is close enough that a naive country check might miss it. Rejected at the serializer before any Mapbox call -- 400 with error.code `invalid_input` or `out_of_bounds` (API-03)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 400\", function () {",
+              "    pm.response.to.have.status(400);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test(\"error envelope code is invalid_input or out_of_bounds\", function () {",
+              "    pm.expect(body).to.have.property(\"error\");",
+              "    pm.expect([\"invalid_input\", \"out_of_bounds\"]).to.include(body.error.code);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "7. 422 - route not found",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"48.1470,-88.4859\",\n  \"finish\": \"47.1211,-88.5669\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Isle Royale, MI (Rock Harbor) -> Houghton, MI. Both points are well-formed, continental-US coordinates, but Isle Royale is a roadless wilderness island reachable only by ferry/seaplane -- Mapbox Directions' driving profile cannot compute a route between them. Returns 422 with error.code `route_not_found` (API-04). Guaranteed-reproducible proof of this mapping (independent of live Mapbox road data) is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_no_route_returns_422_route_not_found`."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 422\", function () {",
+              "    pm.response.to.have.status(422);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test(\"error envelope has code route_not_found\", function () {",
+              "    pm.expect(body).to.have.property(\"error\");",
+              "    pm.expect(body.error.code).to.eql(\"route_not_found\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. 422 - infeasible route (gap exceeds 500 mi)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"37.7749,-122.4194\",\n  \"finish\": \"47.6062,-122.3321\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "San Francisco, CA -> Seattle, WA via I-5 (~680 mi). Verified against this project's own station dataset: nearly every routable California station sits in the far southeast corner near the Mexican border, so the I-5 corridor through California and southern Oregon carries no candidate stations for roughly the first 510 miles of this trip -- a gap greater than the 500-mile tank range with no reachable station in between. Returns 422 with error.code `infeasible_route` and a structured gap detail (`from_station`, `to_station`, `gap_mi`, `max_range_mi`) (API-04). Guaranteed-reproducible proof of this mapping is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_gap_exceeding_range_returns_422_infeasible_route`."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 422\", function () {",
+              "    pm.response.to.have.status(422);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "pm.test(\"error envelope has code infeasible_route\", function () {",
+              "    pm.expect(body).to.have.property(\"error\");",
+              "    pm.expect(body.error.code).to.eql(\"infeasible_route\");",
+              "});",
+              "",
+              "pm.test(\"error detail carries gap fields\", function () {",
+              "    var detail = body.error.detail;",
+              "    pm.expect(detail).to.have.property(\"from_station\");",
+              "    pm.expect(detail).to.have.property(\"to_station\");",
+              "    pm.expect(detail).to.have.property(\"gap_mi\");",
+              "    pm.expect(detail).to.have.property(\"max_range_mi\");",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
