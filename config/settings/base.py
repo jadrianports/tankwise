@@ -7,19 +7,33 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
-SECRET_KEY = os.environ.get(
+
+def _env(name, default=None):
+    """Read an env var, treating a present-but-empty value the same as absent.
+
+    `os.environ.get(name, default)` only returns the default when the key is
+    missing entirely -- a blank line in a copied `.env` (e.g. `CACHE_TTL_SECONDS=`)
+    is passed into the container as an empty string, which then breaks int()
+    coercion, ALLOWED_HOSTS splitting, and the DB_ENGINE lookup. Collapsing ""
+    to the default keeps `cp .env.example .env` bootable with no edits.
+    """
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
+SECRET_KEY = _env(
     "DJANGO_SECRET_KEY",
     "django-insecure-dev-only-secret-key-do-not-use-in-production",
 )
 
-DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+DEBUG = _env("DJANGO_DEBUG", "True") == "True"
 
 # Allowed hosts
 # Read independently of DEBUG so a DEBUG=False deploy (e.g. gunicorn behind
 # Nginx in Docker) still answers proxied requests instead of rejecting every
 # one with DisallowedHost. Comma-separated; permissive "*" default is
 # acceptable for this local single-reviewer demo.
-DJANGO_ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*")
+DJANGO_ALLOWED_HOSTS = _env("DJANGO_ALLOWED_HOSTS", "*")
 ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 
 INSTALLED_APPS = [
@@ -67,24 +81,24 @@ ASGI_APPLICATION = "config.asgi.application"
 # Discrete DB_* env vars with a SQLite default (D-21). Deliberately not using
 # a DATABASE_URL parser — Django has no native support for one, and adding a
 # third-party parser (e.g. dj-database-url) is an unneeded dependency here.
-DB_ENGINE = os.environ.get("DB_ENGINE", "django.db.backends.sqlite3")
+DB_ENGINE = _env("DB_ENGINE", "django.db.backends.sqlite3")
 
 if DB_ENGINE == "django.db.backends.sqlite3":
     DATABASES = {
         "default": {
             "ENGINE": DB_ENGINE,
-            "NAME": os.environ.get("DB_NAME", str(BASE_DIR / "db.sqlite3")),
+            "NAME": _env("DB_NAME", str(BASE_DIR / "db.sqlite3")),
         }
     }
 else:
     DATABASES = {
         "default": {
             "ENGINE": DB_ENGINE,
-            "NAME": os.environ.get("DB_NAME", ""),
-            "HOST": os.environ.get("DB_HOST", ""),
-            "USER": os.environ.get("DB_USER", ""),
-            "PASSWORD": os.environ.get("DB_PASSWORD", ""),
-            "PORT": os.environ.get("DB_PORT", ""),
+            "NAME": _env("DB_NAME", ""),
+            "HOST": _env("DB_HOST", ""),
+            "USER": _env("DB_USER", ""),
+            "PASSWORD": _env("DB_PASSWORD", ""),
+            "PORT": _env("DB_PORT", ""),
         }
     }
 
@@ -92,18 +106,18 @@ else:
 # No default for MAPBOX_TOKEN -- an unset token must stay falsy None so the
 # client can raise a clear config error, rather than silently defaulting to
 # an empty string.
-MAPBOX_TOKEN = os.environ.get("MAPBOX_TOKEN")
-CORRIDOR_ROOFTOP_MI = os.environ.get("CORRIDOR_ROOFTOP_MI", "5")
-CORRIDOR_CITY_MI = os.environ.get("CORRIDOR_CITY_MI", "20")
+MAPBOX_TOKEN = _env("MAPBOX_TOKEN")
+CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
+CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
 # Cache
 # CACHE_BACKEND selects "redis" (django-redis, for the containerized demo)
 # or "locmem" (default, keeps a fresh clone's runserver/tests working with
 # zero Redis dependency). Branches BACKEND itself, not just LOCATION, so an
 # unset/local env never attempts a Redis connection.
-CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "locmem")
-REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
-CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", "86400"))
+CACHE_BACKEND = _env("CACHE_BACKEND", "locmem")
+REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
+CACHE_TTL_SECONDS = int(_env("CACHE_TTL_SECONDS", "86400"))
 
 if CACHE_BACKEND == "redis":
     CACHES = {
