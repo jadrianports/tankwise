@@ -1,4 +1,4 @@
-"""Opt-in routable-coverage gate over the seeded Station table (D-19).
+"""Opt-in routable-coverage gate over the seeded Station table.
 
 Read-only reporting command: no writes, no network calls. Reports the
 routable share of IN-SCOPE stations (pending + ok + failed -- the
@@ -12,14 +12,9 @@ coordinates, so an "assert zero null coordinates" gate (or an unscoped
 denominator) could never pass and would tell you nothing about the
 geocoder's actual performance.
 
-Default bar rationale (documented here for the Phase 5 / OPS-02 README
-handoff): the real pipeline run (Plan 04) achieved ~94.9% routable coverage
-over in-scope US stations (6,290 / 6,626). 0.90 is chosen as the default
-`--min-coverage` reference point in this docstring/help text -- comfortably
-below the observed 94.9% (so normal runs pass) but high enough to catch a
-real regression (e.g. a broken alias table or a bbox constant typo). The
-flag has no default value itself (omitting it reports only, per D-19); a
-caller (Docker build / CI) must opt in explicitly with the bar it wants.
+The real pipeline run achieved ~94.9% routable coverage (6,290/6,626
+in-scope); 0.90 is a sensible regression-catching bar. The flag has no
+default -- omitting it reports only; a caller opts in with its bar.
 """
 
 from django.core.management.base import BaseCommand, CommandError
@@ -62,7 +57,7 @@ class Command(BaseCommand):
         routable_count = Station.objects.routable().count()
         # Denominator = in-scope (geocodable) population only: pending + ok
         # + failed. out_of_scope rows are excluded from BOTH numerator and
-        # denominator (D-19) so they can never inflate or deflate coverage.
+        # denominator so they can never inflate or deflate coverage.
         in_scope_count = Station.objects.exclude(
             geocode_status=GeocodeStatus.OUT_OF_SCOPE
         ).count()

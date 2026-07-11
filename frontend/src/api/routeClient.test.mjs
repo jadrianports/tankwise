@@ -39,7 +39,7 @@ test('infeasible_route builds the gap-detail sentence from detail', () => {
   );
 });
 
-test('route_not_found returns the fixed State Contract copy', () => {
+test('route_not_found returns the fixed copy', () => {
   const message = mapErrorToMessage({
     code: 'route_not_found',
     message: 'No route found.',
@@ -48,13 +48,13 @@ test('route_not_found returns the fixed State Contract copy', () => {
   assert.equal(message, 'No drivable route between these points.');
 });
 
-test('upstream_error returns the fixed State Contract copy', () => {
+test('upstream_error returns the fixed copy', () => {
   const message = mapErrorToMessage({
     code: 'upstream_error',
     message: 'Upstream routing provider failed.',
     detail: {},
   });
-  assert.equal(message, 'Map service unavailable — please retry.');
+  assert.equal(message, 'Map service unavailable. Please retry.');
 });
 
 test('unknown/missing code falls back to the generic message', () => {

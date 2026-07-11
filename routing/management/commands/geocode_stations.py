@@ -1,21 +1,21 @@
-"""Geocode pending Station rows offline in two passes (DATA-03/04/05).
+"""Geocode pending Station rows offline in two passes.
 
 Pass 1 submits pending (US) rows to the Census Bulk Geocoder `addressbatch`
-endpoint in chunks (D-01, D-06) -- given this dataset's highway-exit
-"addresses" this resolves only a handful of rows. Pass 2 joins everything
-still unresolved against the committed Gazetteer Places centroid lookup
-(D-01/D-04), which delivers the bulk of routable stations.
+endpoint in chunks -- given this dataset's highway-exit
+"addresses" it resolves only a handful of rows. Pass 2 joins everything
+still unresolved against the committed Gazetteer Places centroid lookup,
+delivering the bulk of routable stations.
 
-Every coordinate -- from either pass -- is validated against the
-continental-US bounding box (D-05) before it is ever persisted; that gate
-is the sole path a coordinate enters the DB. Rows that fail both passes get
-geocode_status='failed' with null coordinates (DATA-04), excluding them
-from `StationQuerySet.routable()`. `out_of_scope` rows are never selected
-by either pass (D-17).
+Every coordinate, from either pass, is validated against the continental-US
+bounding box before it is ever persisted -- the sole path a
+coordinate enters the DB. Rows that fail both passes get
+geocode_status='failed' with null coordinates, excluded from
+`StationQuerySet.routable()`. `out_of_scope` rows are never selected by
+either pass.
 
-The command always runs to completion and prints/writes a rooftop/city/
-failed/out_of_scope breakdown (D-19/D-20/D-26) and exports the committed
-derived dataset (D-12) that Docker/`seed_stations` replays without any
+The command always runs to completion, prints/writes a rooftop/city/
+failed/out_of_scope breakdown, and exports the committed
+derived dataset that Docker/`seed_stations` replays with no
 network call.
 """
 
@@ -36,10 +36,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPORT_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 DEFAULT_REPORT_PATH = Path(settings.BASE_DIR) / "data" / "geocode-report.md"
 
-# Deliberate superset of D-12's illustrative column list: adds the D-10
-# provenance columns so seed_stations (Plan 05) reconstructs a table
-# byte-identical to the pipelined one (D-18) without leaving NOT-NULL
-# fields unpopulated.
+# Superset of the CSV export's illustrative column list: adds the geocode
+# provenance columns so seed_stations reconstructs a table byte-identical to
+# the pipelined one, with no NOT-NULL fields left unpopulated.
 EXPORT_HEADER = [
     "opis_id",
     "name",
@@ -65,7 +64,7 @@ class Command(BaseCommand):
         "Geocode pending Station rows offline: Census addressbatch (pass 1) "
         "then Gazetteer city-centroid join (pass 2). Always runs to "
         "completion and reports a rooftop/city/failed/out_of_scope "
-        "breakdown (D-19)."
+        "breakdown."
     )
 
     def add_arguments(self, parser):
@@ -73,7 +72,7 @@ class Command(BaseCommand):
             "--retry-failed",
             action="store_true",
             help=(
-                "Also re-attempt rows with geocode_status=failed (D-17). "
+                "Also re-attempt rows with geocode_status=failed. "
                 "out_of_scope rows are never touched by either path."
             ),
         )
@@ -81,19 +80,19 @@ class Command(BaseCommand):
             "--chunk-size",
             type=int,
             default=census_client.CHUNK_SIZE,
-            help="Census addressbatch submission / bulk_update chunk size (D-06).",
+            help="Census addressbatch submission / bulk_update chunk size.",
         )
         parser.add_argument(
             "--export-path",
             type=str,
             default=str(DEFAULT_EXPORT_PATH),
-            help="Where to write the derived CSV export (D-12). Default: data/stations_geocoded.csv",
+            help="Where to write the derived CSV export. Default: data/stations_geocoded.csv",
         )
         parser.add_argument(
             "--report-path",
             type=str,
             default=str(DEFAULT_REPORT_PATH),
-            help="Where to write the geocode quality report (D-20). Default: data/geocode-report.md",
+            help="Where to write the geocode quality report. Default: data/geocode-report.md",
         )
 
     def handle(self, *args, **options):
@@ -106,7 +105,7 @@ class Command(BaseCommand):
         if retry_failed:
             statuses.append(GeocodeStatus.FAILED)
 
-        # NEVER select out_of_scope rows (D-03/D-17) -- they are simply not
+        # NEVER select out_of_scope rows -- they are simply not
         # in this filter regardless of --retry-failed.
         working_set = list(Station.objects.filter(geocode_status__in=statuses))
 
@@ -123,11 +122,10 @@ class Command(BaseCommand):
         self._export_csv(export_path)
 
     def _run_census_pass(self, stations, chunk_size):
-        """Pass 1 (D-01): chunked Census addressbatch submission, persisted
-        per-chunk (D-06). Any transport error on a chunk is logged and that
+        """Pass 1: chunked Census addressbatch submission, persisted
+        per-chunk. Any transport error on a chunk is logged and that
         chunk's rows are simply left for the Gazetteer pass / a later
-        resumed run -- never a tight retry loop against the free public API
-        (T-01-10).
+        resumed run -- never a tight retry loop against the free public API.
         """
         resolved_ids = set()
 
@@ -144,7 +142,7 @@ class Command(BaseCommand):
                 logger.warning(
                     "Census addressbatch chunk failed (transport error); "
                     "leaving %d row(s) for the Gazetteer pass / a later "
-                    "resumed run (D-06)",
+                    "resumed run",
                     len(chunk),
                     exc_info=True,
                 )
@@ -172,7 +170,7 @@ class Command(BaseCommand):
                     continue
 
                 if not bbox.is_valid(lat, lng):
-                    # T-01-11 / D-05: the persistence gate. A bad/transposed
+                    # The persistence gate: a bad/transposed
                     # coordinate is never written -- the row is left for the
                     # Gazetteer pass instead of being persisted as "ok".
                     logger.warning(
@@ -198,12 +196,13 @@ class Command(BaseCommand):
         return resolved_ids
 
     def _run_gazetteer_pass(self, stations, chunk_size):
-        """Pass 2 (D-01/D-04): normalize + alias city match against the
+        """Pass 2: normalize + alias city match against the
         committed Gazetteer centroid lookup. Every hit is bbox-validated
-        (D-05) before being marked ok/city; a miss or bbox-reject becomes
-        failed with null coordinates (DATA-04). Persisted via bulk_update in
-        chunks (D-06 pattern reused for efficiency, not resumability -- this
-        pass is a local file join with nothing to resume from).
+        before being marked ok/city; a miss or bbox-reject becomes
+        failed with null coordinates. Persisted via bulk_update in
+        chunks (the chunking pattern is reused here for efficiency, not
+        resumability -- this pass is a local file join with nothing to
+        resume from).
         """
         unmatched_samples = []
         to_update = []
@@ -256,7 +255,7 @@ class Command(BaseCommand):
         return unmatched_samples
 
     def _write_report(self, report_path, unmatched_samples):
-        """D-19/D-20/D-26: breakdown to stdout AND a written artifact."""
+        """Breakdown to stdout AND a written artifact."""
         rooftop_count = Station.objects.filter(
             geocode_status=GeocodeStatus.OK, geocode_precision=GeocodePrecision.ROOFTOP
         ).count()
@@ -320,8 +319,8 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Geocode report written to {report_path}"))
 
     def _export_csv(self, export_path):
-        """D-12: export the committed derived dataset that seed_stations
-        (Plan 05) replays with zero network calls."""
+        """Export the committed derived dataset that seed_stations
+        replays with zero network calls."""
         export_path.parent.mkdir(parents=True, exist_ok=True)
         with open(export_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)

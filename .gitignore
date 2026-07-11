@@ -43,6 +43,3 @@ htmlcov/
 # Frontend (Node/Vite)
 frontend/node_modules/
 frontend/dist/
-
-# Playwright MCP scratch
-.playwright-mcp/

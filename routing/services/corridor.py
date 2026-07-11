@@ -1,8 +1,8 @@
 """Corridor filter: candidate fuel stops in the route's precision-tiered
-perpendicular corridor (ROUTE-05, PERF-03, D-01..D-04, D-09).
+perpendicular corridor.
 
 Request-path geometry over the routable station set -- never imports
-the offline geocoding pipeline package (D-12). Money/measure values
+the offline geocoding pipeline package. Money/measure values
 stay exact, unrounded `Decimal`; shapely's float outputs are coerced via
 `Decimal(str(value))`, never `Decimal(float)`, mirroring solver.py's
 `_as_decimal` discipline.
@@ -19,7 +19,7 @@ from routing.services.solver import Candidate
 
 # ~111.32 km/deg (WGS-84 latitude) / 1.609344 km/mi. Longitude is
 # additionally scaled by cos(mean_lat) below (equirectangular
-# projection, Pitfall A/D).
+# projection).
 MI_PER_DEGREE_LAT = Decimal("69.172")
 
 
@@ -28,20 +28,18 @@ def _as_decimal(value):
 
 
 def mean_lat_rad(coords_lnglat):
-    """Mean latitude of the route, in radians -- the single shared
-    reference point both build_planar_route() and project_point() scale
-    against, so a route-wide anisotropic distortion (Pitfall D) stays
-    bounded and consistent rather than drifting per-segment."""
+    """Mean latitude of the route, in radians -- the single shared scaling
+    reference for build_planar_route() and project_point(), so the projection
+    distortion stays consistent route-wide."""
     lats = [lat for _lng, lat in coords_lnglat]
     return math.radians(sum(lats) / len(lats))
 
 
 def build_planar_route(coords_lnglat):
-    """Build a shapely LineString scaled to real miles via an
-    equirectangular projection (cos(mean_lat) x MI_PER_DEGREE_LAT), so
-    .distance()/.project() operate on real miles -- never raw degrees
-    (Pitfall A). `coords_lnglat`: Mapbox's raw `[lng, lat]` GeoJSON
-    pairs (route.raw_coordinates)."""
+    """Build a shapely LineString scaled to real miles via an equirectangular
+    projection (cos(mean_lat) x MI_PER_DEGREE_LAT), so .distance()/.project()
+    operate on real miles, never raw degrees. `coords_lnglat`:
+    Mapbox's raw `[lng, lat]` GeoJSON pairs (route.raw_coordinates)."""
     cos_lat = math.cos(mean_lat_rad(coords_lnglat))
     scale = float(MI_PER_DEGREE_LAT)
     points = [(lng * scale * cos_lat, lat * scale) for lng, lat in coords_lnglat]
@@ -49,10 +47,9 @@ def build_planar_route(coords_lnglat):
 
 
 def project_point(lng, lat, coords_lnglat):
-    """Project a single station (lng, lat) into the SAME planar-mile
-    frame as build_planar_route(coords_lnglat) -- same mean-lat
-    reference -- so the perpendicular-distance comparison is apples to
-    apples."""
+    """Project a single station (lng, lat) into the SAME planar-mile frame
+    as build_planar_route(coords_lnglat) -- same mean-lat reference -- so
+    the perpendicular-distance comparison is apples to apples."""
     cos_lat = math.cos(mean_lat_rad(coords_lnglat))
     scale = float(MI_PER_DEGREE_LAT)
     return Point(lng * scale * cos_lat, lat * scale)
@@ -89,10 +86,10 @@ def candidates(route) -> list[Candidate]:
 
     Runs exactly one index-backed bbox query over
     Station.objects.routable(), then applies an in-process perpendicular
-    corridor-distance test (never the endpoint/chord shortcut, ROUTE-05)
+    corridor-distance test (never the endpoint/chord shortcut)
     against the equirectangular-scaled route polyline. Returns whatever
     the corridor contains -- no feasibility judgement, no re-widening on
-    an empty result (D-04).
+    an empty result.
     """
     rooftop_mi, city_mi = _corridor_widths()
 
@@ -101,10 +98,9 @@ def candidates(route) -> list[Candidate]:
 
     cos_lat = math.cos(mean_lat_rad(coords))
     lat_pad = city_mi / MI_PER_DEGREE_LAT
-    # Pad by the MAX corridor width (D-03) so no in-corridor station is
-    # pre-excluded before the precise perpendicular test. Guard cos_lat
-    # near 0 (never hit for continental-US routes, but never divide by
-    # ~0 either).
+    # Pad by the MAX corridor width so no in-corridor station is
+    # pre-excluded before the precise perpendicular test; guard cos_lat
+    # near 0 (never divide by ~0).
     lng_pad = city_mi / (MI_PER_DEGREE_LAT * _as_decimal(max(abs(cos_lat), 0.01)))
 
     stations = list(

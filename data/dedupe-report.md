@@ -6,7 +6,7 @@
 - Duplicate-ID groups detected: 678
   - Exact-duplicate groups (identical price across observations): 81
   - Conflicting-price groups (prices differ across observations): 597
-  - Conflicting-group price spread — median: 0.090, max: 0.900
+  - Conflicting-group price spread (median: 0.090, max: 0.900)
 
 ## Import Result
 

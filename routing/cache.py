@@ -1,4 +1,4 @@
-"""Cache-key normalizer for the /api/route response cache (D-11).
+"""Cache-key normalizer for the /api/route response cache.
 
 Small, module-level pure helpers -- mirrors `routing/services/corridor.py`'s
 `_as_decimal`/helper style. Coordinates are rounded to 5 decimal places
@@ -6,7 +6,7 @@ Small, module-level pure helpers -- mirrors `routing/services/corridor.py`'s
 and whitespace-collapsed so an exact-repeat address (modulo case/spacing)
 skips all outbound calls. Explicit `c:`/`a:` prefixes give the two paths
 separate namespaces so a coordinate token and an address token can never
-collide (Security Domain Tampering mitigation, T-04-03).
+collide (mitigates cross-domain cache-key collisions).
 """
 from decimal import Decimal
 
@@ -35,7 +35,7 @@ def build_cache_key(validated_data) -> str:
 
     Each of `start`/`finish` is `{"kind": "coordinate", "lat", "lng"}` or
     `{"kind": "address", "value"}`. Composed as a simple string, not a
-    hash (RESEARCH.md Don't-Hand-Roll)."""
+    hash -- no need to hand-roll one at this scale."""
     start_token = _endpoint_token(validated_data["start"])
     finish_token = _endpoint_token(validated_data["finish"])
     return f"route:v1:{start_token}|{finish_token}"

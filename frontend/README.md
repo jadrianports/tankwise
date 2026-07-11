@@ -1,6 +1,6 @@
 # Frontend
 
-React + Material UI single-page app for the Fuel Route Optimizer map page. The root [README](../README.md) is the full project reference (architecture, API contract, Docker deployment) — this file only covers running the frontend on its own during local development.
+React + Material UI single-page app for the Fuel Route Optimizer map page. The root [README](../README.md) is the full project reference (architecture, API contract, Docker deployment). This file only covers running the frontend on its own during local development.
 
 ## Local dev loop
 
@@ -25,4 +25,4 @@ npm run build    # production bundle -> dist/
 npm run lint     # oxlint
 ```
 
-In production, `npm run build`'s output is what the Docker/Nginx stack (see the root README's Quickstart and Architecture sections) actually serves — Nginx serves the built `dist/` bundle and reverse-proxies `/api/*` to gunicorn on the same origin.
+In production, `npm run build`'s output is what the Docker/Nginx stack (see the root README's Quickstart and Architecture sections) actually serves. Nginx serves the built `dist/` bundle and reverse-proxies `/api/*` to gunicorn on the same origin.

@@ -1,11 +1,10 @@
-"""Endpoint tests for `POST /api/route` (D-18 scenarios, PERF-01, PERF-02).
+"""Endpoint tests for `POST /api/route` (call-budget and error scenarios).
 
 The Mapbox transport boundary (`routing.services.mapbox._SESSION.get`) is
 always mocked -- no live network call is ever performed, and both
 `get_route()` and `geocode()` share this single mock target, so a
-scenario's `mock_get.call_count` is the exact external-call budget
-(PERF-01). Uses DRF `APITestCase` (this repo's first) per CLAUDE.md's
-Django TestCase/APITestCase stack lock -- it exercises full DRF request
+scenario's `mock_get.call_count` is the exact external-call budget.
+Uses DRF `APITestCase` (this repo's first) -- it exercises full DRF request
 dispatch, unlike the `SimpleTestCase` used for the pure service-layer
 tests.
 """
@@ -72,7 +71,7 @@ def _geocoding_response():
 def _long_directions_payload():
     """A directions payload whose total distance (600 mi) exceeds the
     500-mi tank range, so a single mid-route station forces exactly one
-    fuel stop (D-18 scenario 1: "route long enough to force >=1 stop")."""
+    fuel stop (scenario: "route long enough to force >=1 stop")."""
     payload = json.loads(json.dumps(DIRECTIONS_FIXTURE))
     payload["routes"][0]["distance"] = 600 * 1609.344
     return payload
@@ -133,7 +132,7 @@ def _make_station(
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class RouteViewCallBudgetTests(APITestCase):
-    """PERF-01/API-05: 1 call for coord+coord, 2 for mixed, 3 for
+    """Call budget: 1 call for coord+coord, 2 for mixed, 3 for
     address+address."""
 
     def setUp(self):
@@ -228,7 +227,7 @@ class RouteViewCallBudgetTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class RouteViewCacheTests(APITestCase):
-    """PERF-02: an identical repeat is served from cache with zero
+    """An identical repeat is served from cache with zero
     additional Mapbox calls."""
 
     def setUp(self):
@@ -252,7 +251,7 @@ class RouteViewCacheTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class RouteViewValidationErrorTests(APITestCase):
-    """API-03: invalid/missing/non-US input returns 400."""
+    """Invalid/missing/non-US input returns 400."""
 
     def setUp(self):
         cache.clear()
@@ -296,7 +295,7 @@ class RouteViewValidationErrorTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class RouteViewDomainErrorTests(APITestCase):
-    """API-04: a route that cannot be found, or a >500-mi gap, returns a
+    """A route that cannot be found, or a >500-mi gap, returns a
     clear, specific 422; an upstream transport failure returns 502 with
     no token leak."""
 

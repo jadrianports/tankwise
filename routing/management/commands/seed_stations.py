@@ -1,11 +1,11 @@
-"""Replay the committed derived CSV into the Station table (D-13/D-18).
+"""Replay the committed derived CSV into the Station table.
 
 This is the Docker-facing seed path: it performs NO geocoding and NO
 network call -- it is a straight idempotent upsert of already-persisted
 values (opis_id, coordinates, precision, status) from
-`data/stations_geocoded.csv` (Plan 04's `geocode_stations` export).
+`data/stations_geocoded.csv` (the `geocode_stations` export).
 
-Semantics (D-18): idempotent upsert on opis_id, every run -- NOT
+Semantics: idempotent upsert on opis_id, every run -- NOT
 skip-if-already-populated, NOT truncate-and-reload. A first run against an
 empty DB creates every row; a second run changes nothing; a run against a
 drifted table converges it back to the CSV.
@@ -49,7 +49,7 @@ def _parse_optional_decimal(value):
 def _row_to_defaults(row):
     """Map one derived-CSV row to a Station.update_or_create defaults dict.
     Raises on malformed required fields so the caller can log-and-skip
-    (T-01-15) rather than aborting the whole seed."""
+    rather than aborting the whole seed."""
     defaults = {field: row[field] for field in STRAIGHT_FIELDS}
     for field in DECIMAL_FIELDS:
         defaults[field] = _parse_decimal(row[field])

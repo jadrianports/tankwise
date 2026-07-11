@@ -1,19 +1,17 @@
-"""US Census Bulk Geocoder `addressbatch` HTTP client (DATA-03 pass 1, D-06).
+"""US Census Bulk Geocoder `addressbatch` HTTP client (geocoding pass 1).
 
 Chunked, resumable multipart POST wrapper plus a defensive response parser
-that branches on field count rather than assuming a fixed column shape
-(Pitfall A): `No_Match` rows carry 3 fields, `Match` rows carry 8, and the
-coordinate field is a single quoted "longitude,latitude" string (Pitfall B).
+that branches on field count rather than assuming a fixed column shape:
+`No_Match` rows carry 3 fields, `Match` rows carry 8, and the
+coordinate field is a single quoted "longitude,latitude" string.
 
-Given this dataset's highway-exit "addresses" (CONTEXT.md profiling), this
-pass resolves only a handful of rows -- the Gazetteer pass (gazetteer.py)
-is what delivers the bulk of routable stations. Network failure at this
-layer is non-fatal to the overall pipeline: `submit_chunk` may raise on a
-transport error, and the caller (geocode_stations, Plan 04) is expected to
-catch per-chunk exceptions, log them, and leave those rows `pending` for a
-later resumed run (D-06).
+Given this dataset's highway-exit "addresses", this pass resolves only a
+handful of rows -- the Gazetteer pass (gazetteer.py) delivers the bulk.
+Network failure here is non-fatal: `submit_chunk` may raise on a transport
+error, and the caller (geocode_stations) catches it per-chunk, logs it,
+and leaves those rows `pending` for a later resumed run.
 
-Pure module: no Django import, no DB access (D-23).
+Pure module: no Django import, no DB access.
 """
 import csv
 import io
@@ -29,8 +27,8 @@ ADDRESSBATCH_URL = "https://geocoding.geo.census.gov/geocoder/locations/addressb
 # callers don't need to track a moving numeric/year-suffixed benchmark name.
 BENCHMARK = "Public_AR_Current"
 
-# Within the locked "few-hundred-to-1,000" range (D-06); Claude's Discretion
-# for the exact value.
+# Within the recommended "few-hundred-to-1,000" range for addressbatch
+# chunk size.
 CHUNK_SIZE = 500
 
 
@@ -52,7 +50,7 @@ def submit_chunk(rows):
     response. May raise on a transport error (connection failure, timeout,
     non-2xx status) -- the caller is responsible for catching this per
     chunk, logging it, and leaving those rows `pending` for a later
-    resumed run (D-06); this function does not swallow such errors itself.
+    resumed run; this function does not swallow such errors itself.
     """
     csv_bytes = build_chunk_csv(rows)
     response = requests.post(
@@ -67,9 +65,9 @@ def submit_chunk(rows):
 
 def parse_addressbatch_response(text: str):
     """Parse the addressbatch response CSV, branching on field count rather
-    than assuming a fixed shape (Pitfall A). `No_Match` rows have 3 fields;
+    than assuming a fixed shape. `No_Match` rows have 3 fields;
     `Match` rows have 8, with the coordinate field a single quoted
-    "longitude,latitude" string (Pitfall B -- split variables are named
+    "longitude,latitude" string (split variables are named
     explicitly `longitude, latitude`, never generic).
 
     An unrecognized/short row shape (e.g. an undocumented `Tie` shape, see

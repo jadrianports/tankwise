@@ -9,14 +9,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 
 def _env(name, default=None):
-    """Read an env var, treating a present-but-empty value the same as absent.
-
-    `os.environ.get(name, default)` only returns the default when the key is
-    missing entirely -- a blank line in a copied `.env` (e.g. `CACHE_TTL_SECONDS=`)
-    is passed into the container as an empty string, which then breaks int()
-    coercion, ALLOWED_HOSTS splitting, and the DB_ENGINE lookup. Collapsing ""
-    to the default keeps `cp .env.example .env` bootable with no edits.
-    """
+    """Read an env var, treating a present-but-empty value the same as absent,
+    so a blank line in a copied `.env` (e.g. `CACHE_TTL_SECONDS=`) falls back to
+    the default instead of breaking int()/split() coercion downstream."""
     value = os.environ.get(name)
     return value if value not in (None, "") else default
 
@@ -29,10 +24,10 @@ SECRET_KEY = _env(
 DEBUG = _env("DJANGO_DEBUG", "True") == "True"
 
 # Allowed hosts
-# Read independently of DEBUG so a DEBUG=False deploy (e.g. gunicorn behind
-# Nginx in Docker) still answers proxied requests instead of rejecting every
-# one with DisallowedHost. Comma-separated; permissive "*" default is
-# acceptable for this local single-reviewer demo.
+# Read independently of DEBUG so a DEBUG=False deploy (gunicorn behind Nginx
+# in Docker) still answers proxied requests instead of rejecting them with
+# DisallowedHost. Comma-separated; permissive "*" default is fine for this
+# local single-reviewer demo.
 DJANGO_ALLOWED_HOSTS = _env("DJANGO_ALLOWED_HOSTS", "*")
 ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 
@@ -78,9 +73,9 @@ WSGI_APPLICATION = "config.wsgi.application"
 ASGI_APPLICATION = "config.asgi.application"
 
 # Database
-# Discrete DB_* env vars with a SQLite default (D-21). Deliberately not using
-# a DATABASE_URL parser — Django has no native support for one, and adding a
-# third-party parser (e.g. dj-database-url) is an unneeded dependency here.
+# Discrete DB_* env vars with a SQLite default -- no DATABASE_URL
+# parser, since Django has no native support and dj-database-url is an
+# unneeded dependency here.
 DB_ENGINE = _env("DB_ENGINE", "django.db.backends.sqlite3")
 
 if DB_ENGINE == "django.db.backends.sqlite3":
@@ -111,10 +106,10 @@ CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
 # Cache
-# CACHE_BACKEND selects "redis" (django-redis, for the containerized demo)
-# or "locmem" (default, keeps a fresh clone's runserver/tests working with
-# zero Redis dependency). Branches BACKEND itself, not just LOCATION, so an
-# unset/local env never attempts a Redis connection.
+# CACHE_BACKEND selects "redis" (django-redis, containerized demo) or
+# "locmem" (default, keeps a fresh clone's runserver/tests working with zero
+# Redis dependency). Branches BACKEND itself so an unset/local env never
+# attempts a Redis connection.
 CACHE_BACKEND = _env("CACHE_BACKEND", "locmem")
 REDIS_URL = _env("REDIS_URL", "redis://localhost:6379/0")
 CACHE_TTL_SECONDS = int(_env("CACHE_TTL_SECONDS", "86400"))

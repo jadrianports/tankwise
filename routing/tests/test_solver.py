@@ -16,7 +16,7 @@ def make_candidate(price, distance, *, name="STOP", opis_id=1):
 
 
 class BoundaryAndFeasibilityTests(SimpleTestCase):
-    """OPS-03 required cases 1, 3, 4: the exact-500 boundary, a
+    """Required cases 1, 3, 4: the exact-500 boundary, a
     single-candidate route, and a sub-500 trip needing no stop at all."""
 
     def test_exact_500_boundary_is_feasible_not_infeasible(self):
@@ -46,7 +46,7 @@ class BoundaryAndFeasibilityTests(SimpleTestCase):
 
 
 class InfeasibleRouteTests(SimpleTestCase):
-    """OPS-03 required case 2, plus vector 15: a gap between along-route
+    """Required case 2, plus vector 15: a gap between along-route
     nodes that exceeds max range must raise InfeasibleRouteError with the
     full structured payload, not just the exception type."""
 
@@ -74,8 +74,8 @@ class InfeasibleRouteTests(SimpleTestCase):
 
 
 class GreedyOptimalityTests(SimpleTestCase):
-    """OPS-03 required case 5 (the greedy trap) plus additional case 6
-    (cheaper-before-finish ordering) and 11 (unsorted input, D-07)."""
+    """Required case 5 (the greedy trap) plus additional case 6
+    (cheaper-before-finish ordering) and 11 (unsorted input)."""
 
     def test_greedy_trap_prefers_cheaper_station_over_fill_up(self):
         candidates = [
@@ -111,7 +111,7 @@ class GreedyOptimalityTests(SimpleTestCase):
 
 
 class TieBreakAndEndpointTests(SimpleTestCase):
-    """Additional case 7 (D-05 tie-break nearest at equal price) and case
+    """Additional case 7 (tie-break nearest at equal price) and case
     12 (endpoint rule buys only remaining/mpg, never a full tank)."""
 
     def test_tie_break_at_equal_price_picks_nearest(self):
@@ -138,7 +138,7 @@ class TieBreakAndEndpointTests(SimpleTestCase):
 
 class PrecisionTests(SimpleTestCase):
     """Additional case 13: total_cost must retain full unrounded Decimal
-    precision (D-09) -- the solver never quantizes to cents."""
+    precision -- the solver never quantizes to cents."""
 
     def test_total_cost_is_not_rounded_to_cents(self):
         candidates = [make_candidate("2.87912345", "400", name="PRECISE", opis_id=1)]

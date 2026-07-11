@@ -6,9 +6,9 @@ import { createTheme } from '@mui/material/styles';
 const HEADING_FONT = 'Space Grotesk, sans-serif';
 const BODY_FONT = 'Inter, sans-serif';
 
-// Custom "Fuel Amber" accent — a dedicated palette key so it is NOT MUI's
+// Custom "Fuel Amber" accent, a dedicated palette key so it is NOT MUI's
 // default `secondary` blue. Reserved for fuel-stop markers and per-stop
-// price/cost figures only (see 05-UI-SPEC accent-reservation list).
+// price/cost figures only.
 const fuelLight = {
   main: '#F59E0B',
   dark: '#B45309',
@@ -20,9 +20,7 @@ const fuelDark = {
   contrastText: '#10151B',
 };
 
-// Modern MUI theming: the unified ThemeProvider + CSS theme variables API
-// (createTheme with cssVariables + colorSchemes), not the superseded
-// experimental provider. Light is the default scheme; the class selector lets
+// MUI cssVariables + colorSchemes theming. The class selector lets
 // InitColorSchemeScript + useColorScheme toggle dark mode via a class on <html>.
 const theme = createTheme({
   cssVariables: {
@@ -50,18 +48,18 @@ const theme = createTheme({
       },
     },
   },
-  // Exactly 4 sizes / 2 weights (05-UI-SPEC Typography). No 700 weight — the
-  // spec forbids a third weight; use color/size contrast for emphasis instead.
+  // Exactly 4 sizes / 2 weights. No 700 weight (the
+  // spec forbids a third weight; use color/size contrast for emphasis instead).
   typography: {
     fontFamily: BODY_FONT,
-    // Body — 16 / 400 / 1.5, Inter
+    // Body (16 / 400 / 1.5, Inter)
     body1: { fontFamily: BODY_FONT, fontSize: '1rem', fontWeight: 400, lineHeight: 1.5 },
-    // Label — 14 / 400 / 1.4, Inter
+    // Label (14 / 400 / 1.4, Inter)
     body2: { fontFamily: BODY_FONT, fontSize: '0.875rem', fontWeight: 400, lineHeight: 1.4 },
-    // Heading — 20 / 600 / 1.25, Space Grotesk
+    // Heading (20 / 600 / 1.25, Space Grotesk)
     h6: { fontFamily: HEADING_FONT, fontSize: '1.25rem', fontWeight: 600, lineHeight: 1.25 },
     subtitle1: { fontFamily: HEADING_FONT, fontSize: '1.25rem', fontWeight: 600, lineHeight: 1.25 },
-    // Display — 28 / 600 / 1.2, Space Grotesk
+    // Display (28 / 600 / 1.2, Space Grotesk)
     h5: { fontFamily: HEADING_FONT, fontSize: '1.75rem', fontWeight: 600, lineHeight: 1.2 },
     h4: { fontFamily: HEADING_FONT, fontSize: '1.75rem', fontWeight: 600, lineHeight: 1.2 },
   },

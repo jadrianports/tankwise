@@ -1,4 +1,4 @@
-"""Tests for the cache-key normalizer (D-11, T-04-03). No DB needed --
+"""Tests for the cache-key normalizer. No DB needed --
 pure string-formatting behavior."""
 from decimal import Decimal
 
@@ -17,7 +17,7 @@ def address(value):
 
 class CoordinatePrecisionCollapseTests(SimpleTestCase):
     """Two coordinate requests differing only past the 5th decimal place
-    produce the same key (D-11)."""
+    produce the same key."""
 
     def test_sixth_decimal_difference_collapses_to_same_key(self):
         key1 = build_cache_key(
@@ -38,7 +38,7 @@ class CoordinatePrecisionCollapseTests(SimpleTestCase):
 
 class AddressNormalizationTests(SimpleTestCase):
     """Two addresses differing only in case/whitespace produce identical
-    keys (D-11)."""
+    keys."""
 
     def test_case_and_whitespace_variants_collapse_to_same_key(self):
         key1 = build_cache_key(

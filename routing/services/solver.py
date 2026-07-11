@@ -1,8 +1,8 @@
-"""Pure fuel-stop solver: cheapest feasible fueling plan (FUEL-01..07).
+"""Pure fuel-stop solver: cheapest feasible fueling plan.
 
-Request-path math only -- no Django, no DB, no HTTP client (FUEL-05). All
+Request-path math only -- no Django, no DB, no HTTP client. All
 money and gallon values are exact, unrounded `Decimal`; rounding to cents
-happens only at Phase 4's serialization boundary (D-08/D-09).
+happens only at the HTTP response serialization boundary.
 """
 from dataclasses import dataclass
 from decimal import Decimal
@@ -138,7 +138,7 @@ def solve(
 
         if (total_route_mi - pos) <= tank_range_mi:
             # (b) finish reachable, no cheaper station first -- buy just
-            # enough to finish, never fill (endpoint rule, D-04.1).
+            # enough to finish, never fill (endpoint rule).
             gap = total_route_mi - pos
             buy_mi = max(Decimal(0), gap - fuel)
             if buy_mi > 0:
@@ -170,7 +170,7 @@ def solve(
             )
 
         # Fill the tank, then hop to the cheapest reachable station (ties
-        # broken by nearest, D-05) -- never the farthest.
+        # broken by nearest) -- never the farthest.
         buy_mi = tank_range_mi - fuel
         if buy_mi > 0:
             gallons = buy_mi / mpg

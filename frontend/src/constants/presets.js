@@ -1,9 +1,8 @@
-// One shared preset-route constant (05-UI-SPEC Preset Routes table). Both the
+// One shared preset-route constant (see the Preset Routes table). The
 // PresetRoutes chips and any demo/README reference import from this single
-// array so a repeat click always hits the exact same normalized cache key
-// (dataset-verified fixed lat,lng coordinates -- never addresses -- copied
-// byte-for-byte from the Bruno collection). Ordered happy -> happy -> error
-// -> error for the demo walkthrough.
+// array so a repeat click always hits the same normalized cache key
+// (fixed lat,lng coordinates, never addresses -- copied from the Bruno
+// collection). Ordered happy -> happy -> error -> error for the demo.
 export const PRESET_ROUTES = [
   {
     label: 'Denver → Kansas City',

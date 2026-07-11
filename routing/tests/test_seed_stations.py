@@ -28,7 +28,7 @@ FIXTURE_HEADER = [
 
 # One ok+city row, one ok+rooftop row, one failed row (blank coords), one
 # out_of_scope row (blank coords) -- covers every geocode_status/precision
-# combination seed_stations must handle (D-18/D-27).
+# combination seed_stations must handle.
 FIXTURE_ROWS = [
     {
         "opis_id": "1001",

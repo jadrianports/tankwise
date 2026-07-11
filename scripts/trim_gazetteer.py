@@ -4,7 +4,7 @@ Downloads the Census Gazetteer national Places file, trims it to
 (name, state, lat, lng) for lower-48 states only, and writes the
 result to data/gazetteer_places_trimmed.csv.
 
-The committed OUTPUT of this script is the deliverable (D-14) -- the
+The committed OUTPUT of this script is the deliverable -- the
 script itself is not run at container start or by any Django command.
 
 Usage:
@@ -23,7 +23,7 @@ GAZETTEER_URL = (
     "2025_Gazetteer/2025_Gaz_place_national.zip"
 )
 
-# The dataset is lower-48 only (per CONTEXT.md profiling of the source CSV):
+# The dataset is lower-48 only (per profiling of the source CSV):
 # drop Alaska, Hawaii, DC, and territories from the committed lookup to keep
 # the join file lean.
 LOWER_48_STATES = {
@@ -38,7 +38,7 @@ OUTPUT_PATH = Path(__file__).resolve().parent.parent / "data" / "gazetteer_place
 
 def download_gazetteer_zip(url: str) -> bytes:
     """Download the Gazetteer national Places zip, failing loudly on a bad status
-    (Pitfall D -- do not silently 404 on a hardcoded, year-specific URL)."""
+    (do not silently 404 on a hardcoded, year-specific URL)."""
     response = requests.get(url, timeout=120)
     if response.status_code != 200:
         raise RuntimeError(
@@ -51,10 +51,10 @@ def download_gazetteer_zip(url: str) -> bytes:
 def extract_places_txt(zip_bytes: bytes) -> str:
     """Extract the single .txt member from the downloaded zip and decode it.
 
-    The source file was probed directly (see 01-03-SUMMARY.md) and confirmed
+    The source file was probed directly and confirmed
     to be valid UTF-8 -- diacritic-bearing place names (e.g. Utqiagvik,
     La Canada Flintridge) decode correctly as UTF-8. Read as utf-8, not
-    latin-1 (Assumptions Log A2).
+    latin-1.
     """
     with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
         txt_names = [name for name in archive.namelist() if name.endswith(".txt")]

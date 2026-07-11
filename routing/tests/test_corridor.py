@@ -1,4 +1,4 @@
-"""Tests for the corridor filter (ROUTE-05, PERF-03, D-01/D-04/D-09).
+"""Tests for the corridor filter.
 
 Routes are constructed directly as synthetic `Route` objects -- no
 Mapbox call is ever made. All tests touch the DB (seeded `Station`
@@ -23,7 +23,7 @@ def _make_station(
     geocode_precision=None,
 ):
     """Extends test_models.py's `_make_station` idiom with a
-    `geocode_precision=` kwarg needed for the D-01 tiering cases."""
+    `geocode_precision=` kwarg needed for the geocode-precision tiering cases."""
     return Station.objects.create(
         opis_id=opis_id,
         name="Test Station",
@@ -43,12 +43,12 @@ def _make_station(
 
 
 class CorridorCurveInclusionTests(TestCase):
-    """ROADMAP SC #2 (ROUTE-05, D-14): a station near the middle of a
+    """A station near the middle of a
     curving route is included even though it is far from the straight
     start-finish chord; a station near that chord but far from the
     actual road is excluded. The L-shaped route below is authored so a
-    naive endpoint- or chord-distance filter gets both calls backwards
-    (Pitfall 4): the mid-curve point sits ~34.6 mi from the nearest
+    naive endpoint- or chord-distance filter gets both calls backwards:
+    the mid-curve point sits ~34.6 mi from the nearest
     route endpoint and ~26.8 mi from the A-C chord (both > the 20-mi
     city width), yet it is exactly ON the real two-segment road
     (perpendicular distance 0); the near-chord point sits exactly on
@@ -96,7 +96,7 @@ class CorridorCurveInclusionTests(TestCase):
 
 
 class CorridorPositioningTests(TestCase):
-    """D-09: distance_from_start_mi is the project()/length fraction
+    """distance_from_start_mi is the project()/length fraction
     times the route's own total_route_mi, within tolerance, and always
     lies in [0, total_route_mi]."""
 
@@ -132,7 +132,7 @@ class CorridorPositioningTests(TestCase):
 
 
 class CorridorPrecisionTieringTests(TestCase):
-    """D-01: a station ~10 mi off the route is excluded at the 5-mi
+    """A station ~10 mi off the route is excluded at the 5-mi
     rooftop tier but included at the 20-mi city tier."""
 
     ROUTE_COORDS = [(-97.00, 30.00), (-97.00, 40.00)]
@@ -170,9 +170,9 @@ class CorridorPrecisionTieringTests(TestCase):
 
 
 class CorridorRoutableEnforcementTests(TestCase):
-    """Pitfall E: a failed/pending station inside the bbox -- even
+    """A failed/pending station inside the bbox -- even
     directly on the route -- must never become a candidate; only
-    Station.objects.routable() rows are eligible (DATA-04)."""
+    Station.objects.routable() rows are eligible."""
 
     ROUTE_COORDS = [(-97.00, 30.00), (-97.00, 40.00)]
 
@@ -207,7 +207,7 @@ class CorridorRoutableEnforcementTests(TestCase):
 
 
 class CorridorQueryCountTests(TestCase):
-    """PERF-03 (D-15): the bbox prefilter is exactly one query, no
+    """The bbox prefilter is exactly one query, no
     N+1, regardless of how many stations are seeded."""
 
     ROUTE_COORDS = [(-97.00, 30.00), (-97.00, 40.00)]
@@ -234,7 +234,7 @@ class CorridorQueryCountTests(TestCase):
 
 
 class CorridorIndexUsageTest(TestCase):
-    """PERF-03 / Pitfall C: assertNumQueries proves count, not query
+    """assertNumQueries proves count, not query
     plan -- supplement with an EXPLAIN QUERY PLAN assertion that the
     bbox prefilter hits the (latitude, longitude) composite index
     rather than a full table scan."""

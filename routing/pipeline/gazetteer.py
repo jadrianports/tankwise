@@ -1,16 +1,16 @@
-"""Normalize + explicit alias table + Gazetteer centroid join (D-04).
+"""Normalize + explicit alias table + Gazetteer centroid join.
 
-Pass 2 of the two-pass geocoding ladder (D-01): everything the Census
+Pass 2 of the two-pass geocoding ladder: everything the Census
 addressbatch pass didn't match joins against the committed, trimmed
 Gazetteer Places lookup (data/gazetteer_places_trimmed.csv) by
 (normalized city name, state).
 
 Matching is deliberately normalize + explicit-alias only -- NO fuzzy
 matching (an unverifiable wrong match is worse than an honest `failed`
-row here, D-04). Unmatched cities return None; the caller (geocode_stations,
-Plan 04) sets geocode_status='failed'.
+row here). Unmatched cities return None; the caller (geocode_stations)
+sets geocode_status='failed'.
 
-Pure module: no Django import, no DB access (D-23).
+Pure module: no Django import, no DB access.
 """
 import csv
 import re
@@ -20,7 +20,7 @@ DEFAULT_GAZETTEER_PATH = (
     Path(__file__).resolve().parent.parent.parent / "data" / "gazetteer_places_trimmed.csv"
 )
 
-# Explicit alias table (D-04) -- leading/standalone token substitutions only.
+# Explicit alias table, leading/standalone token substitutions only.
 # NO fuzzy matching (no difflib/rapidfuzz/Levenshtein).
 ALIAS = {
     "ST": "SAINT",
@@ -32,12 +32,9 @@ ALIAS = {
     "W": "WEST",
 }
 
-# Census Gazetteer NAME values carry a trailing legal/statistical designator
-# (e.g. "Fort Smith city", "Pinon Hills CDP") that the plain CSV City column
-# never does (verified against the real source dataset). Stripping these
-# suffixes is what makes normalize() actually agree on both sides of the
-# join (Pitfall C) -- without it, the Gazetteer pass would fail to match
-# the overwhelming majority of real station cities.
+# Gazetteer NAME values carry a trailing legal designator (e.g. "Fort Smith
+# city", "Pinon Hills CDP") the CSV City column lacks. Stripping them lets
+# normalize() agree on both sides of the join.
 _LSAD_SUFFIXES = {
     "CITY",
     "TOWN",
@@ -58,7 +55,7 @@ def normalize(name: str) -> str:
     """Uppercase, strip punctuation, collapse whitespace, apply the explicit
     alias table, and strip a trailing Gazetteer legal-designator suffix if
     present. Applied identically to both the CSV City column and the
-    Gazetteer NAME column so the join keys agree (Pitfall C)."""
+    Gazetteer NAME column so the join keys agree."""
     if not name:
         return ""
     upper = name.upper()
@@ -73,7 +70,7 @@ def normalize(name: str) -> str:
 def load_gazetteer(path=DEFAULT_GAZETTEER_PATH) -> dict:
     """Read the committed (name, state, lat, lng) Gazetteer lookup into a
     dict keyed by (normalize(name), state) -> (lat, lng). Applies normalize()
-    to the Gazetteer side of the join at load time (Pitfall C)."""
+    to the Gazetteer side of the join at load time."""
     lookup = {}
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)

@@ -1,8 +1,8 @@
 """Collapse duplicate OPIS Truckstop ID rows into one representative Station
-row per ID (D-07..D-11).
+row per ID.
 
 Pure, Django-free module: importable in isolation for unit tests and safely
-reachable only from management commands (routing/pipeline/ boundary, D-23).
+reachable only from management commands (routing/pipeline/ boundary).
 """
 
 from dataclasses import dataclass, field
@@ -10,8 +10,8 @@ from decimal import Decimal
 from statistics import median_low
 
 # Lower-48 US state postal codes. The source CSV's remaining codes are
-# Canadian provinces (ON/AB/BC/MB/SK/YT/NS/QC/NB) — anything not in this set
-# is out_of_scope (D-03). No AK/HI/DC appear in this dataset.
+# Canadian provinces (ON/AB/BC/MB/SK/YT/NS/QC/NB), anything not in this set
+# is out_of_scope. No AK/HI/DC appear in this dataset.
 LOWER_48_STATES = frozenset(
     {
         "AL", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "ID", "IL", "IN",
@@ -40,8 +40,8 @@ class StationGroup:
 
     def mutable_fields(self):
         """Fields the import command upserts via update_or_create defaults.
-        Does not include geocode_status/latitude/longitude directly — the
-        command decides those based on out_of_scope + D-16 invalidation.
+        Does not include geocode_status/latitude/longitude directly, the
+        command decides those based on out_of_scope invalidation.
         """
         return {
             "name": self.name,
@@ -58,7 +58,7 @@ class StationGroup:
 
 @dataclass
 class DedupeReport:
-    """Split report of duplicate-ID groups (D-11)."""
+    """Split report of duplicate-ID groups."""
 
     total_rows: int = 0
     total_groups: int = 0
@@ -88,7 +88,7 @@ def _is_out_of_scope(state):
 
 
 def _select_name(names_in_order):
-    """Longest variant wins; ties broken by first file occurrence (D-09)."""
+    """Longest variant wins; ties broken by first file occurrence."""
     best = names_in_order[0]
     for candidate in names_in_order[1:]:
         if len(candidate) > len(best):
@@ -105,7 +105,7 @@ def collapse_duplicates(rows):
     "State", "Rack ID", "Retail Price".
 
     Returns (groups, report) where groups is a list[StationGroup] in
-    first-occurrence order and report is a DedupeReport (D-11).
+    first-occurrence order and report is a DedupeReport.
     """
     order = []
     buckets = {}

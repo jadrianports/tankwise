@@ -9,12 +9,12 @@ const OSM_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
 const OSM_TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
 
-// Continental-US default center/zoom shown before the first plan (D-07 --
-// the map is always visible, it just starts empty).
+// Continental-US default center/zoom shown before the first plan --
+// the map is always visible, it just starts empty.
 const DEFAULT_CENTER = [39.8283, -98.5795];
 const DEFAULT_ZOOM = 4;
 
-// Route polyline + halo hex per the Map & Marker Contract (light/dark).
+// Route polyline + halo hex (light/dark).
 const ROUTE_STYLES = {
   light: {
     route: '#0F6D4F',
@@ -90,7 +90,7 @@ function RouteMap({ data, markerRefs, onMapReady }) {
 
   // The API's route_geometry is GeoJSON [lng, lat] pairs; Leaflet wants
   // [lat, lng]. This is the single coordinate flip performed at this one data
-  // boundary -- never scattered per-component (CLAUDE.md note, Pitfall 3). No
+  // boundary -- never scattered per-component. No
   // polyline-decode package is used or needed: route_geometry is already a
   // plain coordinate array, not an encoded polyline string.
   const routePositions = useMemo(() => {

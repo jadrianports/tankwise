@@ -1,11 +1,11 @@
-"""Continental-US coordinate bounding-box validator (D-05).
+"""Continental-US coordinate bounding-box validator.
 
 The single persistence gate for every geocoded coordinate, regardless of
 which pass produced it (Census addressbatch or Gazetteer centroid join).
 Its primary payoff is rejecting a transposed (lng, lat) coordinate pair --
-the specific bug D-05 exists to catch (Pitfall B).
+the specific bug this validator exists to catch.
 
-Pure module: no Django import, no DB access (D-23).
+Pure module: no Django import, no DB access.
 """
 from decimal import Decimal
 

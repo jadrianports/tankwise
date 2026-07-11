@@ -1,4 +1,4 @@
-"""Tests for the Mapbox Directions client (ROUTE-02, D-06, D-13, Pitfall B).
+"""Tests for the Mapbox Directions client.
 
 The transport boundary (`routing.services.mapbox._SESSION.get`) is always
 mocked -- no live network call is ever performed. The response parser is
@@ -53,7 +53,7 @@ class _StubResponse:
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class GetRouteHappyPathTests(SimpleTestCase):
-    """ROUTE-02: get_route resolves a typed Route in exactly one call."""
+    """get_route resolves a typed Route in exactly one call."""
 
     def test_returns_route_with_exactly_one_call(self):
         with mock.patch(
@@ -98,7 +98,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class TokenHandlingTests(SimpleTestCase):
-    """Pitfall B: the access token rides in params, never the URL string."""
+    """The access token rides in params, never the URL string."""
 
     def test_token_in_params_not_in_url(self):
         with mock.patch(
@@ -168,7 +168,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
 
 class MissingTokenTests(SimpleTestCase):
     """An unset MAPBOX_TOKEN raises ImproperlyConfigured before any HTTP
-    call is attempted (D-08)."""
+    call is attempted."""
 
     @override_settings(MAPBOX_TOKEN=None)
     def test_missing_token_raises_before_any_http_call(self):
@@ -181,7 +181,7 @@ class MissingTokenTests(SimpleTestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class GeocodeHappyPathTests(SimpleTestCase):
-    """API-05/D-16: geocode resolves an address to a (lat, lng) Decimal
+    """geocode resolves an address to a (lat, lng) Decimal
     pair in exactly one Mapbox Geocoding v6 forward call."""
 
     def test_returns_lat_lng_decimal_pair_with_exactly_one_call(self):

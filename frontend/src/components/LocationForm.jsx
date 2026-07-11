@@ -3,11 +3,9 @@ import TextField from '@mui/material/TextField';
 import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
 
-// Two free-text fields accepting either an address or a `lat,lng` string
-// (the polymorphic API, D-06). Controlled by the parent (App) so a preset
-// Chip click can fill both fields and this same form submits them. Fields +
-// submit disable while a request is in flight; the Button's built-in
-// `loading` prop handles the spinner.
+// Two free-text fields taking an address or `lat,lng` (polymorphic API).
+// Parent-controlled so a preset Chip can fill and submit both fields;
+// inputs disable while a request is in flight.
 function LocationForm({ start, finish, onStartChange, onFinishChange, status, onSubmit }) {
   const isLoading = status === 'loading';
 

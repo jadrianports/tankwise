@@ -9,7 +9,7 @@ import { formatGallons } from '../utils/format';
 
 // Ordered itinerary: one row per fuel stop, numbered avatar matching the
 // map marker's number, station name (Body), stop cost (Body, accent).
-// Clicking a row focuses the corresponding map marker (D-08). station_id can
+// Clicking a row focuses the corresponding map marker. station_id can
 // be null (FuelStopSerializer), so rows key/focus by station_id ?? index.
 function StopList({ stops, onSelectStop }) {
   if (!stops || stops.length === 0) {

@@ -34,9 +34,9 @@ def _collect_import_names(path):
 
 class ImportBoundaryTest(SimpleTestCase):
     """Statically enforces that routing/services/ (the request-path layer)
-    never imports routing/pipeline/ (the offline-only geocoding layer),
-    per D-23 / DATA-05. Vacuously true while services/ is empty (Phase 1);
-    load-bearing the moment a later phase adds a bad import.
+    never imports routing/pipeline/ (the offline-only geocoding layer).
+    Vacuously true while services/ is empty; load-bearing the moment a
+    later addition introduces a bad import.
     """
 
     def test_services_never_import_pipeline(self):
@@ -53,12 +53,12 @@ class ImportBoundaryTest(SimpleTestCase):
         )
 
     def test_mapbox_and_corridor_modules_are_scanned_and_pipeline_free(self):
-        """Phase 3 regression: mapbox.py and corridor.py legitimately
+        """Regression test: mapbox.py and corridor.py legitimately
         import django/routing.models/requests (deliberately NOT added to
         SOLVER_FILES below -- they would trip SolverPurityTest's stricter
         gate), but the broader ImportBoundaryTest scan above must still
         cover them and confirm neither imports the offline geocoding
-        pipeline package (D-12).
+        pipeline package.
         """
         scanned = set(SERVICES_DIR.rglob("*.py"))
         mapbox_path = SERVICES_DIR / "mapbox.py"
@@ -77,10 +77,10 @@ class ImportBoundaryTest(SimpleTestCase):
 
 
 class SolverPurityTest(SimpleTestCase):
-    """Statically enforces FUEL-05: the solver (routing/services/solver.py
+    """Statically enforces that the solver (routing/services/solver.py
     and routing/services/exceptions.py) must stay free of Django, the ORM,
     the offline geocoding pipeline, and any HTTP client. Scoped to just
-    these two files -- not all of services/ -- so Phase 4's Station ->
+    these two files -- not all of services/ -- so a later Station ->
     Candidate adapter is free to import routing.models elsewhere in
     services/ without tripping this gate.
     """

@@ -16,7 +16,7 @@ class GeocodePrecision(models.TextChoices):
 class StationQuerySet(models.QuerySet):
     def routable(self):
         """Stations eligible as routing candidates: geocoded successfully
-        with non-null coordinates (DATA-04)."""
+        with non-null coordinates."""
         return self.filter(
             geocode_status=GeocodeStatus.OK,
             latitude__isnull=False,
@@ -51,7 +51,7 @@ class Station(models.Model):
         max_digits=11, decimal_places=8, null=True, blank=True
     )
 
-    # Dedupe provenance (D-10) — audits the collapse of duplicate OPIS rows
+    # Dedupe provenance, audits the collapse of duplicate OPIS rows
     # into a single Station without retaining raw observations in the DB.
     observation_count = models.PositiveIntegerField(default=1)
     price_min = models.DecimalField(max_digits=11, decimal_places=8)

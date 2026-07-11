@@ -1,5 +1,5 @@
 # Debian/glibc slim base -- required so the shapely wheel installs prebuilt
-# instead of compiling from source (see CLAUDE.md's Docker base guidance).
+# instead of compiling from source.
 FROM python:3.13-slim
 
 WORKDIR /app

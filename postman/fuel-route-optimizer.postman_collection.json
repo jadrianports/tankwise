@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "6a2f9c1e-6b4d-4b1a-9a3e-2f5c8d0e7b41",
     "name": "Fuel Route Optimizer API",
-    "description": "POST /api/route -- given a start and finish location within the USA, returns the driving route, the cost-optimal set of fuel stops along it (500-mile max range, 10 mpg), and the total fuel cost.\n\nAll requests target `{{base_url}}/api/route` (override `base_url` per-environment; defaults to `http://localhost`, the Docker Compose deployment served by nginx on port 80. For a local `manage.py runserver` instead, set `base_url` to `http://localhost:8000`).\n\nRequest body: `{\"start\": <location>, \"finish\": <location>}`. Each of `start`/`finish` independently accepts:\n- a `\"lat,lng\"` string (coordinate order is **lat,lng**, the human/Google-Maps convention -- NOT GeoJSON's lng,lat)\n- a `[lat, lng]` pair\n- a free-text US address string\n\nThe server sniffs the shape -- no type tag is required. Coordinate input costs 1 Mapbox Directions call; every address in the request adds one forward-geocoding call (2 addresses = 3 calls total), so the coordinate path is the 1-call ideal and the address path is the 3-call ceiling.\n\nError envelope on any 4xx/5xx: `{\"error\": {\"code\": \"<machine_code>\", \"message\": \"<human>\", \"detail\": {...}}}`.\n\n## Run order for the cache-hit demo\nRun \"1. Coordinate happy path\" first, then immediately run \"4. Cache hit (repeat of #1)\". The second call returns the identical payload with zero additional Mapbox calls (PERF-02) -- watch the response time drop and, if a server-side call counter/log is visible during the Loom walkthrough, confirm no new Directions call fired.\n\n## 502 upstream error (not included as a live request)\nA Mapbox transport failure (network error, non-200, or a missing/invalid `MAPBOX_TOKEN`) maps to `502` with `error.code == \"upstream_error\"`. This is impractical to trigger on demand against a live Mapbox account, so it is not included as a saved request here -- it is proven end-to-end by an automated endpoint test with a stubbed Mapbox transport failure (`routing/tests/test_views.py::RouteViewDomainErrorTests::test_upstream_transport_failure_returns_502_with_no_token_leak`). It is optionally demoable live by temporarily unsetting `MAPBOX_TOKEN` and re-running any request in this collection.",
+    "description": "POST /api/route -- given a start and finish location within the USA, returns the driving route, the cost-optimal set of fuel stops along it (500-mile max range, 10 mpg), and the total fuel cost.\n\nAll requests target `{{base_url}}/api/route` (override `base_url` per-environment; defaults to `http://localhost`, the Docker Compose deployment served by nginx on port 80. For a local `manage.py runserver` instead, set `base_url` to `http://localhost:8000`).\n\nRequest body: `{\"start\": <location>, \"finish\": <location>}`. Each of `start`/`finish` independently accepts:\n- a `\"lat,lng\"` string (coordinate order is **lat,lng**, the human/Google-Maps convention -- NOT GeoJSON's lng,lat)\n- a `[lat, lng]` pair\n- a free-text US address string\n\nThe server sniffs the shape -- no type tag is required. Coordinate input costs 1 Mapbox Directions call; every address in the request adds one forward-geocoding call (2 addresses = 3 calls total), so the coordinate path is the 1-call ideal and the address path is the 3-call ceiling.\n\nError envelope on any 4xx/5xx: `{\"error\": {\"code\": \"<machine_code>\", \"message\": \"<human>\", \"detail\": {...}}}`.\n\n## Run order for the cache-hit demo\nRun \"1. Coordinate happy path\" first, then immediately run \"4. Cache hit (repeat of #1)\". The second call returns the identical payload with zero additional Mapbox calls -- watch the response time drop and, if a server-side call counter/log is visible during the Loom walkthrough, confirm no new Directions call fired.\n\n## 502 upstream error (not included as a live request)\nA Mapbox transport failure (network error, non-200, or a missing/invalid `MAPBOX_TOKEN`) maps to `502` with `error.code == \"upstream_error\"`. This is impractical to trigger on demand against a live Mapbox account, so it is not included as a saved request here -- it is proven end-to-end by an automated endpoint test with a stubbed Mapbox transport failure (`routing/tests/test_views.py::RouteViewDomainErrorTests::test_upstream_transport_failure_returns_502_with_no_token_leak`). It is optionally demoable live by temporarily unsetting `MAPBOX_TOKEN` and re-running any request in this collection.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -30,7 +30,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Denver, CO -> Kansas City, MO -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (PERF-01's 1-call ideal, API-05). Real driving distance is ~560 mi via I-70, which exceeds the 500-mi tank range, so the cheapest feasible plan requires at least one fuel stop (non-empty `fuel_stops`, API-01) -- verified against this project's own station dataset (max corridor gap along this route is ~180 mi, well under the 500-mi range, so the trip is feasible with real, on-route Colorado/Kansas travel centers). Also asserts the response carries `map_url` (ROUTE-04) and route geometry (ROUTE-03)."
+        "description": "Denver, CO -> Kansas City, MO -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (the 1-call ideal). Real driving distance is ~560 mi via I-70, which exceeds the 500-mi tank range, so the cheapest feasible plan requires at least one fuel stop (non-empty `fuel_stops`) -- verified against this project's own station dataset (max corridor gap along this route is ~180 mi, well under the 500-mi range, so the trip is feasible with real, on-route Colorado/Kansas travel centers). Also asserts the response carries `map_url` and route geometry."
       },
       "event": [
         {
@@ -79,7 +79,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Empower Field at Mile High, Denver -> Arrowhead Stadium, Kansas City -- both endpoints given as free-text US addresses. Costs 2 forward-geocoding calls (one per address) + 1 Directions call = 3 total, the PERF-01 ceiling (API-05)."
+        "description": "Empower Field at Mile High, Denver -> Arrowhead Stadium, Kansas City -- both endpoints given as free-text US addresses. Costs 2 forward-geocoding calls (one per address) + 1 Directions call = 3 total, the external-call ceiling."
       },
       "event": [
         {
@@ -118,7 +118,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Empower Field at Mile High, Denver (address) -> Kansas City, MO (coordinate). One field is an address, the other a coordinate -- costs 1 forward-geocoding call + 1 Directions call = 2 total (API-05's middle tier)."
+        "description": "Empower Field at Mile High, Denver (address) -> Kansas City, MO (coordinate). One field is an address, the other a coordinate -- costs 1 forward-geocoding call + 1 Directions call = 2 total (the middle tier)."
       },
       "event": [
         {
@@ -151,7 +151,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Byte-for-byte the same body as \"1. Coordinate happy path\". Run #1 first, then this -- the normalized cache key (D-11) matches, so this request is served from cache with zero additional Mapbox calls and an identical response body (PERF-02). Watch the response time: the first call includes a live Directions round-trip, this one does not."
+        "description": "Byte-for-byte the same body as \"1. Coordinate happy path\". Run #1 first, then this -- the normalized cache key matches, so this request is served from cache with zero additional Mapbox calls and an identical response body. Watch the response time: the first call includes a live Directions round-trip, this one does not."
       },
       "event": [
         {
@@ -166,7 +166,7 @@
               "var body = pm.response.json();",
               "var previous = pm.collectionVariables.get(\"scenario1_last_response\");",
               "if (previous) {",
-              "    pm.test(\"response body is identical to request #1 (cache hit, PERF-02)\", function () {",
+              "    pm.test(\"response body is identical to request #1 (cache hit)\", function () {",
               "        pm.expect(JSON.stringify(body)).to.eql(previous);",
               "    });",
               "} else {",
@@ -194,7 +194,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "`finish` is omitted entirely. The request serializer rejects this before any Mapbox call is made -- 400 with error.code `invalid_input` (API-03)."
+        "description": "`finish` is omitted entirely. The request serializer rejects this before any Mapbox call is made -- 400 with error.code `invalid_input`."
       },
       "event": [
         {
@@ -233,7 +233,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "`start` is Regina, Saskatchewan (Canada) -- outside the continental-US bounding box, even though it is close enough that a naive country check might miss it. Rejected at the serializer before any Mapbox call -- 400 with error.code `invalid_input` or `out_of_bounds` (API-03)."
+        "description": "`start` is Regina, Saskatchewan (Canada) -- outside the continental-US bounding box, even though it is close enough that a naive country check might miss it. Rejected at the serializer before any Mapbox call -- 400 with error.code `invalid_input` or `out_of_bounds`."
       },
       "event": [
         {
@@ -272,7 +272,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Catalina Island, CA (Avalon) -> Los Angeles, CA. Both points are well-formed US coordinates, but Catalina is a ferry-only island whose road network is disconnected from the mainland -- Mapbox Directions' driving profile finds no route between them (returns code `NoRoute`). The API maps this to 422 with error.code `route_not_found` (API-04). Guaranteed-reproducible proof of this mapping (independent of live Mapbox road data) is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_no_route_returns_422_route_not_found`."
+        "description": "Catalina Island, CA (Avalon) -> Los Angeles, CA. Both points are well-formed US coordinates, but Catalina is a ferry-only island whose road network is disconnected from the mainland -- Mapbox Directions' driving profile finds no route between them (returns code `NoRoute`). The API maps this to 422 with error.code `route_not_found`. Guaranteed-reproducible proof of this mapping (independent of live Mapbox road data) is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_no_route_returns_422_route_not_found`."
       },
       "event": [
         {
@@ -311,7 +311,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "San Francisco, CA -> Seattle, WA via I-5 (~680 mi). Verified against this project's own station dataset: nearly every routable California station sits in the far southeast corner near the Mexican border, so the I-5 corridor through California and southern Oregon carries no candidate stations for roughly the first 510 miles of this trip -- a gap greater than the 500-mile tank range with no reachable station in between. Returns 422 with error.code `infeasible_route` and a structured gap detail (`from_station`, `to_station`, `gap_mi`, `max_range_mi`) (API-04). Guaranteed-reproducible proof of this mapping is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_gap_exceeding_range_returns_422_infeasible_route`."
+        "description": "San Francisco, CA -> Seattle, WA via I-5 (~680 mi). Verified against this project's own station dataset: nearly every routable California station sits in the far southeast corner near the Mexican border, so the I-5 corridor through California and southern Oregon carries no candidate stations for roughly the first 510 miles of this trip -- a gap greater than the 500-mile tank range with no reachable station in between. Returns 422 with error.code `infeasible_route` and a structured gap detail (`from_station`, `to_station`, `gap_mi`, `max_range_mi`). Guaranteed-reproducible proof of this mapping is `routing/tests/test_views.py::RouteViewDomainErrorTests::test_gap_exceeding_range_returns_422_infeasible_route`."
       },
       "event": [
         {
@@ -358,7 +358,7 @@
           "host": ["{{base_url}}"],
           "path": ["api", "route"]
         },
-        "description": "Dallas, TX -> Los Angeles, CA -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (PERF-01's 1-call ideal, API-05). The ~1,437-mi trip far exceeds the 500-mi tank range, so the cheapest feasible plan spans several fuel stops (multiple `fuel_stops`, API-01) -- verified against this project's own station dataset (~5 stops). Shares the finish coordinate with scenario 7 (Catalina -> LA) for consistency, and uses the same fixed coords as the SPA's Dallas -> Los Angeles demo preset."
+        "description": "Dallas, TX -> Los Angeles, CA -- both endpoints given as `lat,lng` coordinates, so this makes exactly 1 Mapbox Directions call and zero geocoding calls (the 1-call ideal). The ~1,437-mi trip far exceeds the 500-mi tank range, so the cheapest feasible plan spans several fuel stops (multiple `fuel_stops`) -- verified against this project's own station dataset (~5 stops). Shares the finish coordinate with scenario 7 (Catalina -> LA) for consistency, and uses the same fixed coords as the SPA's Dallas -> Los Angeles demo preset."
       },
       "event": [
         {

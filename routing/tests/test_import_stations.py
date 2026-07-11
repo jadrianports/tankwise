@@ -12,7 +12,7 @@ CSV_PATH = str(Path(settings.BASE_DIR) / "fuel-prices-for-be-assessment.csv")
 
 
 class ImportStationsRealCsvTests(TestCase):
-    """Covers behavior against the real repo-root CSV fixture (D-27)."""
+    """Covers behavior against the real repo-root CSV fixture."""
 
     @classmethod
     def setUpTestData(cls):
@@ -53,7 +53,7 @@ class ImportStationsRealCsvTests(TestCase):
 
 
 class ImportStationsIdempotencyTests(TestCase):
-    """Covers idempotent upsert-on-opis_id semantics (D-16/D-27)."""
+    """Covers idempotent upsert-on-opis_id semantics."""
 
     def test_running_twice_is_a_no_op(self):
         call_command("import_stations", CSV_PATH)
@@ -87,8 +87,8 @@ class ImportStationsIdempotencyTests(TestCase):
 
 class ImportStationsUniqueConstraintTests(TestCase):
     """Confirms the opis_id UNIQUE constraint is exercised (raises, not
-    silently overwritten) — the safety net dedupe (Task 1) exists to avoid
-    ever hitting.
+    silently overwritten), the safety net dedupe exists to avoid ever
+    hitting it.
     """
 
     def test_duplicate_opis_id_raises_integrity_error(self):

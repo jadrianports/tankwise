@@ -5,7 +5,7 @@ import Box from '@mui/material/Box';
 
 import { formatGallons } from '../utils/format';
 
-// Fuel-stop marker colors per the Map & Marker Contract (light/dark).
+// Fuel-stop marker colors (light/dark).
 const COLORS = {
   light: { fill: '#F59E0B', text: '#FFFFFF', outline: '#B45309' },
   dark: { fill: '#FBBF24', text: '#10151B', outline: '#D97706' },
@@ -26,7 +26,7 @@ function numberedDivIcon(number, mode) {
 
 // A numbered L.divIcon (not the default Leaflet blue pin) -- number = route
 // order matching the StopList. Popup content: station name (Heading role),
-// price/gal, gallons purchased, cost (Label role, accent color) -- D-08.
+// price/gal, gallons purchased, cost (Label role, accent color).
 function FuelStopMarker({ stop, number, mode, markerRef }) {
   const position = [Number(stop.location?.latitude), Number(stop.location?.longitude)];
 

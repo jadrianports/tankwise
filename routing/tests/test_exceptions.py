@@ -1,4 +1,4 @@
-"""Tests for the custom DRF exception handler (D-04, D-05, Security V7).
+"""Tests for the custom DRF exception handler.
 
 `custom_exception_handler` is called directly with a synthetic context --
 no HTTP dispatch needed to exercise the envelope/status mapping.
@@ -89,7 +89,7 @@ class UnrecognizedExceptionTests(SimpleTestCase):
 
 
 class TokenLeakTests(SimpleTestCase):
-    """Security V7 / T-04-02: no error envelope may ever contain the
+    """No error envelope may ever contain the
     Mapbox token, regardless of what the underlying exception message
     carries."""
 

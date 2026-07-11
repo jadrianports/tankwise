@@ -1,4 +1,4 @@
-"""RouteView: the `POST /api/route` orchestrator (D-01).
+"""RouteView: the `POST /api/route` orchestrator.
 
 A thin composition of already-tested seams -- validate, cache-aside,
 resolve endpoints (coordinate pass-through or geocode + bounds re-check),
@@ -6,9 +6,8 @@ get_route, corridor.candidates, solver.solve, build_map_url, serialize,
 cache.set. The pipeline is never wrapped in try/except: domain exceptions
 (`RouteNotFoundError`, `MapboxRequestError`, `InfeasibleRouteError`,
 `InvalidRouteInputError`, `ImproperlyConfigured`) propagate uncaught to
-`routing.exceptions.custom_exception_handler` (registered via
-`REST_FRAMEWORK["EXCEPTION_HANDLER"]`), which is the sole translation
-layer from those exceptions to HTTP (RESEARCH.md Pitfall 2).
+`routing.exceptions.custom_exception_handler`, the sole translation layer
+from those exceptions to HTTP.
 """
 from django.conf import settings
 from django.core.cache import cache
@@ -89,10 +88,10 @@ class RouteView(APIView):
         endpoint into a `{"latitude", "longitude"}` Decimal dict.
 
         Coordinate inputs are already bounds-checked at the serializer
-        (`LocationField`, D-17). Address inputs are resolved via exactly
-        one `mapbox.geocode()` call (API-05) and re-bounds-checked here,
+        (`LocationField`). Address inputs are resolved via exactly
+        one `mapbox.geocode()` call and re-bounds-checked here,
         since a geocoded result can resolve outside the continental US
-        independent of Mapbox's own `country=us` filter (D-17).
+        independent of Mapbox's own `country=us` filter.
         """
         if endpoint["kind"] == "coordinate":
             return {"latitude": endpoint["lat"], "longitude": endpoint["lng"]}
@@ -107,7 +106,7 @@ class RouteView(APIView):
 
     def _stop_coords(self, plan):
         """One indexed `filter(opis_id__in=...)` query for every stop's
-        lat/lng (Assumption A1) -- never a per-stop `.get()` in a loop."""
+        lat/lng -- never a per-stop `.get()` in a loop."""
         opis_ids = [s.opis_id for s in plan.stops if s.opis_id is not None]
         if not opis_ids:
             return {}

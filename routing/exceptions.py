@@ -1,4 +1,4 @@
-"""Custom DRF exception handler: the D-04 error envelope, plus the D-05
+"""Custom DRF exception handler: the standard error envelope, plus the
 status mapping for the project's domain exception hierarchy.
 
 This module holds the request path's only DRF import for error handling --
@@ -18,7 +18,7 @@ from routing.services.mapbox import MapboxRequestError, RouteNotFoundError
 
 
 def _envelope(code, message, detail=None):
-    """The D-04 error envelope shape."""
+    """The standard error envelope shape."""
     return {"error": {"code": code, "message": message, "detail": detail or {}}}
 
 
@@ -32,15 +32,15 @@ def _quantize_miles(value) -> str:
 
 
 def custom_exception_handler(exc, context):
-    """Registered via `REST_FRAMEWORK["EXCEPTION_HANDLER"]` (D-04).
+    """Registered via `REST_FRAMEWORK["EXCEPTION_HANDLER"]`.
 
     First defers to DRF's default handler -- if it recognizes the
     exception (e.g. a serializer `ValidationError`), its response is
     re-wrapped in the envelope under `invalid_input`, preserving the
     original status code. Otherwise dispatches by `isinstance` on the
-    project's plain-Python domain exceptions (D-05). Returns `None` for
+    project's plain-Python domain exceptions. Returns `None` for
     anything unrecognized so DRF/Django's default 500 handler takes over
-    -- never surfaces a traceback (Security V7).
+    -- never surfaces a traceback.
     """
     response = drf_default_handler(exc, context)
     if response is not None:

@@ -1,4 +1,4 @@
-"""Tests for the Static Images map_url builder (D-06/D-07/D-08).
+"""Tests for the Static Images map_url builder.
 
 `build_map_url` is a pure string builder -- no `requests` call is ever
 made (the backend never fetches the PNG), so these tests exercise the
@@ -42,7 +42,7 @@ def _route(coords=None):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class BuildMapUrlHappyPathTests(SimpleTestCase):
-    """D-06/D-07: start pin, finish pin, one pin per stop, auto viewport,
+    """Start pin, finish pin, one pin per stop, auto viewport,
     a path- overlay, all under the URL limit."""
 
     def test_url_starts_with_static_images_base(self):
@@ -83,7 +83,7 @@ class BuildMapUrlHappyPathTests(SimpleTestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class BuildMapUrlDenseGeometryTests(SimpleTestCase):
-    """D-08: the guard loop progressively simplifies a dense route until
+    """The guard loop progressively simplifies a dense route until
     the encoded URL fits under MAX_URL_LENGTH, rather than emitting an
     over-limit URL."""
 

@@ -27,8 +27,7 @@ def _make_station(opis_id, status, precision=None, lat=None, lng=None):
 class VerifyStationsTests(TestCase):
     """Fixture: 3 in-scope stations (2 routable/ok, 1 failed) + 1
     out_of_scope station -- coverage over in-scope rows is 2/3 (~0.667),
-    which must NOT be diluted to 2/4 by counting the out_of_scope row
-    (D-19)."""
+    which must NOT be diluted to 2/4 by counting the out_of_scope row."""
 
     def setUp(self):
         _make_station(1, GeocodeStatus.OK, "city", "32.0", "-97.0")

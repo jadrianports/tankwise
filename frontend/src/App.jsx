@@ -13,7 +13,7 @@ import { useRoutePlan } from './hooks/useRoutePlan';
 
 const SIDEBAR_WIDTH = 380;
 
-// Full route-planner layout (D-07): AppBar on top; below it a permanent
+// Full route-planner layout: AppBar on top; below it a permanent
 // non-overlay sidebar (form + presets + results) fixed at 380px on md+
 // (stacked column below 900px); the map fills the remaining width.
 function App() {
@@ -22,7 +22,7 @@ function App() {
   const [finish, setFinish] = useState('');
 
   // Shared marker map (station_id/index -> Leaflet marker instance) that
-  // RouteMap populates and StopList row clicks read from (D-08).
+  // RouteMap populates and StopList row clicks read from.
   const markerRefs = useRef({});
   const mapInstanceRef = useRef(null);
 

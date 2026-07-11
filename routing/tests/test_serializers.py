@@ -1,5 +1,5 @@
-"""Tests for the request/response serializers (D-02, D-13, D-14, D-17,
-Pitfall 4). No DB needed -- pure serializer/field behavior.
+"""Tests for the request/response serializers. No DB needed -- pure
+serializer/field behavior.
 """
 import math
 from decimal import Decimal
@@ -47,7 +47,7 @@ def make_fuel_stop(price, distance, gallons, cost, *, name="STOP", opis_id=1):
 class LocationFieldCoordinateTests(SimpleTestCase):
     """Coordinate parsing: both "lat,lng" string and [lat, lng] list
     forms tag validated_data as kind == "coordinate" with Decimal
-    lat/lng (D-02)."""
+    lat/lng."""
 
     def test_string_and_list_coordinates_both_tagged_coordinate(self):
         serializer = RouteRequestSerializer(
@@ -74,7 +74,7 @@ class LocationFieldCoordinateTests(SimpleTestCase):
 
 class LocationFieldAddressTests(SimpleTestCase):
     """A non-empty, non-coordinate-shaped string is tagged as an
-    address, stripped of surrounding whitespace (D-02)."""
+    address, stripped of surrounding whitespace."""
 
     def test_address_string_tagged_address_and_stripped(self):
         serializer = RouteRequestSerializer(
@@ -125,7 +125,7 @@ class LocationFieldMalformedInputTests(SimpleTestCase):
 
 class LocationFieldBoundsRejectionTests(SimpleTestCase):
     """A coordinate outside the continental-US bbox raises a
-    ValidationError (D-17, API-03)."""
+    ValidationError."""
 
     def test_null_island_is_rejected(self):
         serializer = RouteRequestSerializer(
@@ -149,7 +149,7 @@ class LocationFieldBoundsRejectionTests(SimpleTestCase):
 
 class LocationFieldAddressLengthTests(SimpleTestCase):
     """An address over MAX_ADDRESS_LENGTH chars is rejected before any
-    outbound call (T-04-01)."""
+    outbound call."""
 
     def test_over_long_address_is_rejected(self):
         long_address = "A" * 300
@@ -171,7 +171,7 @@ class LocationFieldAddressLengthTests(SimpleTestCase):
 
 class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
     """Money fields serialize as Decimal-as-string quantized to exactly
-    2 places (D-14, Pitfall 4)."""
+    2 places."""
 
     def test_high_precision_cost_quantizes_to_two_places(self):
         raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
@@ -252,8 +252,7 @@ class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
 
 
 class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
-    """total_route_mi and total_gallons surface from Route/FuelPlan
-    (D-15)."""
+    """total_route_mi and total_gallons surface from Route/FuelPlan."""
 
     def test_summary_fields_present(self):
         route = Route(

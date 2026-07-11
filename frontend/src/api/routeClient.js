@@ -1,10 +1,10 @@
 // Typed fetch client for POST /api/route, plus a pure per-error-code envelope
-// mapper (05-UI-SPEC State Contract). The envelope shape and every code/detail
+// mapper. The envelope shape and every code/detail
 // key here are grounded directly in routing/exceptions.py -- not guessed.
 const GENERIC_FALLBACK_MESSAGE = 'Something went wrong. Please try again.';
 
 // Pure function: maps a parsed `{code, message, detail}` error object to the
-// exact user-facing copy from the 05-UI-SPEC State Contract. Kept
+// exact user-facing copy. Kept
 // independently importable/testable without touching `fetch`.
 export function mapErrorToMessage(error) {
   if (!error || typeof error !== 'object') {
@@ -15,10 +15,9 @@ export function mapErrorToMessage(error) {
 
   switch (code) {
     case 'invalid_input': {
-      // DRF-wrapped ValidationError nests the real field message one level
-      // deeper in `detail` (e.g. {"start": ["Coordinate (...) is outside..."]});
-      // InvalidRouteInputError instead carries its specific message directly
-      // with an empty `detail` -- fall back to `message` in that case.
+      // DRF-wrapped ValidationError nests the field message in `detail`
+      // (e.g. {"start": ["Coordinate (...) is outside..."]}); InvalidRouteInputError
+      // instead carries its message directly with an empty `detail` -- fall back to `message`.
       if (detail && typeof detail === 'object' && Object.keys(detail).length > 0) {
         return Object.values(detail).flat().join(' ');
       }
@@ -31,7 +30,7 @@ export function mapErrorToMessage(error) {
     case 'route_not_found':
       return 'No drivable route between these points.';
     case 'upstream_error':
-      return 'Map service unavailable — please retry.';
+      return 'Map service unavailable. Please retry.';
     default:
       return GENERIC_FALLBACK_MESSAGE;
   }

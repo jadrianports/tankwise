@@ -1,9 +1,9 @@
 """Tests for the offline geocoding pipeline building blocks (routing/pipeline/):
-bbox.py (continental-US validator, D-05), gazetteer.py (normalize + alias +
-centroid join, D-04), and census_client.py (addressbatch parser, DATA-03).
+bbox.py (continental-US validator), gazetteer.py (normalize + alias +
+centroid join), and census_client.py (addressbatch parser).
 
 All tests are pure/offline (SimpleTestCase) -- no DB access, no live network
-calls (D-27 baseline tests).
+calls.
 """
 import csv
 import tempfile
@@ -104,7 +104,7 @@ class GazetteerLookupTests(SimpleTestCase):
     def test_gazetteer_name_suffix_matches_normalized_csv_city(self):
         # Gazetteer NAME carries a legal-designator suffix ("city"); the CSV
         # City column does not. Both sides run through the same normalize()
-        # pipeline (Pitfall C), so the join must still hit.
+        # pipeline, so the join must still hit.
         fixture_path = self._write_fixture(
             [{"name": "Fort Smith city", "state": "AR", "lat": "35.3859", "lng": "-94.3985"}]
         )
@@ -126,7 +126,7 @@ class GazetteerLookupTests(SimpleTestCase):
 
 # A captured-style fixture: one Match row (8 fields, lon,lat coordinate order)
 # and several No_Match rows (3 fields) -- matches the real endpoint's
-# documented variable-arity response shape (Pitfall A/B). No live network
+# documented variable-arity response shape. No live network
 # request is performed anywhere in these tests.
 CENSUS_FIXTURE_RESPONSE = (
     '"1","123 Main St, Springfield, MO, 65801","No_Match"\r\n'

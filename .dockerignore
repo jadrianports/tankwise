@@ -1,7 +1,5 @@
 .git
 .gitignore
-.planning
-.claude
 
 .venv
 venv

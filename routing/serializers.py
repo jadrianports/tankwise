@@ -1,12 +1,11 @@
-"""DRF request/response serializers for the /api/route endpoint (D-02,
-D-13, D-14, D-15).
+"""DRF request/response serializers for the /api/route endpoint.
 
 `LocationField` sniffs a coordinate-or-address input without a caller
--supplied type tag (D-02) and bounds-checks coordinates against the
-continental-US bbox (D-17). `RouteResponseSerializer`/`FuelStopSerializer`
+-supplied type tag and bounds-checks coordinates against the
+continental-US bbox. `RouteResponseSerializer`/`FuelStopSerializer`
 render the frontend-facing response contract, quantizing money and gallons
 to exactly 2 decimal places and route distance to the nearest whole mile,
-all at this one boundary (D-14, Pitfall 4) -- the solver and Mapbox client
+all at this one boundary -- the solver and Mapbox client
 upstream never round.
 """
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
@@ -21,9 +20,9 @@ MAX_ADDRESS_LENGTH = 256
 
 def _quantize_money(value) -> str:
     """Coerce a Decimal (or Decimal-able value) to a string quantized to
-    exactly 2 decimal places, ROUND_HALF_UP (Pitfall 4). Applied only at
+    exactly 2 decimal places, ROUND_HALF_UP. Applied only at
     this serializer boundary -- never upstream in the solver/Mapbox
-    client (D-14)."""
+    client."""
     d = value if isinstance(value, Decimal) else Decimal(str(value))
     return str(d.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
@@ -40,14 +39,14 @@ def _quantize_miles(value) -> str:
     """Coerce a Decimal (or Decimal-able value) to a string quantized to
     the nearest whole mile, ROUND_HALF_UP. Applied only at this
     serializer boundary -- the route's exact distance is still what the
-    solver/corridor math uses upstream (D-14)."""
+    solver/corridor math uses upstream."""
     d = value if isinstance(value, Decimal) else Decimal(str(value))
     return str(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
 def _location_repr(coords):
     """Render a {"latitude": ..., "longitude": ...} coordinate dict as
-    Decimal-as-string values (D-13). Returns None when no coords were
+    Decimal-as-string values. Returns None when no coords were
     supplied via context."""
     if not coords:
         return None
@@ -61,12 +60,13 @@ def _location_repr(coords):
 
 class LocationField(serializers.Field):
     """Accepts either a coordinate (`"lat,lng"` string or `[lat, lng]`
-    pair) or a free-text address string (D-02). Sniffs the shape --
+    pair) or a free-text address string. Sniffs the shape --
     the caller never declares a type.
 
     A parsed coordinate is bounds-checked against the continental-US
-    bbox (D-17); an address longer than `MAX_ADDRESS_LENGTH` is rejected
-    here, before any outbound geocoding call (T-04-01 DoS bound).
+    bbox; an address longer than `MAX_ADDRESS_LENGTH` is rejected
+    here, before any outbound geocoding call (bounds the request size to
+    guard against oversized-input abuse).
     """
 
     def to_internal_value(self, data):
@@ -108,14 +108,14 @@ class LocationField(serializers.Field):
 
 class RouteRequestSerializer(serializers.Serializer):
     """`{"start": <loc>, "finish": <loc>}` -- both fields polymorphic
-    coordinate-or-address (D-01, D-02)."""
+    coordinate-or-address."""
 
     start = LocationField()
     finish = LocationField()
 
 
 class FuelStopSerializer(serializers.Serializer):
-    """Per-stop response shape (API-01). `instance` is a
+    """Per-stop response shape. `instance` is a
     `routing.services.solver.FuelStop`; per-stop lat/lng is not carried by
     `FuelStop` itself, so it is looked up from `self.context["stop_coords"]`
     (opis_id -> {"latitude", "longitude"}), injected by the orchestrator.
@@ -135,7 +135,7 @@ class FuelStopSerializer(serializers.Serializer):
 
 
 class RouteResponseSerializer(serializers.Serializer):
-    """Renders the full computed response payload (D-13/14/15).
+    """Renders the full computed response payload.
 
     `instance` is a mapping with keys `"route"` (a
     `routing.services.mapbox.Route`), `"plan"` (a
@@ -146,9 +146,8 @@ class RouteResponseSerializer(serializers.Serializer):
 
     `route_geometry` is simplified via `routing.map_url.simplify_geometry`
     rather than `route.raw_coordinates` -- a full-resolution route can be
-    several thousand points, which dominates the payload for no benefit
-    to the interactive map. Simplification preserves the exact start/
-    finish endpoints.
+    several thousand points, dominating the payload for no map benefit.
+    Simplification preserves the exact start/finish endpoints.
     """
 
     def to_representation(self, instance):

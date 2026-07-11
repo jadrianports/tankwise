@@ -1,4 +1,4 @@
-"""Mapbox Static Images `map_url` builder (D-06/D-07/D-08).
+"""Mapbox Static Images `map_url` builder.
 
 Builds a `https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/...`
 URL string -- this backend never fetches the PNG itself; the actual
@@ -25,12 +25,9 @@ _PATH_OVERLAY_STYLE = "path-3+ef4444-0.8"
 _INITIAL_TOLERANCE = 0.0001
 _TOLERANCE_CEILING = 1.0
 
-# Fixed tolerance (in degrees) used to simplify `route.geometry` for the
-# `route_geometry` field in the JSON response body. Distinct from the
-# progressive tolerance ladder above, which targets the Static Images URL
-# length limit instead -- this one is a single fixed value chosen to land
-# a long cross-country route in the low hundreds of points while staying
-# visually smooth.
+# Fixed tolerance (degrees) for simplifying `route.geometry` in the JSON
+# `route_geometry` field -- distinct from the progressive ladder above,
+# which targets the Static Images URL length limit instead.
 RESPONSE_GEOMETRY_TOLERANCE = 0.005
 
 
@@ -48,13 +45,13 @@ def simplify_geometry(route) -> list:
 
 def build_map_url(route, start, finish, stop_coords) -> str:
     """Build a Static Images URL with a start pin, a finish pin, one
-    labeled pin per fuel stop (in route order, D-06), an `auto` viewport
-    (D-07), and a `path-` overlay whose encoded polyline is progressively
-    simplified until the full URL fits under `MAX_URL_LENGTH` (D-08 guard
+    labeled pin per fuel stop (in route order), an `auto` viewport,
+    and a `path-` overlay whose encoded polyline is progressively
+    simplified until the full URL fits under `MAX_URL_LENGTH` (guard
     loop) -- or the tolerance ceiling is reached, whichever comes first.
 
     `start`/`finish` are `(lat, lng)` pairs; `stop_coords` is an ordered
-    list of `(lat, lng)` pairs, one per fuel stop (Assumption A1 -- the
+    list of `(lat, lng)` pairs, one per fuel stop (the
     orchestrator looks these up from `Station` by `opis_id`, since
     `FuelStop` carries no lat/lng of its own).
     """
@@ -63,13 +60,9 @@ def build_map_url(route, start, finish, stop_coords) -> str:
     tolerance = _INITIAL_TOLERANCE
     while True:
         encoded = _encode_geometry(route, tolerance)
-        # The encoded polyline is an opaque payload that routinely contains
-        # URL-unsafe characters (`\`, `|`, `?`, ...). Percent-encode only
-        # this payload -- never the surrounding marker/path overlay syntax
-        # (pins, `path-3+ef4444-0.8`, parens, commas) which is literal
-        # Mapbox overlay grammar and must stay unescaped. This must happen
-        # before the length check below so MAX_URL_LENGTH is measured
-        # against the real, transmitted (percent-escaped) URL length.
+        # Percent-encode only the polyline payload (it holds URL-unsafe `\`, `|`,
+        # `?`) -- never the surrounding marker/path grammar. Must run before the
+        # length check so MAX_URL_LENGTH measures the real transmitted URL.
         encoded_safe = quote(encoded, safe="")
         overlay = ",".join(markers + [f"{_PATH_OVERLAY_STYLE}({encoded_safe})"])
         url = (

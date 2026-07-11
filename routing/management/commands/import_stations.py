@@ -1,6 +1,6 @@
-"""Import the raw fuel-price CSV into deduped Station rows (DATA-01/02).
+"""Import the raw fuel-price CSV into deduped Station rows.
 
-Idempotent upsert keyed on opis_id (D-16): a second run against the same
+Idempotent upsert keyed on opis_id: a second run against the same
 CSV creates 0, updates 0, and leaves every row unchanged.
 """
 
@@ -25,7 +25,7 @@ DEDUPE_REPORT_PATH = Path(settings.BASE_DIR) / "data" / "dedupe-report.md"
 def _read_valid_rows(csv_path):
     """Read the source CSV, skipping (and logging) rows whose OPIS ID or
     price fields can't be parsed, rather than aborting the whole import
-    (T-01-04 / Security V7 — one malformed row must not abort the run).
+    (one malformed row must not abort the run).
 
     Returns (rows, skipped_count).
     """
@@ -59,7 +59,7 @@ def _render_dedupe_report(report, created, updated, unchanged, skipped, out_of_s
         f"- Duplicate-ID groups detected: {report.duplicate_group_count}",
         f"  - Exact-duplicate groups (identical price across observations): {report.exact_duplicate_group_count}",
         f"  - Conflicting-price groups (prices differ across observations): {report.conflicting_price_group_count}",
-        f"  - Conflicting-group price spread — median: {median_spread}, max: {max_spread}",
+        f"  - Conflicting-group price spread (median: {median_spread}, max: {max_spread})",
         "",
         "## Import Result",
         "",
@@ -135,7 +135,7 @@ class Command(BaseCommand):
 
                 defaults = dict(new_fields)
                 if location_changed:
-                    # D-16 invalidation: a real address/city/state change
+                    # A real address/city/state change
                     # invalidates any prior geocode result.
                     defaults["latitude"] = None
                     defaults["longitude"] = None

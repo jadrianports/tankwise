@@ -4,7 +4,7 @@ import Typography from '@mui/material/Typography';
 
 import { PRESET_ROUTES } from '../constants/presets';
 
-// One-click example routes (D-06). Clicking a chip fills both fields AND
+// One-click example routes. Clicking a chip fills both fields AND
 // auto-submits -- no extra click -- using the byte-identical shared
 // PRESET_ROUTES constant so a repeat click reuses the exact cache key.
 function PresetRoutes({ status, onSelect }) {

@@ -1,4 +1,4 @@
-"""Tests for the geocode_stations management command (D-27 extension):
+"""Tests for the geocode_stations management command:
 status transitions, resume-selects-pending-only semantics, the bbox
 persistence gate, and the derived-CSV export schema.
 
@@ -147,7 +147,7 @@ class GeocodeStationsCommandTests(TestCase):
         self.assertIsNone(self.unmatched_city_station.longitude)
         self.assertNotIn(self.unmatched_city_station, Station.objects.routable())
 
-    # --- out_of_scope is never touched (D-17) --------------------------------
+    # --- out_of_scope is never touched ----------------------------------------
 
     def test_out_of_scope_row_untouched_by_default_run(self):
         with mock.patch(
@@ -170,7 +170,7 @@ class GeocodeStationsCommandTests(TestCase):
         self.assertEqual(self.out_of_scope_station.geocode_status, GeocodeStatus.OUT_OF_SCOPE)
         self.assertIsNone(self.out_of_scope_station.latitude)
 
-    # --- bbox persistence gate (D-05) ----------------------------------------
+    # --- bbox persistence gate ------------------------------------------------
 
     def test_transposed_census_match_rejected_by_bbox_gate(self):
         target_id = str(self.transposed_target_station.opis_id)
@@ -219,7 +219,7 @@ class GeocodeStationsCommandTests(TestCase):
         self.assertIsNone(self.transposed_target_station.latitude)
         self.assertIsNone(self.transposed_target_station.longitude)
 
-    # --- resume semantics (D-06) ---------------------------------------------
+    # --- resume semantics -----------------------------------------------------
 
     def test_rerun_processes_zero_pending_rows(self):
         with mock.patch(
@@ -240,7 +240,7 @@ class GeocodeStationsCommandTests(TestCase):
         # submit_chunk is never called on the second run.
         mock_submit.assert_not_called()
 
-    # --- export schema (D-12) -------------------------------------------------
+    # --- export schema ---------------------------------------------------------
 
     def test_export_csv_header_matches_derived_schema(self):
         with mock.patch(

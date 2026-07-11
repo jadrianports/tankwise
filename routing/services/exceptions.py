@@ -1,19 +1,16 @@
-"""Exception hierarchy for the fuel-stop solver (FUEL-04, FUEL-10, D-10).
+"""Exception hierarchy for the fuel-stop solver.
 
-Standard-library only -- no Django, no DB, no HTTP (FUEL-05).
+Standard-library only -- no Django, no DB, no HTTP.
 
-`InfeasibleRouteError` is a legitimate "no plan exists" outcome (the gap
-between two along-route nodes exceeds the vehicle's max range). It carries
-structured detail so Phase 4 can map it to a specific 4xx response. The
-`gap_mi` attribute stays full precision (used verbatim by solver tests);
-only the human-readable message rounds it to a whole mile for display --
-the HTTP error envelope's `detail.gap_mi` is rounded separately, at the
-exception-handler boundary in `routing/exceptions.py`.
+`InfeasibleRouteError` is a legitimate "no plan exists" outcome (a gap
+between along-route nodes exceeds max range), carrying structured detail for
+the HTTP layer's 4xx mapping. `gap_mi` stays full precision; only the display
+message rounds it (the HTTP envelope rounds separately in routing/exceptions.py).
 
 `InvalidRouteInputError` guards the solver's own contract against malformed
 caller input (non-positive route length, negative price, an out-of-route
 position, etc.) -- a defensive backstop, since the untrusted HTTP boundary
-is validated separately by DRF in Phase 4.
+is validated separately by DRF.
 """
 from decimal import ROUND_HALF_UP, Decimal
 
