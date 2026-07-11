@@ -20,6 +20,7 @@ function PresetRoutes({ status, onSelect }) {
           <Chip
             key={preset.label}
             label={preset.label}
+            title={preset.description}
             clickable
             disabled={isLoading}
             onClick={() => onSelect(preset)}
