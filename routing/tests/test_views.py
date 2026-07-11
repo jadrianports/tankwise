@@ -1,6 +1,6 @@
 """Endpoint tests for `POST /api/route` (D-18 scenarios, PERF-01, PERF-02).
 
-The Mapbox transport boundary (`routing.services.mapbox.requests.get`) is
+The Mapbox transport boundary (`routing.services.mapbox._SESSION.get`) is
 always mocked -- no live network call is ever performed, and both
 `get_route()` and `geocode()` share this single mock target, so a
 scenario's `mock_get.call_count` is the exact external-call budget
@@ -37,7 +37,7 @@ ROUTE_COORDS = DIRECTIONS_FIXTURE["routes"][0]["geometry"]["coordinates"]
 # the corridor regardless of tiering width.
 STATION_LNG, STATION_LAT = ROUTE_COORDS[3]
 
-MOCK_TARGET = "routing.services.mapbox.requests.get"
+MOCK_TARGET = "routing.services.mapbox._SESSION.get"
 ROUTE_URL = "/api/route"
 
 START_COORD = "41.8781,-87.6298"

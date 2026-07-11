@@ -1,6 +1,6 @@
 """Tests for the Mapbox Directions client (ROUTE-02, D-06, D-13, Pitfall B).
 
-The transport boundary (`routing.services.mapbox.requests.get`) is always
+The transport boundary (`routing.services.mapbox._SESSION.get`) is always
 mocked -- no live network call is ever performed. The response parser is
 exercised against a recorded-shape fixture reproducing Mapbox's verified
 Directions v5 "Ok" response.
@@ -57,7 +57,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
     def test_returns_route_with_exactly_one_call(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get", return_value=_StubResponse()
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
             route = get_route(START, FINISH)
 
@@ -66,7 +66,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
     def test_total_route_mi_is_decimal_derived_from_meters(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get", return_value=_StubResponse()
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
             route = get_route(START, FINISH)
 
@@ -78,7 +78,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
     def test_geometry_is_linestring_with_matching_coord_count(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get", return_value=_StubResponse()
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
             route = get_route(START, FINISH)
 
@@ -88,7 +88,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
     def test_raw_coordinates_equal_fixture_coordinates(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get", return_value=_StubResponse()
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
             route = get_route(START, FINISH)
 
@@ -102,7 +102,7 @@ class TokenHandlingTests(SimpleTestCase):
 
     def test_token_in_params_not_in_url(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get", return_value=_StubResponse()
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
             get_route(START, FINISH)
 
@@ -123,7 +123,7 @@ class RouteNotFoundTests(SimpleTestCase):
             "uuid": "x",
         }
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=no_route_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
@@ -133,7 +133,7 @@ class RouteNotFoundTests(SimpleTestCase):
         empty_routes_payload = dict(FIXTURE)
         empty_routes_payload["routes"] = []
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=empty_routes_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
@@ -147,7 +147,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
 
     def test_non_200_status_raises_mapbox_request_error(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(status_code=500),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
@@ -157,7 +157,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
 
     def test_request_exception_raises_mapbox_request_error(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             side_effect=requests.RequestException("boom"),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
@@ -172,7 +172,7 @@ class MissingTokenTests(SimpleTestCase):
 
     @override_settings(MAPBOX_TOKEN=None)
     def test_missing_token_raises_before_any_http_call(self):
-        with mock.patch("routing.services.mapbox.requests.get") as mock_get:
+        with mock.patch("routing.services.mapbox._SESSION.get") as mock_get:
             with self.assertRaises(ImproperlyConfigured):
                 get_route(START, FINISH)
 
@@ -186,7 +186,7 @@ class GeocodeHappyPathTests(SimpleTestCase):
 
     def test_returns_lat_lng_decimal_pair_with_exactly_one_call(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=GEOCODING_FIXTURE),
         ) as mock_get:
             lat, lng = geocode(ADDRESS)
@@ -202,7 +202,7 @@ class GeocodeHappyPathTests(SimpleTestCase):
 
     def test_request_params_include_country_us_and_limit_one(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=GEOCODING_FIXTURE),
         ) as mock_get:
             geocode(ADDRESS)
@@ -219,7 +219,7 @@ class GeocodeTokenHandlingTests(SimpleTestCase):
 
     def test_token_in_params_not_in_url(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=GEOCODING_FIXTURE),
         ) as mock_get:
             geocode(ADDRESS)
@@ -235,7 +235,7 @@ class GeocodeMissingTokenTests(SimpleTestCase):
 
     @override_settings(MAPBOX_TOKEN=None)
     def test_missing_token_raises_before_any_http_call(self):
-        with mock.patch("routing.services.mapbox.requests.get") as mock_get:
+        with mock.patch("routing.services.mapbox._SESSION.get") as mock_get:
             with self.assertRaises(ImproperlyConfigured):
                 geocode(ADDRESS)
 
@@ -249,7 +249,7 @@ class GeocodeRequestErrorTests(SimpleTestCase):
 
     def test_non_200_status_raises_mapbox_request_error(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(status_code=500, payload=GEOCODING_FIXTURE),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
@@ -259,7 +259,7 @@ class GeocodeRequestErrorTests(SimpleTestCase):
 
     def test_request_exception_raises_mapbox_request_error(self):
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             side_effect=requests.RequestException("boom"),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
@@ -275,7 +275,7 @@ class GeocodeNoResultTests(SimpleTestCase):
     def test_empty_features_raises_route_not_found(self):
         empty_payload = {"type": "FeatureCollection", "features": []}
         with mock.patch(
-            "routing.services.mapbox.requests.get",
+            "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=empty_payload),
         ):
             with self.assertRaises(RouteNotFoundError):

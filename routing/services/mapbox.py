@@ -12,12 +12,20 @@ from decimal import Decimal
 import requests
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
+from requests.adapters import HTTPAdapter
 from shapely.geometry import LineString
 
 # Mapbox convention: longitude first in the path segment.
 DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{lon1},{lat1};{lon2},{lat2}"
 
 GEOCODING_URL = "https://api.mapbox.com/search/geocode/v6/forward"
+
+# A single pooled session, reused for both the Directions and Geocoding
+# calls within a request and across requests (HTTP keep-alive). This
+# avoids a fresh TLS handshake per Mapbox call, which is the biggest
+# fixed cost on the mixed/address-input paths that make 2-3 calls.
+_SESSION = requests.Session()
+_SESSION.mount("https://", HTTPAdapter(pool_connections=4, pool_maxsize=8))
 
 
 class MapboxError(Exception):
@@ -77,7 +85,7 @@ def get_route(start, finish) -> Route:
     )
 
     try:
-        response = requests.get(
+        response = _SESSION.get(
             url,
             params={
                 "geometries": "geojson",
@@ -116,7 +124,7 @@ def geocode(address) -> tuple:
         )
 
     try:
-        response = requests.get(
+        response = _SESSION.get(
             GEOCODING_URL,
             params={
                 "q": address,
