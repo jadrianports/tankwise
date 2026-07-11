@@ -14,7 +14,13 @@ SECRET_KEY = os.environ.get(
 
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = ["*"] if DEBUG else []
+# Allowed hosts
+# Read independently of DEBUG so a DEBUG=False deploy (e.g. gunicorn behind
+# Nginx in Docker) still answers proxied requests instead of rejecting every
+# one with DisallowedHost. Comma-separated; permissive "*" default is
+# acceptable for this local single-reviewer demo.
+DJANGO_ALLOWED_HOSTS = os.environ.get("DJANGO_ALLOWED_HOSTS", "*")
+ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 
 INSTALLED_APPS = [
     "django.contrib.auth",
