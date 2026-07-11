@@ -1,9 +1,11 @@
 """Tests for the request/response serializers (D-02, D-13, D-14, D-17,
 Pitfall 4). No DB needed -- pure serializer/field behavior.
 """
+import math
 from decimal import Decimal
 
 from django.test import SimpleTestCase
+from shapely.geometry import LineString
 
 from routing.serializers import (
     RouteRequestSerializer,
@@ -11,6 +13,24 @@ from routing.serializers import (
 )
 from routing.services.mapbox import Route
 from routing.services.solver import FuelPlan, FuelStop
+
+
+def _wiggly_route_coords(start, finish, n=4000):
+    """Build `n` `[lng, lat]` points tracing a straight path from `start`
+    to `finish` with sinusoidal perpendicular noise, simulating a dense,
+    turn-heavy real-world route geometry -- used to prove `simplify_geometry`
+    meaningfully reduces point count rather than trivially collapsing a
+    near-straight line."""
+    start_lng, start_lat = start
+    finish_lng, finish_lat = finish
+    coords = []
+    for i in range(n):
+        t = i / (n - 1)
+        lng = start_lng + (finish_lng - start_lng) * t
+        lat = start_lat + (finish_lat - start_lat) * t
+        lat += 0.05 * math.sin(t * 40) + 0.01 * math.sin(t * 137)
+        coords.append([lng, lat])
+    return coords
 
 
 def make_fuel_stop(price, distance, gallons, cost, *, name="STOP", opis_id=1):
@@ -154,10 +174,11 @@ class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
     2 places (D-14, Pitfall 4)."""
 
     def test_high_precision_cost_quantizes_to_two_places(self):
+        raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
         route = Route(
             total_route_mi=Decimal("500"),
-            geometry=None,
-            raw_coordinates=[[-87.6298, 41.8781], [-90.1994, 38.6270]],
+            geometry=LineString(raw_coords),
+            raw_coordinates=raw_coords,
         )
         stop = make_fuel_stop(
             "3.12345", "100", "30", "12.3459", name="STOP1", opis_id=42
@@ -180,11 +201,16 @@ class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
         self.assertEqual(data["fuel_stops"][0]["cost"], "12.35")
         self.assertEqual(data["fuel_stops"][0]["price_per_gallon"], "3.12")
 
-    def test_location_is_object_and_route_geometry_stays_raw_lnglat(self):
+    def test_location_is_object_and_route_geometry_stays_lnglat(self):
+        # Only 2 vertices -- Douglas-Peucker always keeps both endpoints
+        # of a 2-point line, so the simplified output equals the raw
+        # coordinates here (the reduction case is covered separately by
+        # RouteResponseSerializerGeometrySimplificationTests).
+        raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
         route = Route(
             total_route_mi=Decimal("500"),
-            geometry=None,
-            raw_coordinates=[[-87.6298, 41.8781], [-90.1994, 38.6270]],
+            geometry=LineString(raw_coords),
+            raw_coordinates=raw_coords,
         )
         stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=42)
         plan = FuelPlan(
@@ -203,14 +229,14 @@ class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
             data["fuel_stops"][0]["location"],
             {"latitude": "39.0", "longitude": "-88.0"},
         )
-        self.assertEqual(data["route_geometry"], route.raw_coordinates)
+        self.assertEqual(data["route_geometry"], raw_coords)
         self.assertEqual(
             data["route_geometry"][0], [-87.6298, 41.8781]
         )  # [lng, lat], unchanged
 
     def test_missing_stop_coords_renders_none_location(self):
         route = Route(
-            total_route_mi=Decimal("500"), geometry=None, raw_coordinates=[]
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
         )
         stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=99)
         plan = FuelPlan(
@@ -231,7 +257,7 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
 
     def test_summary_fields_present(self):
         route = Route(
-            total_route_mi=Decimal("512.75"), geometry=None, raw_coordinates=[]
+            total_route_mi=Decimal("512.75"), geometry=LineString(), raw_coordinates=[]
         )
         plan = FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
 
@@ -245,3 +271,46 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
         self.assertEqual(data["total_gallons"], "0")
         self.assertEqual(data["map_url"], "https://example.test/map")
         self.assertEqual(data["fuel_stops"], [])
+
+
+class RouteResponseSerializerGeometrySimplificationTests(SimpleTestCase):
+    """`route_geometry` is simplified via `simplify_geometry` rather than
+    returned as `route.raw_coordinates` verbatim -- a full-resolution
+    route can be several thousand points, which would dominate the
+    payload. Simplification must substantially shrink the point count
+    while preserving the exact start/finish endpoints and [lng, lat]
+    coordinate order."""
+
+    def test_dense_route_geometry_is_simplified_with_endpoints_preserved(self):
+        start = (-87.6298, 41.8781)  # Chicago, [lng, lat]
+        finish = (-97.7431, 30.2672)  # Austin, [lng, lat]
+        raw_coords = _wiggly_route_coords(start, finish, n=4000)
+        route = Route(
+            total_route_mi=Decimal("1100"),
+            geometry=LineString(raw_coords),
+            raw_coordinates=raw_coords,
+        )
+        plan = FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+
+        serializer = RouteResponseSerializer(
+            {"route": route, "plan": plan, "map_url": None}, context={}
+        )
+        data = serializer.data
+        geometry = data["route_geometry"]
+
+        # Far smaller than the raw point count -- strictly under 25%,
+        # and in practice a couple of orders of magnitude smaller for a
+        # long, turn-heavy route.
+        self.assertLess(len(geometry), 0.25 * len(raw_coords))
+        # Simplification actually happened (not a no-op passthrough).
+        self.assertLess(len(geometry), len(raw_coords))
+
+        # Exact start/finish endpoints preserved.
+        self.assertEqual(geometry[0], raw_coords[0])
+        self.assertEqual(geometry[-1], raw_coords[-1])
+
+        # [lng, lat] order preserved -- longitude (~ -87 to -97) stays
+        # first, latitude (~30 to 42) stays second.
+        for lng, lat in geometry:
+            self.assertTrue(-98 <= lng <= -87)
+            self.assertTrue(29 <= lat <= 43)

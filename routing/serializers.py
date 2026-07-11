@@ -12,6 +12,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from rest_framework import serializers
 
+from routing.map_url import simplify_geometry
 from routing.pipeline.bbox import is_valid as bbox_is_valid
 
 MAX_ADDRESS_LENGTH = 256
@@ -124,6 +125,12 @@ class RouteResponseSerializer(serializers.Serializer):
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
     `{"latitude", "longitude"}` dict), all injected by the orchestrator.
+
+    `route_geometry` is simplified via `routing.map_url.simplify_geometry`
+    rather than `route.raw_coordinates` -- a full-resolution route can be
+    several thousand points, which dominates the payload for no benefit
+    to the interactive map. Simplification preserves the exact start/
+    finish endpoints.
     """
 
     def to_representation(self, instance):
@@ -137,7 +144,7 @@ class RouteResponseSerializer(serializers.Serializer):
         return {
             "start": _location_repr(self.context.get("start_coords")),
             "finish": _location_repr(self.context.get("finish_coords")),
-            "route_geometry": route.raw_coordinates,
+            "route_geometry": simplify_geometry(route),
             "total_route_mi": str(route.total_route_mi),
             "fuel_stops": fuel_stops,
             "total_cost": _quantize_money(plan.total_cost),

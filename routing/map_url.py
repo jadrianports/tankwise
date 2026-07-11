@@ -23,6 +23,26 @@ _PATH_OVERLAY_STYLE = "path-3+ef4444-0.8"
 _INITIAL_TOLERANCE = 0.0001
 _TOLERANCE_CEILING = 1.0
 
+# Fixed tolerance (in degrees) used to simplify `route.geometry` for the
+# `route_geometry` field in the JSON response body. Distinct from the
+# progressive tolerance ladder above, which targets the Static Images URL
+# length limit instead -- this one is a single fixed value chosen to land
+# a long cross-country route in the low hundreds of points while staying
+# visually smooth.
+RESPONSE_GEOMETRY_TOLERANCE = 0.005
+
+
+def simplify_geometry(route) -> list:
+    """Simplify `route.geometry` at `RESPONSE_GEOMETRY_TOLERANCE` and
+    return a list of `[lng, lat]` pairs -- the same coordinate order as
+    `route.raw_coordinates`. `simplify(..., preserve_topology=False)`
+    always retains the first and last vertices of the input, so the
+    route's exact start/finish endpoints are preserved."""
+    simplified = route.geometry.simplify(
+        RESPONSE_GEOMETRY_TOLERANCE, preserve_topology=False
+    )
+    return [[lng, lat] for lng, lat in simplified.coords]
+
 
 def build_map_url(route, start, finish, stop_coords) -> str:
     """Build a Static Images URL with a start pin, a finish pin, one

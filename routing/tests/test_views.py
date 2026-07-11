@@ -10,6 +10,7 @@ dispatch, unlike the `SimpleTestCase` used for the pure service-layer
 tests.
 """
 import json
+import math
 from decimal import Decimal
 from pathlib import Path
 from unittest import mock
@@ -84,6 +85,27 @@ def _no_route_payload():
     return payload
 
 
+def _dense_long_directions_payload(n=4000):
+    """A 600-mi directions payload (same distance override as
+    `_long_directions_payload`) whose geometry is replaced with `n`
+    densely interpolated, wiggly points between the fixture's own
+    start/finish -- simulating a full-resolution real-world route
+    geometry, so `route_geometry`'s point-count reduction is
+    observable end-to-end through the live endpoint."""
+    payload = _long_directions_payload()
+    start_lng, start_lat = ROUTE_COORDS[0]
+    finish_lng, finish_lat = ROUTE_COORDS[-1]
+    coords = []
+    for i in range(n):
+        t = i / (n - 1)
+        lng = start_lng + (finish_lng - start_lng) * t
+        lat = start_lat + (finish_lat - start_lat) * t
+        lat += 0.05 * math.sin(t * 40) + 0.01 * math.sin(t * 137)
+        coords.append([lng, lat])
+    payload["routes"][0]["geometry"]["coordinates"] = coords
+    return payload
+
+
 def _make_station(
     opis_id,
     lat=STATION_LAT,
@@ -140,6 +162,36 @@ class RouteViewCallBudgetTests(APITestCase):
         self.assertIn("route_geometry", body)
         self.assertIn("map_url", body)
         self.assertIsNotNone(body["map_url"])
+
+    def test_dense_route_geometry_is_simplified_in_response(self):
+        """`route_geometry` in the live response is far smaller than the
+        route's raw geometry, with the exact start/finish endpoints
+        preserved and [lng, lat] order unchanged."""
+        dense_payload = _dense_long_directions_payload(n=4000)
+        raw_coords = dense_payload["routes"][0]["geometry"]["coordinates"]
+        # Place the station at the dense route's own midpoint vertex so
+        # it sits on the (wiggly) corridor regardless of tiering width --
+        # STATION_LAT/STATION_LNG are derived from the small default
+        # fixture's geometry, not this test's replaced dense one.
+        mid_lng, mid_lat = raw_coords[len(raw_coords) // 2]
+        _make_station(703, lat=mid_lat, lng=mid_lng)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(dense_payload)
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(mock_get.call_count, 1)
+
+        geometry = response.data["route_geometry"]
+        self.assertLess(len(geometry), 0.25 * len(raw_coords))
+        self.assertEqual(geometry[0], raw_coords[0])
+        self.assertEqual(geometry[-1], raw_coords[-1])
 
     def test_address_happy_path_three_calls(self):
         with mock.patch(
