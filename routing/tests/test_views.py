@@ -48,6 +48,12 @@ FINISH_ADDRESS = "1 Busch Stadium Plaza, St Louis, MO"
 # (04-02 precedent).
 NON_US_COORD = "50.4452,-104.6189"
 
+# Distinct fake tokens for the D-14 full-response leak-regression test --
+# using two different values (rather than reusing "test-token") makes it
+# obvious which token, if either, actually appears in the response.
+FAKE_SECRET = "sk.fake-secret-never-leak"
+FAKE_PUBLIC = "pk.fake-public-token"
+
 
 class _StubResponse:
     """Minimal stand-in for a `requests.Response` (mirrors test_mapbox.py)."""
@@ -130,7 +136,7 @@ def _make_station(
     )
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
 class RouteViewCallBudgetTests(APITestCase):
     """Call budget: 1 call for coord+coord, 2 for mixed, 3 for
     address+address."""
@@ -225,7 +231,7 @@ class RouteViewCallBudgetTests(APITestCase):
         self.assertEqual(mock_get.call_count, 2)
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
 class RouteViewCacheTests(APITestCase):
     """An identical repeat is served from cache with zero
     additional Mapbox calls."""
@@ -249,7 +255,7 @@ class RouteViewCacheTests(APITestCase):
         self.assertEqual(first.data, second.data)
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
 class RouteViewValidationErrorTests(APITestCase):
     """Invalid/missing/non-US input returns 400."""
 
@@ -293,7 +299,7 @@ class RouteViewValidationErrorTests(APITestCase):
         mock_get.assert_not_called()
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
 class RouteViewDomainErrorTests(APITestCase):
     """A route that cannot be found, or a >500-mi gap, returns a
     clear, specific 422; an upstream transport failure returns 502 with
@@ -350,4 +356,31 @@ class RouteViewDomainErrorTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
         self.assertEqual(response.data["error"]["code"], "upstream_error")
         self.assertNotIn("test-token", json.dumps(response.data))
+        mock_get.assert_called_once()
+
+
+@override_settings(MAPBOX_TOKEN=FAKE_SECRET, MAPBOX_PUBLIC_TOKEN=FAKE_PUBLIC)
+class TokenLeakRegressionTests(APITestCase):
+    """D-14: the secret MAPBOX_TOKEN must never appear anywhere in a full
+    /api/route response, while map_url must carry the public token."""
+
+    def setUp(self):
+        cache.clear()
+
+    def test_secret_token_absent_and_public_token_present_in_full_response(self):
+        _make_station(704)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn(FAKE_SECRET, json.dumps(response.data))
+        self.assertNotIn(FAKE_SECRET, response.content.decode())
+        self.assertIn(FAKE_PUBLIC, response.data["map_url"])
         mock_get.assert_called_once()
