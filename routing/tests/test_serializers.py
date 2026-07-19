@@ -272,6 +272,46 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
         self.assertEqual(data["fuel_stops"], [])
 
 
+class FuelStopDistanceFromStartTests(SimpleTestCase):
+    """Each fuel_stops[] entry carries distance_from_start_mi, quantized
+    identically to total_route_mi (ROUND_HALF_UP to the nearest whole
+    mile)."""
+
+    def test_whole_number_distance_serializes_unchanged(self):
+        route = Route(
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
+        )
+        stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=42)
+        plan = FuelPlan(
+            stops=[stop], total_cost=Decimal("90.00"), total_gallons=Decimal("30")
+        )
+
+        serializer = RouteResponseSerializer(
+            {"route": route, "plan": plan, "map_url": None}, context={}
+        )
+        data = serializer.data
+
+        self.assertEqual(data["fuel_stops"][0]["distance_from_start_mi"], "100")
+
+    def test_fractional_distance_rounds_half_up_to_whole_mile(self):
+        route = Route(
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
+        )
+        stop = make_fuel_stop(
+            "3.00", "100.6", "30", "90.00", name="STOP1", opis_id=42
+        )
+        plan = FuelPlan(
+            stops=[stop], total_cost=Decimal("90.00"), total_gallons=Decimal("30")
+        )
+
+        serializer = RouteResponseSerializer(
+            {"route": route, "plan": plan, "map_url": None}, context={}
+        )
+        data = serializer.data
+
+        self.assertEqual(data["fuel_stops"][0]["distance_from_start_mi"], "101")
+
+
 class RouteResponseSerializerGeometrySimplificationTests(SimpleTestCase):
     """`route_geometry` is simplified via `simplify_geometry` rather than
     returned as `route.raw_coordinates` verbatim -- a full-resolution
