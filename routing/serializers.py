@@ -128,6 +128,7 @@ class FuelStopSerializer(serializers.Serializer):
             "name": instance.name,
             "station_id": instance.opis_id,
             "location": _location_repr(coords),
+            "distance_from_start_mi": _quantize_miles(instance.distance_from_start_mi),
             "price_per_gallon": _quantize_money(instance.price_per_gallon),
             "gallons": _quantize_gallons(instance.gallons),
             "cost": _quantize_money(instance.cost),
