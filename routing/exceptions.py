@@ -41,19 +41,24 @@ def custom_exception_handler(exc, context):
     project's plain-Python domain exceptions. Returns `None` for
     anything unrecognized so DRF/Django's default 500 handler takes over
     -- never surfaces a traceback.
+
+    Every branch assigns `result` instead of returning immediately, so a
+    single tail-attach point can carry partial Server-Timing data
+    (`context["view"]._timing`, per `routing.timing.ServerTiming`) onto
+    whatever error response is built -- the stages that completed before
+    the failure, per D-10.
     """
     response = drf_default_handler(exc, context)
     if response is not None:
         response.data = _envelope("invalid_input", "Invalid request.", response.data)
-        return response
-
-    if isinstance(exc, RouteNotFoundError):
-        return Response(
+        result = response
+    elif isinstance(exc, RouteNotFoundError):
+        result = Response(
             _envelope("route_not_found", str(exc)),
             status=status.HTTP_422_UNPROCESSABLE_ENTITY,
         )
-    if isinstance(exc, InfeasibleRouteError):
-        return Response(
+    elif isinstance(exc, InfeasibleRouteError):
+        result = Response(
             _envelope(
                 "infeasible_route",
                 str(exc),
@@ -66,19 +71,26 @@ def custom_exception_handler(exc, context):
             ),
             status=status.HTTP_422_UNPROCESSABLE_ENTITY,
         )
-    if isinstance(exc, MapboxRequestError):
-        return Response(
+    elif isinstance(exc, MapboxRequestError):
+        result = Response(
             _envelope("upstream_error", "Upstream routing provider failed."),
             status=status.HTTP_502_BAD_GATEWAY,
         )
-    if isinstance(exc, InvalidRouteInputError):
-        return Response(
+    elif isinstance(exc, InvalidRouteInputError):
+        result = Response(
             _envelope("invalid_input", str(exc)), status=status.HTTP_400_BAD_REQUEST
         )
-    if isinstance(exc, ImproperlyConfigured):
-        return Response(
+    elif isinstance(exc, ImproperlyConfigured):
+        result = Response(
             _envelope("upstream_error", "Service misconfigured."),
             status=status.HTTP_502_BAD_GATEWAY,
         )
+    else:
+        result = None
 
-    return None
+    if result is not None:
+        view = context.get("view")
+        timing = getattr(view, "_timing", None)
+        if timing is not None:
+            result["Server-Timing"] = timing.header_value()
+    return result

@@ -8,6 +8,13 @@ cache.set. The pipeline is never wrapped in try/except: domain exceptions
 `InvalidRouteInputError`, `ImproperlyConfigured`) propagate uncaught to
 `routing.exceptions.custom_exception_handler`, the sole translation layer
 from those exceptions to HTTP.
+
+Per-stage durations are collected via `routing.timing.ServerTiming`
+context managers, attached to `self._timing` on a cache miss so DRF's
+exception-handler context (`context["view"]`) can read partial timings
+after a domain exception propagates. `_Stage.__exit__` records even on
+exception and never suppresses it, so this instrumentation preserves the
+pipeline's no-try/except shape.
 """
 from django.conf import settings
 from django.core.cache import cache
@@ -22,6 +29,7 @@ from routing.pipeline.bbox import is_valid as bbox_is_valid
 from routing.serializers import RouteRequestSerializer, RouteResponseSerializer
 from routing.services import corridor, solver
 from routing.services.mapbox import geocode, get_route
+from routing.timing import ServerTiming
 
 
 class HealthView(APIView):
@@ -42,46 +50,58 @@ class RouteView(APIView):
         validated = serializer.validated_data
 
         cache_key = build_cache_key(validated)
-        cached = cache.get(cache_key)
+        cache_timing = ServerTiming()
+        with cache_timing.stage("cache"):
+            cached = cache.get(cache_key)
         if cached is not None:
-            return Response(cached)
+            response = Response(cached)
+            response["Server-Timing"] = cache_timing.header_value()
+            return response
 
-        start_coords = self._resolve_endpoint(validated["start"])
-        finish_coords = self._resolve_endpoint(validated["finish"])
+        self._timing = ServerTiming()
+        with self._timing.stage("total"):
+            start_coords = self._resolve_endpoint(validated["start"])
+            finish_coords = self._resolve_endpoint(validated["finish"])
 
-        route = get_route(
-            (start_coords["latitude"], start_coords["longitude"]),
-            (finish_coords["latitude"], finish_coords["longitude"]),
-        )
-        cands = corridor.candidates(route)
-        plan = solver.solve(cands, route.total_route_mi)
+            with self._timing.stage("route"):
+                route = get_route(
+                    (start_coords["latitude"], start_coords["longitude"]),
+                    (finish_coords["latitude"], finish_coords["longitude"]),
+                )
+            with self._timing.stage("corridor"):
+                cands = corridor.candidates(route)
+            with self._timing.stage("solver"):
+                plan = solver.solve(cands, route.total_route_mi)
 
-        stop_coords = self._stop_coords(plan)
-        ordered_stop_coords = [
-            (stop_coords[s.opis_id]["latitude"], stop_coords[s.opis_id]["longitude"])
-            for s in plan.stops
-            if s.opis_id is not None and s.opis_id in stop_coords
-        ]
+            stop_coords = self._stop_coords(plan)
+            ordered_stop_coords = [
+                (stop_coords[s.opis_id]["latitude"], stop_coords[s.opis_id]["longitude"])
+                for s in plan.stops
+                if s.opis_id is not None and s.opis_id in stop_coords
+            ]
 
-        map_url = build_map_url(
-            route,
-            (start_coords["latitude"], start_coords["longitude"]),
-            (finish_coords["latitude"], finish_coords["longitude"]),
-            ordered_stop_coords,
-        )
+            map_url = build_map_url(
+                route,
+                (start_coords["latitude"], start_coords["longitude"]),
+                (finish_coords["latitude"], finish_coords["longitude"]),
+                ordered_stop_coords,
+            )
 
-        response_serializer = RouteResponseSerializer(
-            {"route": route, "plan": plan, "map_url": map_url},
-            context={
-                "start_coords": start_coords,
-                "finish_coords": finish_coords,
-                "stop_coords": stop_coords,
-            },
-        )
-        payload = response_serializer.data
+            response_serializer = RouteResponseSerializer(
+                {"route": route, "plan": plan, "map_url": map_url},
+                context={
+                    "start_coords": start_coords,
+                    "finish_coords": finish_coords,
+                    "stop_coords": stop_coords,
+                },
+            )
+            payload = response_serializer.data
 
-        cache.set(cache_key, payload, timeout=settings.CACHE_TTL_SECONDS)
-        return Response(payload)
+            cache.set(cache_key, payload, timeout=settings.CACHE_TTL_SECONDS)
+
+        response = Response(payload)
+        response["Server-Timing"] = self._timing.header_value()
+        return response
 
     def _resolve_endpoint(self, endpoint):
         """Resolve a validated `{"kind": "coordinate"|"address", ...}`
@@ -96,7 +116,8 @@ class RouteView(APIView):
         if endpoint["kind"] == "coordinate":
             return {"latitude": endpoint["lat"], "longitude": endpoint["lng"]}
 
-        lat, lng = geocode(endpoint["value"])
+        with self._timing.stage("geocode"):
+            lat, lng = geocode(endpoint["value"])
         if not bbox_is_valid(lat, lng):
             raise serializers.ValidationError(
                 f"Geocoded address resolved outside the continental US: "
