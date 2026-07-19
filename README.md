@@ -12,7 +12,7 @@ cd fuel-route-optimizer
 cp .env.example .env
 ```
 
-Open `.env` and paste a [Mapbox](https://www.mapbox.com/) access token into the `MAPBOX_TOKEN=` line.
+Open `.env` and set two [Mapbox](https://www.mapbox.com/) tokens: a secret token on the `MAPBOX_TOKEN=` line, and a public (`pk.*`) token on the `MAPBOX_PUBLIC_TOKEN=` line. See "Mapbox tokens" below for how to create the public one and a gotcha to avoid.
 
 ```bash
 docker compose up --build
@@ -20,7 +20,16 @@ docker compose up --build
 
 Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all ~6,738 geocoded stations, which takes a few seconds. `nginx` waits for `web` to report healthy before it starts serving, so you won't hit broken requests during startup. If port 80 is already taken on your machine, change the host side of `nginx.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
 
-Even without a Mapbox token the stack boots and the map page loads. A route request just returns a clear 502 `upstream_error` ("Map service unavailable") until you set one.
+Even without Mapbox tokens the stack boots and the map page loads. A route request just returns a clear 502 `upstream_error` until both `MAPBOX_TOKEN` and `MAPBOX_PUBLIC_TOKEN` are set.
+
+### Mapbox tokens
+
+The app uses two separate Mapbox tokens, on purpose:
+
+- **`MAPBOX_TOKEN`** (secret, `sk.*` or a default `pk.*`) stays server-side and drives the Directions and Geocoding calls. It never reaches the browser.
+- **`MAPBOX_PUBLIC_TOKEN`** is a public token, created from the Mapbox dashboard's **Access tokens** page, that must start with `pk.`. It's embedded in the `map_url` returned to and opened by the browser (address bar, Bruno, curl).
+
+The gotcha: opening `map_url` directly sends no `Referer` header, since it's a direct navigation rather than an embedded page fetch. A URL-restricted public token rejects requests with no matching `Referer`, so a restricted token turns every `map_url` open into a 403. For local dev and this assessment's demo, create the public token **without** URL restrictions. Reserve URL-restricted public tokens for a real production deploy where `map_url` is fetched from a page served on a known origin.
 
 ### Screenshots
 
@@ -74,11 +83,12 @@ flowchart LR
 
 ## Environment variables
 
-`.env.example` documents every variable that `config/settings/base.py` reads. `docker compose up` already supplies the container-critical ones (`DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, `CACHE_BACKEND`, `REDIS_URL`, `DB_NAME`) directly in `docker-compose.yml`, so `MAPBOX_TOKEN` really is the only line you need to fill in `.env` for the Docker demo. Everything below is for reference, or for running `manage.py` directly outside Docker.
+`.env.example` documents every variable that `config/settings/base.py` reads. `docker compose up` already supplies the container-critical ones (`DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, `CACHE_BACKEND`, `REDIS_URL`, `DB_NAME`) directly in `docker-compose.yml`, so the two Mapbox tokens below are the lines you need to fill in `.env` for the Docker demo: the secret `MAPBOX_TOKEN` for Directions/Geocoding, and the public `MAPBOX_PUBLIC_TOKEN` for `map_url`. Both flow into the container through the existing `.env` file passthrough, with no `docker-compose.yml` changes needed. Everything below is for reference, or for running `manage.py` directly outside Docker.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MAPBOX_TOKEN` | *(none, required)* | Mapbox Directions and Geocoding access token. Get one free at mapbox.com. With no token, every route request 502s until it's set. |
+| `MAPBOX_TOKEN` | *(none, required)* | Secret Mapbox Directions and Geocoding access token, used server-side only. Get one free at mapbox.com. With no token, every route request 502s until it's set. |
+| `MAPBOX_PUBLIC_TOKEN` | *(none, required)* | Public (`pk.*`) Mapbox token used only to build the browser-facing `map_url`. Must start with `pk.`; a missing or non-`pk.` value makes every route request 502. See "Mapbox tokens" below. |
 | `DJANGO_SECRET_KEY` | dev fallback | Django's cryptographic signing key. |
 | `DJANGO_DEBUG` | `True` locally / `False` in Docker | Debug mode. Docker Compose forces this off. |
 | `DJANGO_ALLOWED_HOSTS` | `*` locally / `web,localhost,127.0.0.1,nginx` in Docker | Comma-separated allowed `Host:` headers. |
