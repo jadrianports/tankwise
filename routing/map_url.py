@@ -10,6 +10,7 @@ the token-never-in-URL-string discipline already used by
 from urllib.parse import quote
 
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 
 import polyline as polyline_lib
 
@@ -54,7 +55,24 @@ def build_map_url(route, start, finish, stop_coords) -> str:
     list of `(lat, lng)` pairs, one per fuel stop (the
     orchestrator looks these up from `Station` by `opis_id`, since
     `FuelStop` carries no lat/lng of its own).
+
+    Uses `settings.MAPBOX_PUBLIC_TOKEN` (never the secret `MAPBOX_TOKEN`)
+    since this URL is returned to and opened by the browser. Raises
+    `ImproperlyConfigured` if the public token is unset, or if it does not
+    start with `pk.` -- guarding against a secret token being pasted into
+    the public slot by mistake.
     """
+    token = settings.MAPBOX_PUBLIC_TOKEN
+    if not token:
+        raise ImproperlyConfigured(
+            "MAPBOX_PUBLIC_TOKEN is not set; map_url cannot be built."
+        )
+    if not token.startswith("pk."):
+        raise ImproperlyConfigured(
+            "MAPBOX_PUBLIC_TOKEN must start with 'pk.'; a secret token may "
+            "have been pasted into the public token slot."
+        )
+
     markers = _build_markers(start, finish, stop_coords)
 
     tolerance = _INITIAL_TOLERANCE
@@ -67,7 +85,7 @@ def build_map_url(route, start, finish, stop_coords) -> str:
         overlay = ",".join(markers + [f"{_PATH_OVERLAY_STYLE}({encoded_safe})"])
         url = (
             f"{STATIC_IMAGES_URL}/{overlay}/auto/{_IMAGE_SIZE}"
-            f"?access_token={settings.MAPBOX_TOKEN}"
+            f"?access_token={token}"
         )
         if len(url) <= MAX_URL_LENGTH or tolerance > _TOLERANCE_CEILING:
             return url

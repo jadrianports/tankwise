@@ -6,6 +6,7 @@ function directly against a synthetic `Route`.
 """
 from decimal import Decimal
 
+from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 from shapely.geometry import LineString
 
@@ -40,7 +41,7 @@ def _route(coords=None):
     )
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_PUBLIC_TOKEN="pk.test-token")
 class BuildMapUrlHappyPathTests(SimpleTestCase):
     """Start pin, finish pin, one pin per stop, auto viewport,
     a path- overlay, all under the URL limit."""
@@ -81,7 +82,7 @@ class BuildMapUrlHappyPathTests(SimpleTestCase):
         self.assertNotIn("pin-s-1+", url)
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_PUBLIC_TOKEN="pk.test-token")
 class BuildMapUrlDenseGeometryTests(SimpleTestCase):
     """The guard loop progressively simplifies a dense route until
     the encoded URL fits under MAX_URL_LENGTH, rather than emitting an
@@ -103,7 +104,7 @@ class BuildMapUrlDenseGeometryTests(SimpleTestCase):
         self.assertIn("path-", url)
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_PUBLIC_TOKEN="pk.test-token")
 class BuildMapUrlPolylineEncodingTests(SimpleTestCase):
     """The encoded polyline is an opaque payload that can contain
     URL-unsafe characters (`\\`, `|`, `?`, ...). Mapbox's Static Images
@@ -140,11 +141,11 @@ class BuildMapUrlPolylineEncodingTests(SimpleTestCase):
             _route(self.BACKSLASH_COORDS), START, FINISH, []
         )
 
-        self.assertTrue(url.endswith("access_token=test-token"))
+        self.assertTrue(url.endswith("access_token=pk.test-token"))
         self.assertEqual(url.count("access_token="), 1)
 
 
-@override_settings(MAPBOX_TOKEN="test-token")
+@override_settings(MAPBOX_PUBLIC_TOKEN="pk.test-token")
 class BuildMapUrlTokenSafetyTests(SimpleTestCase):
     """The access token rides only in the access_token query param, never
     inside the marker/path overlay segment."""
@@ -152,7 +153,27 @@ class BuildMapUrlTokenSafetyTests(SimpleTestCase):
     def test_token_only_appears_after_access_token_param(self):
         url = build_map_url(_route(), START, FINISH, STOP_COORDS)
 
-        self.assertIn("?access_token=test-token", url)
+        self.assertIn("?access_token=pk.test-token", url)
         overlay_segment = url.split("?access_token=")[0]
-        self.assertNotIn("test-token", overlay_segment)
-        self.assertTrue(url.endswith("access_token=test-token"))
+        self.assertNotIn("pk.test-token", overlay_segment)
+        self.assertTrue(url.endswith("access_token=pk.test-token"))
+
+
+@override_settings(MAPBOX_PUBLIC_TOKEN=None)
+class BuildMapUrlMissingPublicTokenTests(SimpleTestCase):
+    """An unset MAPBOX_PUBLIC_TOKEN must fail loudly rather than build a
+    URL with no token or fall back to the secret token."""
+
+    def test_missing_public_token_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured):
+            build_map_url(_route(), START, FINISH, STOP_COORDS)
+
+
+@override_settings(MAPBOX_PUBLIC_TOKEN="sk.oops-wrong-slot")
+class BuildMapUrlSecretInPublicSlotTests(SimpleTestCase):
+    """A secret token accidentally pasted into the public token slot must
+    be rejected before any URL is built."""
+
+    def test_secret_in_public_slot_raises_improperly_configured(self):
+        with self.assertRaises(ImproperlyConfigured):
+            build_map_url(_route(), START, FINISH, STOP_COORDS)

@@ -102,6 +102,9 @@ else:
 # client can raise a clear config error, rather than silently defaulting to
 # an empty string.
 MAPBOX_TOKEN = _env("MAPBOX_TOKEN")
+# The public (pk.*) token used only to build map_url -- never the secret
+# above. Same no-default treatment so an unset value stays falsy None.
+MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
