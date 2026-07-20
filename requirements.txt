@@ -6,3 +6,4 @@ geopy==2.4.1
 django-redis==7.0.0
 polyline==2.0.4
 gunicorn==26.0.0
+hypothesis==6.157.0
