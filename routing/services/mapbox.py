@@ -6,7 +6,7 @@ consistent with the project's money/measure discipline; the `access_token`
 always rides in `requests.get(params=...)`, never interpolated into the
 URL string.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 import requests
@@ -71,11 +71,15 @@ class Route:
     total_route_mi: Decimal
     geometry: LineString
     raw_coordinates: list
+    duration_s: Decimal = Decimal(0)
+    annotation_durations: list = field(default_factory=list)
+    annotation_distances: list = field(default_factory=list)
+    alternative_index: int = 0
 
 
-def get_route(start, finish) -> Route:
-    """Fetch the driving route between `start` and `finish` in exactly one
-    Mapbox Directions call.
+def get_routes(start, finish) -> list:
+    """Fetch every driving route alternative Mapbox offers between `start`
+    and `finish` in exactly one Mapbox Directions call.
 
     `start`/`finish` are `(latitude, longitude)` Decimal pairs -- note this
     is the opposite order from the Mapbox path segment, which is built as
@@ -104,6 +108,8 @@ def get_route(start, finish) -> Route:
             params={
                 "geometries": "geojson",
                 "overview": "full",
+                "alternatives": "true",
+                "annotations": "duration,distance",
                 "access_token": settings.MAPBOX_TOKEN,
             },
             timeout=10,
@@ -117,6 +123,16 @@ def get_route(start, finish) -> Route:
         )
 
     return _parse_directions_response(response.json())
+
+
+def get_route(start, finish) -> Route:
+    """Fetch Mapbox's primary driving route between `start` and `finish`.
+
+    A thin wrapper over `get_routes()` returning only the first (primary)
+    route -- kept alive so existing single-route callers are unaffected.
+    `get_routes()` is the alternatives-aware entry point.
+    """
+    return get_routes(start, finish)[0]
 
 
 def geocode(address) -> tuple:
@@ -171,20 +187,46 @@ def _parse_geocoding_response(data) -> tuple:
     return Decimal(str(lat)), Decimal(str(lng))
 
 
-def _parse_directions_response(data) -> Route:
-    """Parse a Mapbox Directions v5 JSON response into a `Route`. Kept
-    separate from the transport call so it is fixture-testable offline."""
+def _parse_directions_response(data) -> list:
+    """Parse a Mapbox Directions v5 JSON response into a list of `Route`,
+    one per alternative Mapbox returned (ordered as Mapbox returned them).
+    Kept separate from the transport call so it is fixture-testable
+    offline."""
     if data.get("code") != "Ok" or not data.get("routes"):
         raise RouteNotFoundError(
             f"Mapbox found no route: code={data.get('code')!r}"
         )
 
-    route0 = data["routes"][0]
-    coords = route0["geometry"]["coordinates"]
-    total_route_mi = Decimal(str(route0["distance"])) / Decimal("1609.344")
+    return [
+        _parse_single_route(route_data, index)
+        for index, route_data in enumerate(data["routes"])
+    ]
+
+
+def _parse_single_route(route_data, alternative_index) -> Route:
+    """Parse one element of `data["routes"]` into a `Route`. Annotation
+    arrays are read defensively -- a missing `legs`, `annotation`, or key
+    degrades to an empty list rather than raising."""
+    coords = route_data["geometry"]["coordinates"]
+    total_route_mi = Decimal(str(route_data["distance"])) / Decimal("1609.344")
+    duration_s = Decimal(str(route_data["duration"]))
+
+    legs = route_data.get("legs") or []
+    annotation = legs[0].get("annotation", {}) if legs else {}
+    raw_durations = annotation.get("duration") or []
+    raw_distances_m = annotation.get("distance") or []
+
+    annotation_durations = [Decimal(str(value)) for value in raw_durations]
+    annotation_distances = [
+        Decimal(str(value)) / Decimal("1609.344") for value in raw_distances_m
+    ]
 
     return Route(
         total_route_mi=total_route_mi,
         geometry=LineString(coords),
         raw_coordinates=coords,
+        duration_s=duration_s,
+        annotation_durations=annotation_durations,
+        annotation_distances=annotation_distances,
+        alternative_index=alternative_index,
     )
