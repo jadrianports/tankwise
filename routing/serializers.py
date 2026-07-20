@@ -17,6 +17,13 @@ from routing.pipeline.bbox import is_valid as bbox_is_valid
 
 MAX_ADDRESS_LENGTH = 256
 
+# Vehicle profile defaults -- declared once here so the nested
+# VehicleSerializer's per-field defaults and RouteRequestSerializer's
+# absent-vehicle fill-in both read these same three names (D-01).
+DEFAULT_MPG = Decimal("10")
+DEFAULT_TANK_RANGE_MI = Decimal("500")
+DEFAULT_STARTING_FUEL = Decimal("1")
+
 
 def _quantize_money(value) -> str:
     """Coerce a Decimal (or Decimal-able value) to a string quantized to
@@ -106,12 +113,80 @@ class LocationField(serializers.Field):
         return value
 
 
+class VehicleSerializer(serializers.Serializer):
+    """Optional per-request vehicle profile: `{"mpg", "tank_range_mi",
+    "starting_fuel"}`. `starting_fuel` is a fraction of tank capacity
+    (0.0-1.0), never gallons or miles, so it stays meaningful when
+    `tank_range_mi` changes on its own.
+
+    Bounds are wide enough to admit any legitimate vehicle -- a loaded
+    semi near 6 mpg, a sedan near 32, a twin-tank semi near 1800 miles
+    of range -- while rejecting the values that actually break the
+    solver: 0 mpg is a division by zero, a negative or absurd
+    tank_range_mi blows up the reachable-set loop, and a starting_fuel
+    outside [0, 1] has no physical meaning. These DRF bounds are the
+    primary input gate; the solver's own `_validate` backstop (plan
+    07-01) is a second, independent line of defense, not the first.
+    """
+
+    mpg = serializers.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        required=False,
+        default=DEFAULT_MPG,
+        min_value=Decimal("1"),
+        max_value=Decimal("100"),
+    )
+    tank_range_mi = serializers.DecimalField(
+        max_digits=6,
+        decimal_places=1,
+        required=False,
+        default=DEFAULT_TANK_RANGE_MI,
+        min_value=Decimal("20"),
+        max_value=Decimal("2000"),
+    )
+    starting_fuel = serializers.DecimalField(
+        max_digits=4,
+        decimal_places=3,
+        required=False,
+        default=DEFAULT_STARTING_FUEL,
+        min_value=Decimal("0"),
+        max_value=Decimal("1"),
+    )
+
+
 class RouteRequestSerializer(serializers.Serializer):
-    """`{"start": <loc>, "finish": <loc>}` -- both fields polymorphic
-    coordinate-or-address."""
+    """`{"start": <loc>, "finish": <loc>, "vehicle": <optional>}`.
+
+    `start`/`finish` are both polymorphic coordinate-or-address fields.
+    `vehicle` is an optional nested object -- `{"mpg", "tank_range_mi",
+    "starting_fuel"}`, each independently optional -- resolved to
+    `DEFAULT_MPG` / `DEFAULT_TANK_RANGE_MI` / `DEFAULT_STARTING_FUEL`
+    (10 mpg / 500 mi / a full tank) wherever a key is missing. Omitting
+    `vehicle` entirely preserves the exact v1.0 request contract: a
+    body of just `{"start", "finish"}` still validates and resolves to
+    the same defaulted profile.
+    """
 
     start = LocationField()
     finish = LocationField()
+    vehicle = VehicleSerializer(required=False)
+
+    def validate(self, attrs):
+        # VehicleSerializer(required=False) with no `default=` is
+        # skipped entirely by DRF when the "vehicle" key is absent
+        # from the request body, so it never reaches `attrs`. Fill it
+        # in here from the same three default constants the nested
+        # serializer's own fields use, so every downstream consumer
+        # (cache key builder, orchestrator, response serializer) can
+        # read `validated_data["vehicle"]` unconditionally.
+        if "vehicle" not in attrs:
+            attrs["vehicle"] = {
+                "mpg": DEFAULT_MPG,
+                "tank_range_mi": DEFAULT_TANK_RANGE_MI,
+                "starting_fuel": DEFAULT_STARTING_FUEL,
+            }
+        return attrs
 
 
 class FuelStopSerializer(serializers.Serializer):

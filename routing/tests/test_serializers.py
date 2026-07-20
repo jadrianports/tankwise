@@ -8,6 +8,9 @@ from django.test import SimpleTestCase
 from shapely.geometry import LineString
 
 from routing.serializers import (
+    DEFAULT_MPG,
+    DEFAULT_STARTING_FUEL,
+    DEFAULT_TANK_RANGE_MI,
     RouteRequestSerializer,
     RouteResponseSerializer,
 )
@@ -167,6 +170,99 @@ class LocationFieldAddressLengthTests(SimpleTestCase):
         )
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
+
+
+class VehicleRequestTests(SimpleTestCase):
+    """Vehicle profile: optional, defaulted in one place, bounds-
+    validated as Decimal."""
+
+    def _base(self, vehicle=None):
+        data = {"start": "40.0,-74.0", "finish": "41.0,-75.0"}
+        if vehicle is not None:
+            data["vehicle"] = vehicle
+        return data
+
+    def test_absent_vehicle_resolves_to_defaults(self):
+        serializer = RouteRequestSerializer(data=self._base())
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        vehicle = serializer.validated_data["vehicle"]
+
+        self.assertEqual(
+            vehicle,
+            {
+                "mpg": DEFAULT_MPG,
+                "tank_range_mi": DEFAULT_TANK_RANGE_MI,
+                "starting_fuel": DEFAULT_STARTING_FUEL,
+            },
+        )
+        for value in vehicle.values():
+            self.assertIs(type(value), Decimal)
+
+    def test_partial_vehicle_fills_remaining_defaults(self):
+        serializer = RouteRequestSerializer(data=self._base({"mpg": 6}))
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        vehicle = serializer.validated_data["vehicle"]
+
+        self.assertEqual(vehicle["mpg"], Decimal("6"))
+        self.assertEqual(vehicle["tank_range_mi"], DEFAULT_TANK_RANGE_MI)
+        self.assertEqual(vehicle["starting_fuel"], DEFAULT_STARTING_FUEL)
+        for value in vehicle.values():
+            self.assertIs(type(value), Decimal)
+
+    def test_mpg_zero_and_just_under_one_are_rejected(self):
+        for bad_mpg in (0, "0.5"):
+            serializer = RouteRequestSerializer(data=self._base({"mpg": bad_mpg}))
+            self.assertFalse(serializer.is_valid())
+            self.assertIn("mpg", serializer.errors["vehicle"])
+
+    def test_mpg_over_one_hundred_is_rejected(self):
+        serializer = RouteRequestSerializer(data=self._base({"mpg": 101}))
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("mpg", serializer.errors["vehicle"])
+
+    def test_mpg_bounds_inclusive_accepted(self):
+        for good_mpg in (1, 100):
+            serializer = RouteRequestSerializer(data=self._base({"mpg": good_mpg}))
+            self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_tank_range_mi_out_of_bounds_rejected(self):
+        for bad_range in (19, 2001):
+            serializer = RouteRequestSerializer(
+                data=self._base({"tank_range_mi": bad_range})
+            )
+            self.assertFalse(serializer.is_valid())
+            self.assertIn("tank_range_mi", serializer.errors["vehicle"])
+
+    def test_tank_range_mi_bounds_inclusive_accepted(self):
+        for good_range in (20, 2000):
+            serializer = RouteRequestSerializer(
+                data=self._base({"tank_range_mi": good_range})
+            )
+            self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_starting_fuel_out_of_bounds_rejected(self):
+        for bad_fuel in ("-0.1", "1.01"):
+            serializer = RouteRequestSerializer(
+                data=self._base({"starting_fuel": bad_fuel})
+            )
+            self.assertFalse(serializer.is_valid())
+            self.assertIn("starting_fuel", serializer.errors["vehicle"])
+
+    def test_starting_fuel_bounds_inclusive_accepted(self):
+        for good_fuel in ("0.0", "1.0"):
+            serializer = RouteRequestSerializer(
+                data=self._base({"starting_fuel": good_fuel})
+            )
+            self.assertTrue(serializer.is_valid(), serializer.errors)
+
+    def test_non_object_vehicle_rejected_with_400_class_error(self):
+        for bad_vehicle in ("semi", ["mpg", 6]):
+            serializer = RouteRequestSerializer(data=self._base(bad_vehicle))
+            self.assertFalse(serializer.is_valid())
+            self.assertIn("vehicle", serializer.errors)
 
 
 class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):
