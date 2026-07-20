@@ -3,13 +3,14 @@ from routing.services.exceptions import (
     InvalidRouteInputError,
     SolverError,
 )
-from routing.services.solver import Candidate, FuelPlan, FuelStop, solve
+from routing.services.solver import Candidate, FuelPlan, FuelStop, PurchaseReason, solve
 
 __all__ = [
     "solve",
     "Candidate",
     "FuelPlan",
     "FuelStop",
+    "PurchaseReason",
     "SolverError",
     "InfeasibleRouteError",
     "InvalidRouteInputError",

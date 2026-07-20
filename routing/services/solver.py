@@ -10,6 +10,20 @@ from decimal import Decimal
 from routing.services.exceptions import InfeasibleRouteError, InvalidRouteInputError
 
 
+class PurchaseReason:
+    """String-enum constants for `FuelStop.purchase_reason`.
+
+    Each value names the exact solver branch that produced the stop --
+    recorded at the moment the branch fires, never re-derived afterward by
+    inspecting the finished plan. Wire values are the lowercase strings.
+    """
+
+    REACH_CHEAPER_STOP = "reach_cheaper_stop"
+    FILL_TO_CONTINUE = "fill_to_continue"
+    REACH_FINISH = "reach_finish"
+    TOP_UP_AT_CHEAPEST = "top_up_at_cheapest"
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A candidate fuel stop positioned along the route."""
@@ -22,7 +36,12 @@ class Candidate:
 
 @dataclass(frozen=True)
 class FuelStop:
-    """A purchase recorded at a real, along-route station."""
+    """A purchase recorded at a real, along-route station.
+
+    The rationale fields (`purchase_reason` onward) are additive and
+    default to `None`/`0` so callers constructing a `FuelStop` with only
+    the original six fields keep working unchanged.
+    """
 
     name: str
     opis_id: int
@@ -30,6 +49,13 @@ class FuelStop:
     distance_from_start_mi: Decimal
     gallons: Decimal
     cost: Decimal
+    purchase_reason: str | None = None
+    reason_target_opis_id: int | None = None
+    reason_target_name: str | None = None
+    skipped_count: int = 0
+    skipped_avg_price: Decimal | None = None
+    price_percentile: Decimal | None = None
+    corridor_avg_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -111,6 +137,31 @@ def solve(
         key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
     )
 
+    total_candidates = len(candidates)
+    corridor_avg_price = (
+        sum((c.price_per_gallon for c in candidates), Decimal(0)) / total_candidates
+        if total_candidates
+        else None
+    )
+
+    def _price_percentile(price):
+        if not total_candidates:
+            return None
+        cheaper_count = sum(1 for c in candidates if c.price_per_gallon < price)
+        return Decimal(cheaper_count) / Decimal(total_candidates)
+
+    def _skipped_context(prev_stop_mi, pos):
+        skipped = [
+            c for c in candidates if prev_stop_mi < c.distance_from_start_mi < pos
+        ]
+        skipped_count = len(skipped)
+        skipped_avg_price = (
+            sum((c.price_per_gallon for c in skipped), Decimal(0)) / skipped_count
+            if skipped_count
+            else None
+        )
+        return skipped_count, skipped_avg_price
+
     pos = Decimal(0)
     fuel = starting_fuel * tank_range_mi
     price_here = Decimal(0)
@@ -135,6 +186,8 @@ def solve(
             buy_mi = max(Decimal(0), gap - fuel)
             if buy_mi > 0:
                 gallons = buy_mi / mpg
+                prev_stop_mi = stops[-1].distance_from_start_mi if stops else Decimal(0)
+                skipped_count, skipped_avg_price = _skipped_context(prev_stop_mi, pos)
                 stops.append(
                     FuelStop(
                         name=current_name,
@@ -143,6 +196,13 @@ def solve(
                         distance_from_start_mi=pos,
                         gallons=gallons,
                         cost=gallons * price_here,
+                        purchase_reason=PurchaseReason.REACH_CHEAPER_STOP,
+                        reason_target_opis_id=target.opis_id,
+                        reason_target_name=target.name,
+                        skipped_count=skipped_count,
+                        skipped_avg_price=skipped_avg_price,
+                        price_percentile=_price_percentile(price_here),
+                        corridor_avg_price=corridor_avg_price,
                     )
                 )
             fuel = fuel + buy_mi - gap
@@ -159,6 +219,8 @@ def solve(
             buy_mi = max(Decimal(0), gap - fuel)
             if buy_mi > 0:
                 gallons = buy_mi / mpg
+                prev_stop_mi = stops[-1].distance_from_start_mi if stops else Decimal(0)
+                skipped_count, skipped_avg_price = _skipped_context(prev_stop_mi, pos)
                 stops.append(
                     FuelStop(
                         name=current_name,
@@ -167,6 +229,13 @@ def solve(
                         distance_from_start_mi=pos,
                         gallons=gallons,
                         cost=gallons * price_here,
+                        purchase_reason=PurchaseReason.REACH_FINISH,
+                        reason_target_opis_id=None,
+                        reason_target_name=None,
+                        skipped_count=skipped_count,
+                        skipped_avg_price=skipped_avg_price,
+                        price_percentile=_price_percentile(price_here),
+                        corridor_avg_price=corridor_avg_price,
                     )
                 )
             break
@@ -196,6 +265,13 @@ def solve(
             buy_mi = tank_range_mi - fuel
             if buy_mi > 0:
                 gallons = buy_mi / mpg
+                ahead = [c for c in candidates if c.distance_from_start_mi > pos]
+                if not ahead or price_here <= min(c.price_per_gallon for c in ahead):
+                    reason = PurchaseReason.TOP_UP_AT_CHEAPEST
+                else:
+                    reason = PurchaseReason.FILL_TO_CONTINUE
+                prev_stop_mi = stops[-1].distance_from_start_mi if stops else Decimal(0)
+                skipped_count, skipped_avg_price = _skipped_context(prev_stop_mi, pos)
                 stops.append(
                     FuelStop(
                         name=current_name,
@@ -204,6 +280,13 @@ def solve(
                         distance_from_start_mi=pos,
                         gallons=gallons,
                         cost=gallons * price_here,
+                        purchase_reason=reason,
+                        reason_target_opis_id=target.opis_id,
+                        reason_target_name=target.name,
+                        skipped_count=skipped_count,
+                        skipped_avg_price=skipped_avg_price,
+                        price_percentile=_price_percentile(price_here),
+                        corridor_avg_price=corridor_avg_price,
                     )
                 )
             fuel = tank_range_mi
