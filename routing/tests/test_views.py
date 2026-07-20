@@ -22,6 +22,7 @@ from rest_framework.test import APITestCase
 from shapely.geometry import LineString
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
+from routing.services import naive_baseline, solver
 from routing.services.corridor import reset_index
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.mapbox import Route
@@ -528,3 +529,162 @@ class RouteViewOrchestrationUnitTests(SimpleTestCase):
             self._tied_result(0, "50.00", 300, "1000"),
         ]
         self.assertEqual(view._select_winner(results).index, 0)
+
+
+class RouteViewBaselineSavingsUnitTests(SimpleTestCase):
+    """Direct unit tests of `RouteView._baseline_savings` -- same
+    hand-built-object approach as `RouteViewOrchestrationUnitTests`,
+    sidestepping the Mapbox/corridor/DB boundary entirely."""
+
+    def _view(self):
+        view = RouteView()
+        view._timing = ServerTiming()
+        return view
+
+    def _winner(self, candidates, plan):
+        from routing.views import _AlternativeResult
+
+        return _AlternativeResult(
+            index=0, route=_unit_route(0, 600), plan=plan, feasible=True,
+            candidates=candidates,
+        )
+
+    def test_savings_computed_when_baseline_solves(self):
+        candidate = Candidate(
+            name="Only", opis_id=1, price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("400"),
+        )
+        optimal_plan = solver.solve([candidate], Decimal("600"), **_UNIT_VEHICLE)
+        winner = self._winner([candidate], optimal_plan)
+
+        view = self._view()
+        savings, note = view._baseline_savings(winner, _UNIT_VEHICLE)
+
+        naive_plan = naive_baseline.solve([candidate], Decimal("600"), **_UNIT_VEHICLE)
+        expected = naive_baseline.compute_savings(optimal_plan, naive_plan)
+
+        self.assertIsNone(note)
+        self.assertEqual(savings, expected)
+        self.assertIn("baseline", view._timing.header_value())
+
+    def test_baseline_infeasible_returns_none_savings_with_note(self):
+        winner = self._winner(
+            [], FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+        )
+        view = self._view()
+
+        with mock.patch(
+            "routing.services.naive_baseline.solve",
+            side_effect=InfeasibleRouteError(
+                from_station="START",
+                to_station="FINISH",
+                gap_mi=Decimal("600"),
+                max_range_mi=Decimal("500"),
+            ),
+        ):
+            savings, note = view._baseline_savings(winner, _UNIT_VEHICLE)
+
+        self.assertIsNone(savings)
+        self.assertEqual(note, "naive_plan_infeasible")
+
+    def test_baseline_infeasible_does_not_propagate(self):
+        """A baseline-only InfeasibleRouteError never breaks a request
+        that already has a valid optimized plan -- it must be fully
+        contained inside `_baseline_savings`, never propagate."""
+        winner = self._winner(
+            [], FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+        )
+        view = self._view()
+
+        with mock.patch(
+            "routing.services.naive_baseline.solve",
+            side_effect=InfeasibleRouteError(
+                from_station="START",
+                to_station="FINISH",
+                gap_mi=Decimal("600"),
+                max_range_mi=Decimal("500"),
+            ),
+        ):
+            try:
+                view._baseline_savings(winner, _UNIT_VEHICLE)
+            except InfeasibleRouteError:
+                self.fail("_baseline_savings must contain InfeasibleRouteError")
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class RouteViewBaselineAndVehicleHttpTests(APITestCase):
+    """End-to-end coverage of the baseline-failure path and
+    vehicle-profile sensitivity through the real view, complementing the
+    private-helper unit tests above."""
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+
+    def test_baseline_infeasible_returns_200_with_null_savings_and_note(self):
+        _make_station(710)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        ), mock.patch(
+            "routing.services.naive_baseline.solve",
+            side_effect=InfeasibleRouteError(
+                from_station="START",
+                to_station="FINISH",
+                gap_mi=Decimal("600"),
+                max_range_mi=Decimal("500"),
+            ),
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIsNone(response.data["savings"])
+        self.assertEqual(response.data["savings_note"], "naive_plan_infeasible")
+
+    def test_server_timing_header_carries_baseline_token(self):
+        _make_station(711)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("baseline", response["Server-Timing"])
+
+    def test_vehicle_profile_changes_total_cost_on_same_stubbed_route(self):
+        _make_station(712)
+        payload = _long_directions_payload()
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(payload)
+        ):
+            default_response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+            high_mpg_response = self.client.post(
+                ROUTE_URL,
+                {
+                    "start": START_COORD,
+                    "finish": FINISH_COORD,
+                    "vehicle": {"mpg": "50"},
+                },
+                format="json",
+            )
+
+        self.assertEqual(default_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(high_mpg_response.status_code, status.HTTP_200_OK)
+        self.assertNotEqual(
+            default_response.data["total_cost"], high_mpg_response.data["total_cost"]
+        )
+        self.assertEqual(high_mpg_response.data["vehicle"]["mpg"], "50.00")
