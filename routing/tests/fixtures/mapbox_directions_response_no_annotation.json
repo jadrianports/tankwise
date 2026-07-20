@@ -1,0 +1,75 @@
+{
+  "code": "Ok",
+  "routes": [
+    {
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            -87.6298,
+            41.8781
+          ],
+          [
+            -87.9073,
+            41.525
+          ],
+          [
+            -88.2434,
+            41.1306
+          ],
+          [
+            -88.5588,
+            40.4842
+          ],
+          [
+            -89.3985,
+            39.7817
+          ],
+          [
+            -89.6501,
+            39.2136
+          ],
+          [
+            -90.0715,
+            38.8026
+          ],
+          [
+            -90.1994,
+            38.627
+          ]
+        ]
+      },
+      "distance": 478174.8,
+      "duration": 16200.4,
+      "legs": [
+        {
+          "distance": 478174.8,
+          "duration": 16200.4,
+          "summary": "I-55 S",
+          "steps": []
+        }
+      ],
+      "weight": 16510.2,
+      "weight_name": "auto"
+    }
+  ],
+  "waypoints": [
+    {
+      "name": "N Michigan Ave",
+      "location": [
+        -87.6298,
+        41.8781
+      ],
+      "distance": 4.3
+    },
+    {
+      "name": "Market St",
+      "location": [
+        -90.1994,
+        38.627
+      ],
+      "distance": 2.1
+    }
+  ],
+  "uuid": "ck9c26vzz00003vtest-fixture-noannotation"
+}

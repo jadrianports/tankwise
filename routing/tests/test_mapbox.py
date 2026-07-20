@@ -21,6 +21,7 @@ from routing.services.mapbox import (
     RouteNotFoundError,
     geocode,
     get_route,
+    get_routes,
 )
 
 FIXTURE_PATH = (
@@ -28,6 +29,22 @@ FIXTURE_PATH = (
 )
 with open(FIXTURE_PATH, encoding="utf-8") as f:
     FIXTURE = json.load(f)
+
+MULTI_ROUTE_FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "mapbox_directions_response_multi.json"
+)
+with open(MULTI_ROUTE_FIXTURE_PATH, encoding="utf-8") as f:
+    MULTI_ROUTE_FIXTURE = json.load(f)
+
+NO_ANNOTATION_FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "mapbox_directions_response_no_annotation.json"
+)
+with open(NO_ANNOTATION_FIXTURE_PATH, encoding="utf-8") as f:
+    NO_ANNOTATION_FIXTURE = json.load(f)
 
 GEOCODING_FIXTURE_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "mapbox_geocoding_response.json"
@@ -94,6 +111,134 @@ class GetRouteHappyPathTests(SimpleTestCase):
 
         fixture_coords = FIXTURE["routes"][0]["geometry"]["coordinates"]
         self.assertEqual(route.raw_coordinates, fixture_coords)
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class DirectionsRequestParamsTests(SimpleTestCase):
+    """The outbound request asks for alternatives and annotations
+    alongside the existing overview/geometries params, all via `params`
+    (never interpolated into the URL)."""
+
+    def test_params_include_alternatives_annotations_overview_geometries(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
+        ) as mock_get:
+            get_route(START, FINISH)
+
+        _, kwargs = mock_get.call_args
+        params = kwargs["params"]
+        self.assertEqual(params["alternatives"], "true")
+        self.assertEqual(params["annotations"], "duration,distance")
+        self.assertEqual(params["overview"], "full")
+        self.assertEqual(params["geometries"], "geojson")
+
+    def test_get_route_still_issues_exactly_one_call(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
+        ) as mock_get:
+            get_route(START, FINISH)
+
+        mock_get.assert_called_once()
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GetRoutesMultiAlternativeTests(SimpleTestCase):
+    """get_routes() parses every alternative Mapbox returns, in order,
+    each carrying its own duration and index-aligned annotation arrays."""
+
+    def test_returns_list_of_three_routes_in_order(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        self.assertEqual(len(routes), 3)
+        for route in routes:
+            self.assertIsInstance(route, Route)
+
+    def test_alternative_index_matches_position(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        self.assertEqual([r.alternative_index for r in routes], [0, 1, 2])
+
+    def test_duration_s_matches_fixture_as_exact_decimal(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        for route, fixture_route in zip(routes, MULTI_ROUTE_FIXTURE["routes"]):
+            expected = Decimal(str(fixture_route["duration"]))
+            self.assertEqual(route.duration_s, expected)
+            self.assertIsInstance(route.duration_s, Decimal)
+
+    def test_annotation_arrays_length_matches_coordinates_minus_one(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        for route in routes:
+            expected_len = len(route.raw_coordinates) - 1
+            self.assertEqual(len(route.annotation_durations), expected_len)
+            self.assertEqual(len(route.annotation_distances), expected_len)
+
+    def test_annotation_distances_in_miles_sum_to_approximately_total(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        for route in routes:
+            summed = sum(route.annotation_distances)
+            self.assertAlmostEqual(
+                float(summed), float(route.total_route_mi), places=3
+            )
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class NoAnnotationFallbackTests(SimpleTestCase):
+    """A well-formed response whose routes carry no `annotation` key
+    parses without raising, leaving the annotation lists empty."""
+
+    def test_parses_without_raising_with_empty_annotation_lists(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=NO_ANNOTATION_FIXTURE),
+        ):
+            routes = get_routes(START, FINISH)
+
+        self.assertEqual(len(routes), 1)
+        self.assertEqual(routes[0].annotation_durations, [])
+        self.assertEqual(routes[0].annotation_distances, [])
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class GetRouteWrapperTests(SimpleTestCase):
+    """get_route() returns the same object as get_routes()[0]."""
+
+    def test_get_route_equals_first_of_get_routes(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            primary = get_route(START, FINISH)
+
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
+        ):
+            all_routes = get_routes(START, FINISH)
+
+        self.assertEqual(primary, all_routes[0])
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
