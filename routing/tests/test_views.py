@@ -847,6 +847,10 @@ class RouteViewMultiAlternativeTests(APITestCase):
             [a["total_cost"] for a in alternatives], [None, "0.00", None]
         )
         self.assertEqual([a["chosen"] for a in alternatives], [False, True, False])
+        # The top-level response (route/map/geometry) describes the winning
+        # alternative (index 1, 310 mi) -- never Mapbox's index-0 default,
+        # which was overridden to an infeasible 900 mi in this scenario.
+        self.assertEqual(response.data["total_route_mi"], "310")
 
     def test_all_infeasible_returns_422_with_smallest_gap(self):
         with mock.patch(
