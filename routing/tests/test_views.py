@@ -2,7 +2,7 @@
 
 The Mapbox transport boundary (`routing.services.mapbox._SESSION.get`) is
 always mocked -- no live network call is ever performed, and both
-`get_route()` and `geocode()` share this single mock target, so a
+`get_routes()` and `geocode()` share this single mock target, so a
 scenario's `mock_get.call_count` is the exact external-call budget.
 Uses DRF `APITestCase` (this repo's first) -- it exercises full DRF request
 dispatch, unlike the `SimpleTestCase` used for the pure service-layer
@@ -16,12 +16,18 @@ from unittest import mock
 
 import requests
 from django.core.cache import cache
-from django.test import override_settings
+from django.test import SimpleTestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
+from shapely.geometry import LineString
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
 from routing.services.corridor import reset_index
+from routing.services.exceptions import InfeasibleRouteError
+from routing.services.mapbox import Route
+from routing.services.solver import Candidate, FuelPlan
+from routing.timing import ServerTiming
+from routing.views import RouteView
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -390,3 +396,135 @@ class TokenLeakRegressionTests(APITestCase):
         self.assertNotIn(FAKE_SECRET, response.content.decode())
         self.assertIn(FAKE_PUBLIC, response.data["map_url"])
         mock_get.assert_called_once()
+
+
+_UNIT_VEHICLE = {
+    "mpg": Decimal("10"),
+    "tank_range_mi": Decimal("500"),
+    "starting_fuel": Decimal("1"),
+}
+
+
+def _unit_route(index, total_route_mi, duration_s="100"):
+    """A minimal `Route` for orchestration unit tests -- geometry is a
+    throwaway two-point line since these tests patch
+    `corridor.candidates` directly and never touch real geometry."""
+    return Route(
+        total_route_mi=Decimal(str(total_route_mi)),
+        geometry=LineString([(0, 0), (1, 1)]),
+        raw_coordinates=[[0, 0], [1, 1]],
+        duration_s=Decimal(str(duration_s)),
+        alternative_index=index,
+    )
+
+
+class RouteViewOrchestrationUnitTests(SimpleTestCase):
+    """Direct unit tests of `RouteView._solve_all_alternatives` and
+    `_select_winner` against hand-built `Route`/`Candidate` objects --
+    sidesteps corridor geometry and the Mapbox transport boundary
+    entirely by patching `corridor.candidates`, mirroring how
+    `test_solver.py` exercises the pure solver directly. End-to-end
+    HTTP-level coverage of the same alternatives-loop behaviors lives in
+    `RouteViewMultiAlternativeTests` below."""
+
+    def _view(self):
+        view = RouteView()
+        view._timing = ServerTiming()
+        return view
+
+    def test_cheapest_alternative_wins_when_all_feasible(self):
+        cheap = Candidate(
+            name="Cheap", opis_id=1, price_per_gallon=Decimal("2.50"),
+            distance_from_start_mi=Decimal("400"),
+        )
+        pricey = Candidate(
+            name="Pricey", opis_id=2, price_per_gallon=Decimal("4.00"),
+            distance_from_start_mi=Decimal("400"),
+        )
+        view = self._view()
+        routes = [_unit_route(0, 600), _unit_route(1, 600), _unit_route(2, 600)]
+
+        with mock.patch(
+            "routing.views.corridor.candidates",
+            side_effect=[[pricey], [cheap], [pricey]],
+        ):
+            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+            winner = view._select_winner(results)
+
+        self.assertTrue(all(r.feasible for r in results))
+        self.assertEqual(winner.index, 1)
+        self.assertEqual(winner.plan.total_cost, min(r.plan.total_cost for r in results))
+
+    def test_infeasible_alternative_is_skipped_when_another_solves(self):
+        reachable = Candidate(
+            name="Only", opis_id=1, price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("400"),
+        )
+        view = self._view()
+        routes = [_unit_route(0, 600), _unit_route(1, 600), _unit_route(2, 600)]
+
+        with mock.patch(
+            "routing.views.corridor.candidates",
+            side_effect=[[], [reachable], []],
+        ):
+            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+            winner = view._select_winner(results)
+
+        self.assertEqual([r.feasible for r in results], [False, True, False])
+        self.assertEqual(winner.index, 1)
+
+    def test_all_infeasible_raises_smallest_gap_across_alternatives(self):
+        view = self._view()
+        routes = [_unit_route(0, 900), _unit_route(1, 700), _unit_route(2, 800)]
+
+        with mock.patch("routing.views.corridor.candidates", return_value=[]):
+            with self.assertRaises(InfeasibleRouteError) as ctx:
+                view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+
+        self.assertEqual(ctx.exception.gap_mi, Decimal("700"))
+
+    def test_other_exception_types_propagate_uncaught(self):
+        view = self._view()
+        routes = [_unit_route(0, 600)]
+
+        with mock.patch(
+            "routing.views.corridor.candidates", side_effect=TypeError("boom")
+        ):
+            with self.assertRaises(TypeError):
+                view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+
+    def _tied_result(self, index, total_cost, total_route_mi, duration_s):
+        route = _unit_route(index, total_route_mi, duration_s=duration_s)
+        plan = FuelPlan(
+            stops=[], total_cost=Decimal(str(total_cost)), total_gallons=Decimal("0")
+        )
+        from routing.views import _AlternativeResult
+
+        return _AlternativeResult(
+            index=index, route=route, plan=plan, feasible=True, candidates=[]
+        )
+
+    def test_winner_selection_ties_break_by_route_miles_then_duration_then_index(self):
+        view = self._view()
+
+        # Level 2: cost tied, shorter route wins.
+        results = [
+            self._tied_result(0, "50.00", 300, "1000"),
+            self._tied_result(1, "50.00", 250, "2000"),
+        ]
+        self.assertEqual(view._select_winner(results).index, 1)
+
+        # Level 3: cost and miles tied, faster duration wins.
+        results = [
+            self._tied_result(0, "50.00", 300, "2000"),
+            self._tied_result(1, "50.00", 300, "1000"),
+        ]
+        self.assertEqual(view._select_winner(results).index, 1)
+
+        # Level 4: cost, miles, and duration all tied -- Mapbox's earlier
+        # ordinal wins, regardless of list order.
+        results = [
+            self._tied_result(1, "50.00", 300, "1000"),
+            self._tied_result(0, "50.00", 300, "1000"),
+        ]
+        self.assertEqual(view._select_winner(results).index, 0)

@@ -125,22 +125,12 @@ def get_routes(start, finish) -> list:
     return _parse_directions_response(response.json())
 
 
-def get_route(start, finish) -> Route:
-    """Fetch Mapbox's primary driving route between `start` and `finish`.
-
-    A thin wrapper over `get_routes()` returning only the first (primary)
-    route -- kept alive so existing single-route callers are unaffected.
-    `get_routes()` is the alternatives-aware entry point.
-    """
-    return get_routes(start, finish)[0]
-
-
 def geocode(address) -> tuple:
     """Resolve a free-text address to a (latitude, longitude) Decimal pair
     via exactly one Mapbox Geocoding v6 forward call.
 
     Uses the v6 endpoint's default temporary-geocoding tier -- the result
-    must only ever flow into an in-memory `get_route()` call and the
+    must only ever flow into an in-memory `get_routes()` call and the
     response payload, never a DB write (Mapbox's temporary-geocoding terms
     forbid storing it).
 

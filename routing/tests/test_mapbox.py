@@ -20,7 +20,6 @@ from routing.services.mapbox import (
     Route,
     RouteNotFoundError,
     geocode,
-    get_route,
     get_routes,
 )
 
@@ -70,13 +69,13 @@ class _StubResponse:
 
 @override_settings(MAPBOX_TOKEN="test-token")
 class GetRouteHappyPathTests(SimpleTestCase):
-    """get_route resolves a typed Route in exactly one call."""
+    """get_routes()[0] resolves a typed Route in exactly one call."""
 
     def test_returns_route_with_exactly_one_call(self):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            route = get_route(START, FINISH)
+            route = get_routes(START, FINISH)[0]
 
         mock_get.assert_called_once()
         self.assertIsInstance(route, Route)
@@ -85,7 +84,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_route(START, FINISH)
+            route = get_routes(START, FINISH)[0]
 
         expected = Decimal(str(FIXTURE["routes"][0]["distance"])) / Decimal(
             "1609.344"
@@ -97,7 +96,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_route(START, FINISH)
+            route = get_routes(START, FINISH)[0]
 
         fixture_coords = FIXTURE["routes"][0]["geometry"]["coordinates"]
         self.assertIsInstance(route.geometry, LineString)
@@ -107,7 +106,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_route(START, FINISH)
+            route = get_routes(START, FINISH)[0]
 
         fixture_coords = FIXTURE["routes"][0]["geometry"]["coordinates"]
         self.assertEqual(route.raw_coordinates, fixture_coords)
@@ -123,7 +122,7 @@ class DirectionsRequestParamsTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_route(START, FINISH)
+            get_routes(START, FINISH)[0]
 
         _, kwargs = mock_get.call_args
         params = kwargs["params"]
@@ -136,7 +135,7 @@ class DirectionsRequestParamsTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_route(START, FINISH)
+            get_routes(START, FINISH)[0]
 
         mock_get.assert_called_once()
 
@@ -222,26 +221,6 @@ class NoAnnotationFallbackTests(SimpleTestCase):
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
-class GetRouteWrapperTests(SimpleTestCase):
-    """get_route() returns the same object as get_routes()[0]."""
-
-    def test_get_route_equals_first_of_get_routes(self):
-        with mock.patch(
-            "routing.services.mapbox._SESSION.get",
-            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
-        ):
-            primary = get_route(START, FINISH)
-
-        with mock.patch(
-            "routing.services.mapbox._SESSION.get",
-            return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
-        ):
-            all_routes = get_routes(START, FINISH)
-
-        self.assertEqual(primary, all_routes[0])
-
-
-@override_settings(MAPBOX_TOKEN="test-token")
 class TokenHandlingTests(SimpleTestCase):
     """The access token rides in params, never the URL string."""
 
@@ -249,7 +228,7 @@ class TokenHandlingTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_route(START, FINISH)
+            get_routes(START, FINISH)[0]
 
         args, kwargs = mock_get.call_args
         self.assertEqual(kwargs["params"]["access_token"], "test-token")
@@ -272,7 +251,7 @@ class RouteNotFoundTests(SimpleTestCase):
             return_value=_StubResponse(payload=no_route_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
-                get_route(START, FINISH)
+                get_routes(START, FINISH)[0]
 
     def test_ok_code_with_empty_routes_raises_route_not_found(self):
         empty_routes_payload = dict(FIXTURE)
@@ -282,7 +261,7 @@ class RouteNotFoundTests(SimpleTestCase):
             return_value=_StubResponse(payload=empty_routes_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
-                get_route(START, FINISH)
+                get_routes(START, FINISH)[0]
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
@@ -296,7 +275,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
             return_value=_StubResponse(status_code=500),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
-                get_route(START, FINISH)
+                get_routes(START, FINISH)[0]
 
         self.assertNotIn("test-token", str(ctx.exception))
 
@@ -306,7 +285,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
             side_effect=requests.RequestException("boom"),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
-                get_route(START, FINISH)
+                get_routes(START, FINISH)[0]
 
         self.assertNotIn("test-token", str(ctx.exception))
 
@@ -319,7 +298,7 @@ class MissingTokenTests(SimpleTestCase):
     def test_missing_token_raises_before_any_http_call(self):
         with mock.patch("routing.services.mapbox._SESSION.get") as mock_get:
             with self.assertRaises(ImproperlyConfigured):
-                get_route(START, FINISH)
+                get_routes(START, FINISH)[0]
 
         mock_get.assert_not_called()
 
