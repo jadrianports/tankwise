@@ -4,6 +4,7 @@ from routing.services.exceptions import (
     InvalidRouteInputError,
     SolverError,
 )
+from routing.services.legs import Leg, build_legs
 from routing.services.naive_baseline import Savings, compute_savings
 from routing.services.solver import Candidate, FuelPlan, FuelStop, PurchaseReason, solve
 
@@ -19,4 +20,6 @@ __all__ = [
     "naive_baseline",
     "Savings",
     "compute_savings",
+    "Leg",
+    "build_legs",
 ]
