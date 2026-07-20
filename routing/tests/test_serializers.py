@@ -13,12 +13,13 @@ from routing.serializers import (
     DEFAULT_MPG,
     DEFAULT_STARTING_FUEL,
     DEFAULT_TANK_RANGE_MI,
+    FuelStopSerializer,
     RouteRequestSerializer,
     RouteResponseSerializer,
     price_freshness,
 )
 from routing.services.mapbox import Route
-from routing.services.solver import FuelPlan, FuelStop
+from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
 
 
 def _wiggly_route_coords(start, finish, n=4000):
@@ -291,6 +292,84 @@ class PriceFreshnessTests(SimpleTestCase):
         # Raises ValueError if not a valid ISO date -- assertion is
         # simply that this does not raise.
         datetime.date.fromisoformat(result["price_as_of"])
+
+
+class FuelStopRationaleTests(SimpleTestCase):
+    """Per-stop `rationale` object: structured facts only, reusing
+    `_quantize_money` for every price, no prose."""
+
+    def test_zero_skipped_count_yields_null_skipped_avg_price(self):
+        stop = FuelStop(
+            name="STOP1",
+            opis_id=42,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("100"),
+            gallons=Decimal("30"),
+            cost=Decimal("90.00"),
+            purchase_reason=PurchaseReason.FILL_TO_CONTINUE,
+            reason_target_opis_id=7,
+            reason_target_name="NEXT",
+            skipped_count=0,
+            skipped_avg_price=None,
+            price_percentile=Decimal("0.125"),
+            corridor_avg_price=Decimal("3.40"),
+        )
+
+        data = FuelStopSerializer(stop, context={}).data
+        rationale = data["rationale"]
+
+        self.assertEqual(rationale["purchase_reason"], "fill_to_continue")
+        self.assertEqual(rationale["reason_target_station_id"], 7)
+        self.assertEqual(rationale["reason_target_name"], "NEXT")
+        self.assertEqual(rationale["skipped_count"], 0)
+        self.assertIsNone(rationale["skipped_avg_price"])
+        self.assertEqual(rationale["price_percentile"], 12.5)
+        self.assertEqual(rationale["corridor_avg_price"], "3.40")
+
+    def test_endpoint_rule_purchase_has_null_reason_target(self):
+        stop = FuelStop(
+            name="STOP2",
+            opis_id=43,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("200"),
+            gallons=Decimal("10"),
+            cost=Decimal("30.00"),
+            purchase_reason=PurchaseReason.REACH_FINISH,
+            reason_target_opis_id=None,
+            reason_target_name=None,
+            skipped_count=2,
+            skipped_avg_price=Decimal("3.512"),
+            price_percentile=Decimal("0.5"),
+            corridor_avg_price=Decimal("3.40"),
+        )
+
+        data = FuelStopSerializer(stop, context={}).data
+        rationale = data["rationale"]
+
+        self.assertIsNone(rationale["reason_target_station_id"])
+        self.assertIsNone(rationale["reason_target_name"])
+        self.assertEqual(rationale["skipped_count"], 2)
+        self.assertEqual(rationale["skipped_avg_price"], "3.51")
+        self.assertEqual(rationale["price_percentile"], 50.0)
+
+    def test_v1_fuel_stop_keys_unchanged_alongside_rationale(self):
+        stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=42)
+
+        data = FuelStopSerializer(stop, context={}).data
+
+        for key in (
+            "name",
+            "station_id",
+            "location",
+            "distance_from_start_mi",
+            "price_per_gallon",
+            "gallons",
+            "cost",
+        ):
+            self.assertIn(key, data)
+        self.assertEqual(data["cost"], "90.00")
+        self.assertEqual(data["price_per_gallon"], "3.00")
+        self.assertIn("rationale", data)
 
 
 class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):

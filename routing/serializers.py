@@ -53,6 +53,42 @@ def _quantize_miles(value) -> str:
     return str(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
+def _percent_repr(fraction):
+    """Render a 0-to-1 Decimal fraction as a percentage number (e.g.
+    `Decimal("0.125")` -> `12.5`), quantized to one decimal place and
+    coerced to `float` so it survives `json.dumps` -- a raw `Decimal`
+    does not. Returns `None` when `fraction` is `None` (a legitimate
+    "cannot be computed" result, not a formatting gap)."""
+    if fraction is None:
+        return None
+    d = fraction if isinstance(fraction, Decimal) else Decimal(str(fraction))
+    return float((d * 100).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
+def _rationale_repr(instance) -> dict:
+    """Render a `FuelStop`'s rationale fields (set by the solver at the
+    exact branch that produced the purchase -- see `PurchaseReason`) into
+    a plain, JSON-safe dict. Every price in this object reuses
+    `_quantize_money`; no new money formatter is introduced."""
+    return {
+        "purchase_reason": instance.purchase_reason,
+        "reason_target_station_id": instance.reason_target_opis_id,
+        "reason_target_name": instance.reason_target_name,
+        "skipped_count": int(instance.skipped_count),
+        "skipped_avg_price": (
+            _quantize_money(instance.skipped_avg_price)
+            if instance.skipped_avg_price is not None
+            else None
+        ),
+        "corridor_avg_price": (
+            _quantize_money(instance.corridor_avg_price)
+            if instance.corridor_avg_price is not None
+            else None
+        ),
+        "price_percentile": _percent_repr(instance.price_percentile),
+    }
+
+
 def _location_repr(coords):
     """Render a {"latitude": ..., "longitude": ...} coordinate dict as
     Decimal-as-string values. Returns None when no coords were
@@ -217,6 +253,15 @@ class FuelStopSerializer(serializers.Serializer):
     `routing.services.solver.FuelStop`; per-stop lat/lng is not carried by
     `FuelStop` itself, so it is looked up from `self.context["stop_coords"]`
     (opis_id -> {"latitude", "longitude"}), injected by the orchestrator.
+
+    Every stop also carries a `rationale` object (`_rationale_repr`) --
+    structured, English-prose-free facts (`purchase_reason`,
+    `reason_target_station_id`/`reason_target_name`,
+    `skipped_count`/`skipped_avg_price`, `price_percentile`,
+    `corridor_avg_price`) explaining why the stop happened and for how
+    much. Every value in it was computed by the solver at the branch that
+    produced the purchase -- this class re-derives nothing, it only
+    formats.
     """
 
     def to_representation(self, instance):
@@ -230,6 +275,7 @@ class FuelStopSerializer(serializers.Serializer):
             "price_per_gallon": _quantize_money(instance.price_per_gallon),
             "gallons": _quantize_gallons(instance.gallons),
             "cost": _quantize_money(instance.cost),
+            "rationale": _rationale_repr(instance),
         }
 
 
