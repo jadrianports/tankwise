@@ -385,6 +385,103 @@
           }
         }
       ]
+    },
+    {
+      "name": "10. Vehicle profile (loaded semi)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"32.7767,-96.7970\",\n  \"finish\": \"34.0522,-118.2437\",\n  \"vehicle\": {\n    \"mpg\": 6,\n    \"tank_range_mi\": 300,\n    \"starting_fuel\": 0.5\n  }\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "Dallas, TX -> Los Angeles, CA with a nested `vehicle` object describing a loaded semi (6 mpg, a 300-mi tank, and a half-full starting tank). The response echoes the resolved profile -- including the derived `starting_fuel_mi` -- and the smaller effective range forces more, closer-together fuel stops than the default 500-mi/10-mpg profile on the same trip (compare against \"9. Multi-stop happy path\"). Also asserts every stop carries a structured `rationale` object and that `legs`/`savings` are populated."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "",
+              "pm.test(\"echoes the resolved vehicle profile including starting_fuel_mi\", function () {",
+              "    pm.expect(body.vehicle).to.be.an(\"object\");",
+              "    pm.expect(body.vehicle.mpg).to.eql(\"6.00\");",
+              "    pm.expect(body.vehicle.tank_range_mi).to.eql(\"300\");",
+              "    pm.expect(body.vehicle.starting_fuel).to.eql(\"0.500\");",
+              "    pm.expect(body.vehicle.starting_fuel_mi).to.eql(\"150\");",
+              "});",
+              "",
+              "pm.test(\"has legs, savings, and per-stop rationale\", function () {",
+              "    pm.expect(body.legs).to.be.an(\"array\").that.is.not.empty;",
+              "    pm.expect(body).to.have.property(\"savings\");",
+              "    pm.expect(body).to.have.property(\"total_duration_s\");",
+              "    pm.expect(body.fuel_stops).to.be.an(\"array\").that.is.not.empty;",
+              "    body.fuel_stops.forEach(function (stop) {",
+              "        pm.expect(stop.rationale).to.be.an(\"object\");",
+              "        pm.expect(stop.rationale).to.have.property(\"purchase_reason\");",
+              "    });",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "11. Route alternatives",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"start\": \"37.7749,-122.4194\",\n  \"finish\": \"34.0522,-118.2437\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "url": {
+          "raw": "{{base_url}}/api/route",
+          "host": ["{{base_url}}"],
+          "path": ["api", "route"]
+        },
+        "description": "San Francisco, CA -> Los Angeles, CA -- a corridor with legitimate alternate driving routes (I-5 direct vs. US-101 coastal vs. CA-99), a reasonable candidate for Mapbox to actually return more than one alternative. Asserts `alternatives_considered` matches the length of the `alternatives` array and that exactly one entry is marked `chosen`. Mapbox returns 0-2 alternatives depending on live route geometry; whichever demo trip is confirmed (during phase verification) to reliably yield more than one alternative should replace these coordinates before the Loom walkthrough."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Status code is 200\", function () {",
+              "    pm.response.to.have.status(200);",
+              "});",
+              "",
+              "var body = pm.response.json();",
+              "",
+              "pm.test(\"reports alternatives_considered and exactly one chosen alternative\", function () {",
+              "    pm.expect(body.alternatives_considered).to.be.a(\"number\");",
+              "    pm.expect(body.alternatives).to.be.an(\"array\");",
+              "    pm.expect(body.alternatives.length).to.eql(body.alternatives_considered);",
+              "    var chosen = body.alternatives.filter(function (a) { return a.chosen; });",
+              "    pm.expect(chosen.length).to.eql(1);",
+              "});"
+            ]
+          }
+        }
+      ]
     }
   ]
 }

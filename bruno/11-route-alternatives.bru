@@ -1,0 +1,31 @@
+meta {
+  name: 11. Route alternatives
+  type: http
+  seq: 11
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "37.7749,-122.4194",
+    "finish": "34.0522,-118.2437"
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("reports alternatives_considered and exactly one chosen alternative", function() {
+    expect(res.body.alternatives_considered).to.be.a('number');
+    expect(res.body.alternatives).to.be.an('array');
+    expect(res.body.alternatives.length).to.equal(res.body.alternatives_considered);
+    var chosen = res.body.alternatives.filter(function (a) { return a.chosen; });
+    expect(chosen.length).to.equal(1);
+  });
+}

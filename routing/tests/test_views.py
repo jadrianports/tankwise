@@ -38,6 +38,11 @@ with open(FIXTURES_DIR / "mapbox_directions_response.json", encoding="utf-8") as
 with open(FIXTURES_DIR / "mapbox_geocoding_response.json", encoding="utf-8") as f:
     GEOCODING_FIXTURE = json.load(f)
 
+with open(
+    FIXTURES_DIR / "mapbox_directions_response_multi.json", encoding="utf-8"
+) as f:
+    MULTI_ROUTE_FIXTURE = json.load(f)
+
 ROUTE_COORDS = DIRECTIONS_FIXTURE["routes"][0]["geometry"]["coordinates"]
 # The 4th route vertex, used as a station's own lat/lng so it sits
 # exactly on the route (perpendicular distance ~0) -- guaranteed inside
@@ -95,6 +100,21 @@ def _no_route_payload():
     payload = json.loads(json.dumps(DIRECTIONS_FIXTURE))
     payload["code"] = "NoRoute"
     payload["routes"] = []
+    return payload
+
+
+def _alternatives_payload(distances_mi):
+    """A copy of the three-alternative fixture with each route's
+    `distance` (meters) overridden to the corresponding `distances_mi`
+    entry -- geometry/annotations are left untouched, only the reported
+    trip length changes, so no station placement is needed to control
+    feasibility: with zero stations seeded, any alternative whose
+    overridden distance exceeds the default 500-mi tank range is
+    infeasible (empty corridor), and any alternative at or under 500 mi
+    is trivially feasible at zero cost."""
+    payload = json.loads(json.dumps(MULTI_ROUTE_FIXTURE))
+    for route_data, distance_mi in zip(payload["routes"], distances_mi):
+        route_data["distance"] = distance_mi * 1609.344
     return payload
 
 
@@ -688,3 +708,174 @@ class RouteViewBaselineAndVehicleHttpTests(APITestCase):
             default_response.data["total_cost"], high_mpg_response.data["total_cost"]
         )
         self.assertEqual(high_mpg_response.data["vehicle"]["mpg"], "50.00")
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class RouteViewV1ContractAndVehicleValidationTests(APITestCase):
+    """A v1.0-shaped request body still returns every legacy key
+    unchanged, now alongside the additive v2 keys; an out-of-bounds
+    vehicle value is rejected before any Mapbox call."""
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+
+    def test_v1_shaped_request_returns_legacy_keys_plus_new_keys(self):
+        _make_station(720)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get.assert_called_once()
+        body = response.data
+
+        for key in (
+            "fuel_stops", "total_cost", "total_gallons", "total_route_mi",
+            "route_geometry", "map_url", "start", "finish",
+        ):
+            self.assertIn(key, body)
+
+        for key in (
+            "vehicle", "legs", "total_duration_s", "fuel_stop_count",
+            "savings", "savings_note", "alternatives_considered",
+            "alternatives", "price_as_of", "price_data_note",
+        ):
+            self.assertIn(key, body)
+
+    def test_out_of_bounds_vehicle_mpg_returns_400_before_mapbox_call(self):
+        with mock.patch(MOCK_TARGET) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {
+                    "start": START_COORD,
+                    "finish": FINISH_COORD,
+                    "vehicle": {"mpg": 0},
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data["error"]["code"], "invalid_input")
+        mock_get.assert_not_called()
+
+    def test_two_vehicle_profiles_never_share_a_cache_entry(self):
+        _make_station(721)
+        payload = _long_directions_payload()
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(payload)
+        ) as mock_get:
+            default_response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+            other_response = self.client.post(
+                ROUTE_URL,
+                {
+                    "start": START_COORD,
+                    "finish": FINISH_COORD,
+                    "vehicle": {"tank_range_mi": "400"},
+                },
+                format="json",
+            )
+
+        self.assertEqual(default_response.status_code, status.HTTP_200_OK)
+        self.assertEqual(other_response.status_code, status.HTTP_200_OK)
+        # Two distinct Directions calls -- the second profile's cache key
+        # never resolves to the first profile's cached payload.
+        self.assertEqual(mock_get.call_count, 2)
+        self.assertNotEqual(default_response.data, other_response.data)
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class RouteViewMultiAlternativeTests(APITestCase):
+    """End-to-end HTTP coverage of the alternatives loop: a three-route
+    stubbed response, all feasible / mixed feasible / all infeasible.
+    Feasibility here is controlled purely via each alternative's
+    overridden `distance` against the default 500-mi tank range, with
+    zero stations seeded -- see `_alternatives_payload`."""
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+
+    def test_three_alternatives_all_feasible_reports_considered_count(self):
+        with mock.patch(
+            MOCK_TARGET,
+            return_value=_directions_response(_alternatives_payload([300, 350, 280])),
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get.assert_called_once()
+        body = response.data
+        self.assertEqual(body["alternatives_considered"], 3)
+        self.assertEqual(len(body["alternatives"]), 3)
+        self.assertEqual(sum(1 for a in body["alternatives"] if a["chosen"]), 1)
+        self.assertTrue(all(a["feasible"] for a in body["alternatives"]))
+
+    def test_mixed_feasibility_returns_200_with_infeasible_entries_marked(self):
+        with mock.patch(
+            MOCK_TARGET,
+            return_value=_directions_response(_alternatives_payload([900, 310, 900])),
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get.assert_called_once()
+        alternatives = response.data["alternatives"]
+        self.assertEqual(
+            [a["feasible"] for a in alternatives], [False, True, False]
+        )
+        self.assertEqual(
+            [a["total_cost"] for a in alternatives], [None, "0.00", None]
+        )
+        self.assertEqual([a["chosen"] for a in alternatives], [False, True, False])
+
+    def test_all_infeasible_returns_422_with_smallest_gap(self):
+        with mock.patch(
+            MOCK_TARGET,
+            return_value=_directions_response(_alternatives_payload([900, 700, 800])),
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_422_UNPROCESSABLE_ENTITY)
+        mock_get.assert_called_once()
+        self.assertEqual(response.data["error"]["code"], "infeasible_route")
+        self.assertEqual(response.data["error"]["detail"]["gap_mi"], "700")
+
+    def test_server_timing_header_carries_all_four_stage_tokens(self):
+        with mock.patch(
+            MOCK_TARGET,
+            return_value=_directions_response(_alternatives_payload([300, 350, 280])),
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        header = response["Server-Timing"]
+        for token in ("route", "corridor", "solver", "baseline"):
+            self.assertIn(token, header)

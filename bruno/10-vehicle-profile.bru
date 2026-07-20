@@ -1,0 +1,47 @@
+meta {
+  name: 10. Vehicle profile (loaded semi)
+  type: http
+  seq: 10
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "32.7767,-96.7970",
+    "finish": "34.0522,-118.2437",
+    "vehicle": {
+      "mpg": 6,
+      "tank_range_mi": 300,
+      "starting_fuel": 0.5
+    }
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("echoes the resolved vehicle profile including starting_fuel_mi", function() {
+    var vehicle = res.body.vehicle;
+    expect(vehicle).to.be.an('object');
+    expect(vehicle.mpg).to.equal("6.00");
+    expect(vehicle.tank_range_mi).to.equal("300");
+    expect(vehicle.starting_fuel).to.equal("0.500");
+    expect(vehicle.starting_fuel_mi).to.equal("150");
+  });
+  test("has legs, savings, and per-stop rationale", function() {
+    expect(res.body.legs).to.be.an('array').that.is.not.empty;
+    expect(res.body).to.have.property('savings');
+    expect(res.body).to.have.property('total_duration_s');
+    expect(res.body.fuel_stops).to.be.an('array').that.is.not.empty;
+    res.body.fuel_stops.forEach(function (stop) {
+      expect(stop.rationale).to.be.an('object');
+      expect(stop.rationale).to.have.property('purchase_reason');
+    });
+  });
+}
