@@ -46,27 +46,44 @@ def _as_decimal(value):
 def mean_lat_rad(coords_lnglat):
     """Mean latitude of the route, in radians -- the single shared scaling
     reference for build_planar_route() and project_point(), so the projection
-    distortion stays consistent route-wide."""
+    distortion stays consistent route-wide.
+
+    Callers on the hot path (e.g. candidates()'s per-station loop) should
+    compute this ONCE and pass it down via each function's `mean_lat=`
+    keyword rather than letting every call re-sum the whole route -- the
+    shared value is what keeps build_planar_route() and project_point() in
+    the same projection frame, and re-deriving it per station is an
+    avoidable O(route_points) cost repeated once per candidate."""
     lats = [lat for _lng, lat in coords_lnglat]
     return math.radians(sum(lats) / len(lats))
 
 
-def build_planar_route(coords_lnglat):
+def build_planar_route(coords_lnglat, *, mean_lat=None):
     """Build a shapely LineString scaled to real miles via an equirectangular
     projection (cos(mean_lat) x MI_PER_DEGREE_LAT), so .distance()/.project()
     operate on real miles, never raw degrees. `coords_lnglat`:
-    Mapbox's raw `[lng, lat]` GeoJSON pairs (route.raw_coordinates)."""
-    cos_lat = math.cos(mean_lat_rad(coords_lnglat))
+    Mapbox's raw `[lng, lat]` GeoJSON pairs (route.raw_coordinates).
+
+    `mean_lat`: pre-computed mean_lat_rad(coords_lnglat), in radians. When
+    omitted, falls back to computing it here (backward compatible)."""
+    if mean_lat is None:
+        mean_lat = mean_lat_rad(coords_lnglat)
+    cos_lat = math.cos(mean_lat)
     scale = float(MI_PER_DEGREE_LAT)
     points = [(lng * scale * cos_lat, lat * scale) for lng, lat in coords_lnglat]
     return LineString(points)
 
 
-def project_point(lng, lat, coords_lnglat):
+def project_point(lng, lat, coords_lnglat, *, mean_lat=None):
     """Project a single station (lng, lat) into the SAME planar-mile frame
     as build_planar_route(coords_lnglat) -- same mean-lat reference -- so
-    the perpendicular-distance comparison is apples to apples."""
-    cos_lat = math.cos(mean_lat_rad(coords_lnglat))
+    the perpendicular-distance comparison is apples to apples.
+
+    `mean_lat`: pre-computed mean_lat_rad(coords_lnglat), in radians. When
+    omitted, falls back to computing it here (backward compatible)."""
+    if mean_lat is None:
+        mean_lat = mean_lat_rad(coords_lnglat)
+    cos_lat = math.cos(mean_lat)
     scale = float(MI_PER_DEGREE_LAT)
     return Point(lng * scale * cos_lat, lat * scale)
 
@@ -132,15 +149,20 @@ def reset_index():
     _INDEX = None
 
 
-def _corridor_buffer_degrees(coords_lnglat, city_mi):
+def _corridor_buffer_degrees(coords_lnglat, city_mi, *, mean_lat=None):
     """Single isotropic buffer distance, in degrees, for the raw-degree
     STRtree query. shapely's `.buffer()` takes one scalar and cannot apply
     a per-axis pad the way the old bbox query's separate lat_pad/lng_pad
     could -- so this returns the LARGER of the two axis pads. Because
     cos(lat) <= 1, that is always lng_pad, which makes the buffer provably
     over-inclusive (never under-inclusive) along the north-south axis; the
-    unchanged precise perpendicular test below discards the extras."""
-    cos_lat = math.cos(mean_lat_rad(coords_lnglat))
+    unchanged precise perpendicular test below discards the extras.
+
+    `mean_lat`: pre-computed mean_lat_rad(coords_lnglat), in radians. When
+    omitted, falls back to computing it here (backward compatible)."""
+    if mean_lat is None:
+        mean_lat = mean_lat_rad(coords_lnglat)
+    cos_lat = math.cos(mean_lat)
     lat_pad = city_mi / MI_PER_DEGREE_LAT
     lng_pad = city_mi / (MI_PER_DEGREE_LAT * _as_decimal(max(abs(cos_lat), 0.01)))
     return float(max(lat_pad, lng_pad))
@@ -160,22 +182,29 @@ def candidates(route) -> list[Candidate]:
     rooftop_mi, city_mi = _corridor_widths()
 
     coords = route.raw_coordinates
+    # Computed once per corridor pass, not once per candidate station --
+    # see mean_lat_rad()'s docstring. Threaded into every downstream call
+    # that would otherwise re-derive it from the same route coordinates.
+    mean_lat = mean_lat_rad(coords)
     tree, indexed_stations = _get_index()
 
-    buffer_deg = _corridor_buffer_degrees(coords, city_mi)
+    buffer_deg = _corridor_buffer_degrees(coords, city_mi, mean_lat=mean_lat)
     raw_route = LineString(coords)
     query_region = raw_route.buffer(buffer_deg)
     survivor_idx = tree.query(query_region, predicate="intersects")
     stations = [indexed_stations[i] for i in survivor_idx]
 
-    planar_route = build_planar_route(coords)
+    planar_route = build_planar_route(coords, mean_lat=mean_lat)
     route_length_mi = _as_decimal(planar_route.length)
     total_route_mi = route.total_route_mi
 
     result = []
     for station in stations:
         planar_point = project_point(
-            float(station.longitude), float(station.latitude), coords
+            float(station.longitude),
+            float(station.latitude),
+            coords,
+            mean_lat=mean_lat,
         )
 
         half_width = (
