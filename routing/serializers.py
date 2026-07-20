@@ -10,6 +10,8 @@ upstream never round.
 """
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from rest_framework import serializers
 
 from routing.map_url import simplify_geometry
@@ -187,6 +189,27 @@ class RouteRequestSerializer(serializers.Serializer):
                 "starting_fuel": DEFAULT_STARTING_FUEL,
             }
         return attrs
+
+
+def price_freshness() -> dict:
+    """Return the configured fuel-price dataset vintage and its paired
+    limitation note (VEH-08 / D-25 / D-26).
+
+    Validated at point of use, not import time -- mirrors
+    `routing.services.corridor._corridor_widths`'s pattern of raising
+    `ImproperlyConfigured` where the value is actually consumed, so a
+    misconfigured deployment fails loudly at request time rather than
+    silently shipping a null freshness field.
+    """
+    as_of = settings.FUEL_PRICE_AS_OF
+    if not as_of:
+        raise ImproperlyConfigured(
+            f"FUEL_PRICE_AS_OF must be a non-empty ISO date, got {as_of!r}"
+        )
+    return {
+        "price_as_of": as_of,
+        "price_data_note": settings.FUEL_PRICE_DATA_NOTE,
+    }
 
 
 class FuelStopSerializer(serializers.Serializer):

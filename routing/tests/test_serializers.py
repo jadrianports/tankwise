@@ -1,10 +1,12 @@
 """Tests for the request/response serializers. No DB needed -- pure
 serializer/field behavior.
 """
+import datetime
 import math
 from decimal import Decimal
 
-from django.test import SimpleTestCase
+from django.core.exceptions import ImproperlyConfigured
+from django.test import SimpleTestCase, override_settings
 from shapely.geometry import LineString
 
 from routing.serializers import (
@@ -13,6 +15,7 @@ from routing.serializers import (
     DEFAULT_TANK_RANGE_MI,
     RouteRequestSerializer,
     RouteResponseSerializer,
+    price_freshness,
 )
 from routing.services.mapbox import Route
 from routing.services.solver import FuelPlan, FuelStop
@@ -263,6 +266,31 @@ class VehicleRequestTests(SimpleTestCase):
             serializer = RouteRequestSerializer(data=self._base(bad_vehicle))
             self.assertFalse(serializer.is_valid())
             self.assertIn("vehicle", serializer.errors)
+
+
+class PriceFreshnessTests(SimpleTestCase):
+    """price_freshness() surfaces the configured dataset vintage and its
+    paired caveat, validated at point of use."""
+
+    def test_returns_both_keys_from_settings(self):
+        result = price_freshness()
+
+        self.assertIn("price_as_of", result)
+        self.assertIn("price_data_note", result)
+        self.assertTrue(result["price_as_of"])
+        self.assertTrue(result["price_data_note"])
+
+    def test_blank_price_as_of_raises_improperly_configured(self):
+        with override_settings(FUEL_PRICE_AS_OF=""):
+            with self.assertRaises(ImproperlyConfigured):
+                price_freshness()
+
+    def test_configured_date_is_a_valid_iso_date(self):
+        result = price_freshness()
+
+        # Raises ValueError if not a valid ISO date -- assertion is
+        # simply that this does not raise.
+        datetime.date.fromisoformat(result["price_as_of"])
 
 
 class RouteResponseSerializerMoneyQuantizationTests(SimpleTestCase):

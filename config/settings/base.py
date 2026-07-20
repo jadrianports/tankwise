@@ -108,6 +108,27 @@ MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
+# Fuel price dataset vintage (VEH-08). A constant, not a Station column
+# -- the source CSV has one vintage and no per-row dates, so a column
+# would store thousands of identical copies plus a migration and a
+# reseed for zero added information, while a constant survives a
+# future Postgres migration untouched. Estimated by cross-referencing
+# the dataset's own price statistics (mean $3.499/gal, median $3.432,
+# min $2.687, max $6.399) against EIA's historical weekly on-highway
+# diesel series: the California high near $6.40 rules out 2021 and
+# earlier, and the ~$3.50 national-equivalent mean rules out most of
+# 2022-2023, leaving late 2024-early 2025 as the best-fit window.
+FUEL_PRICE_AS_OF = _env("FUEL_PRICE_AS_OF", "2025-01-01")
+FUEL_PRICE_DATA_NOTE = _env(
+    "FUEL_PRICE_DATA_NOTE",
+    "Fuel prices come from a static OPIS truck-stop snapshot with no "
+    "per-row timestamp. Price levels are consistent with U.S. retail "
+    "diesel of late 2024-early 2025: the dataset mean of ~$3.50/gal "
+    "matches EIA's on-highway national average for that window, and "
+    "California outliers up to $6.40 confirm a post-2022 vintage. "
+    "This is a dataset vintage, not a live quote.",
+)
+
 # Cache
 # CACHE_BACKEND selects "redis" (django-redis, containerized demo) or
 # "locmem" (default, keeps a fresh clone's runserver/tests working with zero
