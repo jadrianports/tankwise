@@ -156,8 +156,18 @@ else:
     }
 
 # Django REST Framework
+# Throttle rates are deliberately generous defaults -- a recruiter clicking
+# demo chips and Phase 9's debounced what-if sliders must never trip them,
+# while a script cannot drain the Mapbox token budget. Both are env-tunable
+# so they can be retuned from the Render dashboard without a redeploy.
+# NUM_PROXIES=1 trusts exactly one hop, matching Render's single edge proxy.
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "routing.exceptions.custom_exception_handler",
+    "DEFAULT_THROTTLE_RATES": {
+        "route_burst": _env("ROUTE_THROTTLE_BURST_RATE", "20/min"),
+        "route_sustained": _env("ROUTE_THROTTLE_SUSTAINED_RATE", "200/day"),
+    },
+    "NUM_PROXIES": int(_env("NUM_PROXIES", "1")),
 }
 
 # Password validation

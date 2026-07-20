@@ -8,7 +8,7 @@ from decimal import Decimal
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import Throttled, ValidationError
 
 from routing.exceptions import custom_exception_handler
 from routing.services.exceptions import InfeasibleRouteError, InvalidRouteInputError
@@ -81,6 +81,17 @@ class DRFValidationErrorMappingTests(SimpleTestCase):
         self.assertEqual(response.data["error"]["code"], "invalid_input")
         self.assertIn("message", response.data["error"])
         self.assertIn("detail", response.data["error"])
+
+
+class ThrottledMappingTests(SimpleTestCase):
+    def test_throttled_maps_to_429_with_rate_limited_envelope(self):
+        exc = Throttled(wait=5)
+
+        response = custom_exception_handler(exc, {})
+
+        self.assertEqual(response.status_code, status.HTTP_429_TOO_MANY_REQUESTS)
+        self.assertEqual(response.data["error"]["code"], "rate_limited")
+        self.assertEqual(response.data["error"]["detail"]["retry_after_s"], 5)
 
 
 class UnrecognizedExceptionTests(SimpleTestCase):

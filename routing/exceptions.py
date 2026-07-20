@@ -10,6 +10,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework import status
+from rest_framework.exceptions import Throttled
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_default_handler
 
@@ -37,20 +38,31 @@ def custom_exception_handler(exc, context):
     First defers to DRF's default handler -- if it recognizes the
     exception (e.g. a serializer `ValidationError`), its response is
     re-wrapped in the envelope under `invalid_input`, preserving the
-    original status code. Otherwise dispatches by `isinstance` on the
-    project's plain-Python domain exceptions. Returns `None` for
-    anything unrecognized so DRF/Django's default 500 handler takes over
-    -- never surfaces a traceback.
+    original status code. `Throttled` is also recognized by DRF's
+    default handler -- it is re-coded to `rate_limited` rather than
+    re-created, since the default handler already attaches the
+    `Retry-After` header to the `Response` it returns and reassigning
+    only `.data` preserves that header untouched. Otherwise dispatches
+    by `isinstance` on the project's plain-Python domain exceptions.
+    Returns `None` for anything unrecognized so DRF/Django's default 500
+    handler takes over -- never surfaces a traceback.
 
     Every branch assigns `result` instead of returning immediately, so a
     single tail-attach point can carry partial Server-Timing data
     (`context["view"]._timing`, per `routing.timing.ServerTiming`) onto
     whatever error response is built -- the stages that completed before
-    the failure, per D-10.
+    the failure, per D-10. The tail Server-Timing attach is a no-op for
+    a 429 because the throttle rejects before the pipeline runs, so
+    `view._timing` was never created.
     """
     response = drf_default_handler(exc, context)
     if response is not None:
-        response.data = _envelope("invalid_input", "Invalid request.", response.data)
+        if isinstance(exc, Throttled):
+            response.data = _envelope(
+                "rate_limited", "Too many requests.", {"retry_after_s": exc.wait}
+            )
+        else:
+            response.data = _envelope("invalid_input", "Invalid request.", response.data)
         result = response
     elif isinstance(exc, RouteNotFoundError):
         result = Response(

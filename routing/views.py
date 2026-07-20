@@ -28,6 +28,11 @@ exception and never suppresses it, so this instrumentation preserves the
 pipeline's no-try/except shape. A stage entered more than once (e.g.
 "corridor"/"solver" once per route alternative) accumulates into one
 running total rather than overwriting.
+
+`RouteView.throttle_classes` attaches rate limiting declaratively and
+per-view (`routing.throttles.RouteBurstThrottle` +
+`RouteSustainedThrottle`) rather than through a global DRF default, so
+`HealthView`/`ReadyView` are never throttled.
 """
 from dataclasses import dataclass
 from decimal import Decimal
@@ -47,6 +52,7 @@ from routing.services import corridor, naive_baseline, solver
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.legs import build_legs
 from routing.services.mapbox import Route, geocode, get_routes
+from routing.throttles import RouteBurstThrottle, RouteSustainedThrottle
 from routing.timing import ServerTiming
 
 # Sentinel substituted for a `None` route duration in `_select_winner`'s
@@ -83,6 +89,8 @@ class HealthView(APIView):
 
 class RouteView(APIView):
     """`POST /api/route` -- see module docstring."""
+
+    throttle_classes = [RouteBurstThrottle, RouteSustainedThrottle]
 
     def post(self, request):
         serializer = RouteRequestSerializer(data=request.data)
