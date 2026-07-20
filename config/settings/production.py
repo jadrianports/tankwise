@@ -36,3 +36,22 @@ ALLOWED_HOSTS = [h.strip() for h in _env("DJANGO_ALLOWED_HOSTS", "").split(",") 
 _render_host = _env("RENDER_EXTERNAL_HOSTNAME")
 if _render_host and _render_host not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_render_host)
+
+# STORAGES replaces the whole dict rather than merging into it -- defining
+# only "staticfiles" here would silently drop the "default" file storage.
+# Manifest strictness is left at its default (True): if it fires during the
+# image build, that is a genuine signal the build stage's output didn't
+# land where collectstatic expects, not something to silence.
+STORAGES = {
+    "default": {
+        "BACKEND": "django.core.files.storage.FileSystemStorage",
+    },
+    "staticfiles": {
+        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+    },
+}
+
+# Keeps only the content-hashed files after collectstatic, discarding the
+# unhashed originals -- smaller image layer, and nothing in this codebase
+# references an unhashed static filename directly.
+WHITENOISE_KEEP_ONLY_HASHED_FILES = True

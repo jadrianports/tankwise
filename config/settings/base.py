@@ -32,6 +32,10 @@ DJANGO_ALLOWED_HOSTS = _env("DJANGO_ALLOWED_HOSTS", "*")
 ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()]
 
 INSTALLED_APPS = [
+    # Must precede the contrib apps so local `runserver` exercises the same
+    # WhiteNoise code path as production instead of Django's own static
+    # handler (D-07 -- WhiteNoise everywhere, no nginx sidecar).
+    "whitenoise.runserver_nostatic",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
@@ -43,6 +47,10 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    # Must sit immediately after SecurityMiddleware -- WhiteNoise's own
+    # documented required position -- so it intercepts static/SPA requests
+    # before session, auth and CSRF middleware run.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
@@ -195,5 +203,15 @@ USE_TZ = True
 
 # Static files
 STATIC_URL = "static/"
+STATIC_ROOT = BASE_DIR / "staticfiles"
+
+# The built SPA's directory (D-08: SPA owns the root, backend stays under
+# /api/, collectstatic output serves at /static/). WhiteNoise's own docs
+# caution WHITENOISE_ROOT against bulk static files because it applies no
+# cache versioning -- but Vite content-hashes every emitted asset filename
+# (e.g. index-a1b2c3.js), so cache-busting already comes from the filename
+# itself, making WHITENOISE_ROOT the right tool for this specific job.
+WHITENOISE_ROOT = BASE_DIR / "frontend" / "dist"
+WHITENOISE_INDEX_FILE = True
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"

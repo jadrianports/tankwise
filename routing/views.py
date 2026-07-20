@@ -36,10 +36,13 @@ per-view (`routing.throttles.RouteBurstThrottle` +
 """
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
+from django.http import FileResponse, JsonResponse
+from django.views import View
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -143,6 +146,45 @@ class ReadyView(APIView):
         token = settings.MAPBOX_TOKEN
         public_token = settings.MAPBOX_PUBLIC_TOKEN
         return bool(token) and bool(public_token) and public_token.startswith("pk.")
+
+
+class SpaFallbackView(View):
+    """`GET <any path not under api/ or static/>` -- serves the built SPA's
+    `index.html` so client-side routes (e.g. `/trip/abc123`) render the app
+    instead of a Django 404 (D-09).
+
+    WhiteNoise's middleware already serves real files -- the SPA's hashed
+    assets and `index.html` for exact directory requests, via
+    `WHITENOISE_INDEX_FILE` -- directly from the WSGI stack, before the URL
+    resolver is ever reached (see MIDDLEWARE ordering in `base.py`). This
+    view exists only for the remainder: client-side routes that are not
+    files on disk. Returning the file directly with `FileResponse`, rather
+    than rendering it through `TemplateView`, keeps Vite's build output out
+    of the Django template engine entirely -- and it means a fresh clone
+    with no SPA build present degrades to a clear, explicit 404 instead of
+    a `TemplateDoesNotExist` error.
+
+    A plain `django.views.View`, not a DRF `APIView` -- this serves a
+    static file, not an API resource, so it stays out of the DRF view
+    hierarchy on purpose.
+    """
+
+    def get(self, request, *args, **kwargs):
+        index_path = Path(settings.WHITENOISE_ROOT) / "index.html"
+        if not index_path.exists():
+            return JsonResponse(
+                {
+                    "error": {
+                        "code": "spa_build_missing",
+                        "message": (
+                            "The SPA build is missing. Run `npm run build` "
+                            "in frontend/ to generate frontend/dist."
+                        ),
+                    }
+                },
+                status=404,
+            )
+        return FileResponse(index_path.open("rb"), content_type="text/html")
 
 
 class RouteView(APIView):
