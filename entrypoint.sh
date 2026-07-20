@@ -1,7 +1,19 @@
 #!/bin/sh
 set -e
 
-python manage.py migrate --noinput
+# migrate --noinput runs against DB_MIGRATE_HOST (Neon's direct,
+# non-pooled endpoint) when it's set, overriding DB_HOST for this one
+# command only -- Neon documents transaction-mode pooling as error-prone
+# for schema migrations. Every later step in this script (the seed check
+# below, gunicorn itself) keeps using the normal DB_HOST from the
+# container's own environment, which is the pooled endpoint in
+# production. Locally, DB_MIGRATE_HOST is unset and migrate runs against
+# whatever DB_HOST already resolves to (SQLite has no host at all).
+if [ -n "${DB_MIGRATE_HOST}" ]; then
+  DB_HOST="${DB_MIGRATE_HOST}" python manage.py migrate --noinput
+else
+  python manage.py migrate --noinput
+fi
 
 # --verbosity 0 suppresses the "N objects imported automatically" banner the
 # Django shell prints on startup, which would otherwise contaminate the count;

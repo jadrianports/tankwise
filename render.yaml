@@ -1,0 +1,95 @@
+# Render Blueprint for the Fuel Route Optimizer API.
+#
+# Declares exactly one free-plan Docker web service. This file is
+# reviewable infrastructure-as-code: every secret is prompted for in the
+# Render dashboard (sync: false) rather than committed here, and only
+# non-secret configuration carries a literal value below.
+#
+# No rootDir/dockerfilePath override: the Dockerfile already lives at the
+# repo root and Render's own default build context is the repo root, so
+# the defaults already match this project's layout.
+#
+# No preDeployCommand: that field is only available on paid web/private
+# services and background workers, not the free plan (confirmed against
+# Render's own docs -- see 08-RESEARCH.md, "Contradictions with
+# CONTEXT.md"). Migrate and conditional seeding instead run inside
+# entrypoint.sh's container start sequence, which is correct here rather
+# than a workaround: the free plan runs a single instance only, so there
+# is no second container that could race a concurrent migrate/seed.
+# seed_stations is an idempotent update_or_create upsert, and
+# entrypoint.sh only invokes it when the station table is empty, so a
+# restart never reseeds and a hypothetical double-invocation still
+# converges to the same rows.
+services:
+  - type: web
+    name: fuel-route-optimizer
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /api/ready
+    envVars:
+      # --- Dashboard-supplied secrets (prompted for on Blueprint
+      # creation, never written into this file) ---
+      - key: DJANGO_SECRET_KEY
+        sync: false
+      # Neon's pooled endpoint. The running app queries through this
+      # host; PgBouncer there already pools connections, which is why
+      # DB_CONN_MAX_AGE stays at its own default of 0 (no committed
+      # override needed here).
+      - key: DB_HOST
+        sync: false
+      # Neon's direct (non-pooled) endpoint. entrypoint.sh overrides
+      # DB_HOST with this value for the `migrate --noinput` step only --
+      # Neon documents transaction-mode pooling as error-prone for
+      # schema migrations. Every other step (the conditional seed,
+      # gunicorn itself) keeps using the pooled DB_HOST above.
+      - key: DB_MIGRATE_HOST
+        sync: false
+      - key: DB_NAME
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      # TLS Redis connection string from Upstash.
+      - key: REDIS_URL
+        sync: false
+      # Secret Directions/Geocoding access token -- server-side only,
+      # never sent to the browser.
+      - key: MAPBOX_TOKEN
+        sync: false
+      # Public token embedded in the browser-facing map_url. Still
+      # dashboard-supplied rather than committed, since it is tied to a
+      # specific Mapbox account.
+      - key: MAPBOX_PUBLIC_TOKEN
+        sync: false
+
+      # --- Committed non-secret configuration ---
+      - key: DJANGO_SETTINGS_MODULE
+        value: config.settings.production
+      - key: DB_ENGINE
+        value: django.db.backends.postgresql
+      - key: DB_PORT
+        value: "5432"
+      - key: CACHE_BACKEND
+        value: redis
+      # Render's single edge proxy is exactly one hop.
+      - key: NUM_PROXIES
+        value: "1"
+      - key: ROUTE_THROTTLE_BURST_RATE
+        value: 20/min
+      - key: ROUTE_THROTTLE_SUSTAINED_RATE
+        value: 200/day
+      # Measurement-backed against Render free's 512 MB limit -- see
+      # entrypoint.sh's own comment and 08-RESEARCH.md's "gunicorn
+      # Worker Sizing" section.
+      - key: WEB_CONCURRENCY
+        value: "2"
+      - key: GUNICORN_TIMEOUT
+        value: "30"
+      - key: GUNICORN_MAX_REQUESTS
+        value: "500"
+      - key: GUNICORN_MAX_REQUESTS_JITTER
+        value: "50"
+      - key: SECURE_HSTS_SECONDS
+        value: "31536000"

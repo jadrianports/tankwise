@@ -98,8 +98,22 @@ flowchart LR
 | `CACHE_BACKEND` | `locmem` | `locmem` for a single local process, `redis` in Docker (shared across workers). |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection string, only read when `CACHE_BACKEND=redis`. |
 | `CACHE_TTL_SECONDS` | `86400` | How long an identical `/api/route` response stays cached (1 day). |
+| `DB_SSLMODE` | `require` | TLS mode for the Postgres connection. Neon requires TLS; ignored for local SQLite. |
+| `DB_CONN_MAX_AGE` | `0` | Persistent-connection lifetime in seconds. `0` closes the connection after each request, which is correct when a pooler (Neon's PgBouncer) already pools connections in front of Django. |
+| `DB_CONN_HEALTH_CHECKS` | `True` | Verifies a reused persistent connection is still alive before use. |
+| `DB_MIGRATE_HOST` | *(unset)* | Neon's direct, non-pooled endpoint. `entrypoint.sh` runs `manage.py migrate` against this host instead of `DB_HOST` when it's set, because transaction-mode connection pooling is documented as error-prone for schema migrations. |
+| `DJANGO_SETTINGS_MODULE` | `config.settings` locally | Set to `config.settings.production` on the deployed service to select the hardened profile: `DEBUG=False`, HTTPS enforcement, secure cookies, explicit `ALLOWED_HOSTS`. |
+| `SECURE_HSTS_SECONDS` | `31536000` (1 year) | HSTS duration under `config.settings.production`. No effect locally. |
+| `NUM_PROXIES` | `1` | Trusted reverse-proxy hop count DRF excludes from `X-Forwarded-For` when identifying the real client IP for rate limiting. `1` matches a single edge proxy in front of the service. |
+| `ROUTE_THROTTLE_BURST_RATE` | `20/min` | Burst rate limit on `POST /api/route` only; every other endpoint stays unthrottled. |
+| `ROUTE_THROTTLE_SUSTAINED_RATE` | `200/day` | Sustained daily rate limit on `POST /api/route` only. |
+| `WEB_CONCURRENCY` | `2` | gunicorn worker process count. Measurement-backed against a 512 MB memory limit — see "Free-tier deployment" below. |
+| `GUNICORN_TIMEOUT` | `30` | Per-request timeout in seconds. |
+| `GUNICORN_MAX_REQUESTS` / `GUNICORN_MAX_REQUESTS_JITTER` | `500` / `50` | Requests a worker handles before it's recycled, plus random jitter, guarding against slow memory creep over a long-running process. |
+| `FUEL_PRICE_AS_OF` | `2025-01-01` | Display-only metadata qualifying every price/cost figure the API returns. See "Free-tier deployment" below for how this date was derived. |
+| `FUEL_PRICE_DATA_NOTE` | see `config/settings/base.py` | The full data-vintage caveat shipped in the JSON payload itself. |
 
-On secrets: `.env` is gitignored and never committed, and `.env.example` (committed) carries only placeholders. The Mapbox token is a runtime-only environment variable on the `web` container. The SPA holds no token of its own, since map tiles come from OpenStreetMap through Leaflet rather than Mapbox.
+On secrets: `.env` is gitignored and never committed, and `.env.example` (committed) carries only placeholders. The Mapbox token is a runtime-only environment variable on the `web` container. The SPA holds no token of its own, since map tiles come from OpenStreetMap through Leaflet rather than Mapbox. The `render.yaml` Blueprint that declares the live deployment's service follows the same rule at the infrastructure level: every credential (the Django secret key, the Postgres and Redis connection details, both Mapbox tokens) is declared in the Blueprint's non-synced form, so the hosting dashboard prompts for it rather than it ever being written into a committed file — `render.yaml` itself carries only non-secret configuration (throttle rates, gunicorn tuning, the settings module path, and so on).
 
 ## API reference
 
