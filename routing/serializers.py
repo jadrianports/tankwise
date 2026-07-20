@@ -89,6 +89,87 @@ def _rationale_repr(instance) -> dict:
     }
 
 
+def _duration_repr(value):
+    """Coerce a duration in seconds to a plain `int`, `None` when `value`
+    is `None`. Seconds are not a money/gallon/mile quantity, so this
+    deliberately does not introduce a fourth quantizer -- an inline
+    rounded integer is the right granularity here."""
+    if value is None:
+        return None
+    d = value if isinstance(value, Decimal) else Decimal(str(value))
+    return int(d.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _vehicle_repr(vehicle) -> dict:
+    """Echo the resolved vehicle profile plus a derived `starting_fuel_mi`
+    (D-04) -- what makes the free-full-tank assumption visible instead of
+    looking like a bug on a short trip."""
+    mpg = vehicle["mpg"]
+    tank_range_mi = vehicle["tank_range_mi"]
+    starting_fuel = vehicle["starting_fuel"]
+    starting_fuel_mi = starting_fuel * tank_range_mi
+    return {
+        "mpg": str(mpg),
+        "tank_range_mi": _quantize_miles(tank_range_mi),
+        "starting_fuel": str(starting_fuel),
+        "starting_fuel_mi": _quantize_miles(starting_fuel_mi),
+    }
+
+
+def _legs_repr(legs) -> list:
+    """Render a `routing.services.legs.Leg` list. `from`/`to` are read
+    from `from_name`/`to_name` -- `Leg` cannot use `from` as a field name
+    since it is a Python keyword."""
+    return [
+        {
+            "from": leg.from_name,
+            "to": leg.to_name,
+            "distance_mi": _quantize_miles(leg.distance_mi),
+            "duration_s": _duration_repr(leg.duration_s),
+            "gallons": _quantize_gallons(leg.gallons),
+            "cost": _quantize_money(leg.cost),
+        }
+        for leg in legs
+    ]
+
+
+def _savings_repr(savings):
+    """Render a `routing.services.naive_baseline.Savings` into the D-16
+    shape, or `None` when `savings` itself is `None` (the naive baseline
+    never solved -- see `savings_note`, a sibling top-level key, not
+    nested here)."""
+    if savings is None:
+        return None
+    return {
+        "amount": _quantize_money(savings.amount),
+        "percent": _percent_repr(savings.percent),
+        "naive_total_cost": _quantize_money(savings.naive_total_cost),
+        "naive_total_gallons": _quantize_gallons(savings.naive_total_gallons),
+        "naive_stop_count": int(savings.naive_stop_count),
+    }
+
+
+def _alternatives_repr(alternatives) -> list:
+    """Render the compact D-11 alternatives comparison array -- five
+    scalar keys per entry, no geometry, no stop list. `total_cost` is
+    `None` for an infeasible alternative rather than the entry being
+    omitted."""
+    return [
+        {
+            "total_route_mi": _quantize_miles(a["total_route_mi"]),
+            "duration_s": _duration_repr(a.get("duration_s")),
+            "total_cost": (
+                _quantize_money(a["total_cost"])
+                if a.get("total_cost") is not None
+                else None
+            ),
+            "chosen": bool(a["chosen"]),
+            "feasible": bool(a["feasible"]),
+        }
+        for a in alternatives
+    ]
+
+
 def _location_repr(coords):
     """Render a {"latitude": ..., "longitude": ...} coordinate dict as
     Decimal-as-string values. Returns None when no coords were
@@ -280,14 +361,39 @@ class FuelStopSerializer(serializers.Serializer):
 
 
 class RouteResponseSerializer(serializers.Serializer):
-    """Renders the full computed response payload.
+    """Renders the full computed response payload -- a pure formatter.
+    Every value it renders was computed upstream by the solver, the leg
+    builder (`routing.services.legs`), or the naive baseline
+    (`routing.services.naive_baseline`); this class re-derives nothing.
 
-    `instance` is a mapping with keys `"route"` (a
-    `routing.services.mapbox.Route`), `"plan"` (a
-    `routing.services.solver.FuelPlan`), and optionally `"map_url"`.
+    Instance-dict contract (what plan 07-08's orchestrator must
+    populate):
+
+    - `"route"` (required): the winning `routing.services.mapbox.Route`.
+    - `"plan"` (required): the winning `routing.services.solver.FuelPlan`.
+    - `"map_url"` (optional): the Static Images URL, or `None`.
+    - `"vehicle"` (optional): the resolved profile dict with `"mpg"`,
+      `"tank_range_mi"`, `"starting_fuel"` (Decimal values) -- `None`/
+      absent renders `vehicle: null`.
+    - `"legs"` (optional): a list of `routing.services.legs.Leg` --
+      absent renders `legs: []`.
+    - `"savings"` (optional): a `routing.services.naive_baseline.Savings`
+      or `None` -- `None`/absent renders `savings: null`.
+    - `"savings_note"` (optional): a string explaining a `None` savings
+      (e.g. `"naive_plan_infeasible"`), or `None`.
+    - `"alternatives"` (optional): a list of plain dicts, each with
+      `"total_route_mi"`, `"duration_s"`, `"total_cost"` (or `None` when
+      infeasible), `"chosen"`, `"feasible"` -- absent renders
+      `alternatives: []` and `alternatives_considered: 0`.
+
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
     `{"latitude", "longitude"}` dict), all injected by the orchestrator.
+
+    Every new key is read from `instance` with a `.get()` default, so an
+    instance shaped with only the v1.0 keys (`"route"`, `"plan"`,
+    `"map_url"`) still serializes rather than raising -- this is what
+    keeps a v1.0 client's response shape additive-only.
 
     `route_geometry` is simplified via `routing.map_url.simplify_geometry`
     rather than `route.raw_coordinates` -- a full-resolution route can be
@@ -303,6 +409,12 @@ class RouteResponseSerializer(serializers.Serializer):
             plan.stops, many=True, context=self.context
         ).data
 
+        vehicle = instance.get("vehicle")
+        legs = instance.get("legs") or []
+        savings = instance.get("savings")
+        alternatives = instance.get("alternatives") or []
+        freshness = price_freshness()
+
         return {
             "start": _location_repr(self.context.get("start_coords")),
             "finish": _location_repr(self.context.get("finish_coords")),
@@ -312,4 +424,14 @@ class RouteResponseSerializer(serializers.Serializer):
             "total_cost": _quantize_money(plan.total_cost),
             "total_gallons": _quantize_gallons(plan.total_gallons),
             "map_url": instance.get("map_url"),
+            "vehicle": _vehicle_repr(vehicle) if vehicle is not None else None,
+            "legs": _legs_repr(legs),
+            "total_duration_s": _duration_repr(route.duration_s),
+            "fuel_stop_count": len(plan.stops),
+            "savings": _savings_repr(savings),
+            "savings_note": instance.get("savings_note"),
+            "alternatives_considered": len(alternatives),
+            "alternatives": _alternatives_repr(alternatives),
+            "price_as_of": freshness["price_as_of"],
+            "price_data_note": freshness["price_data_note"],
         }

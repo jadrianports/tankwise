@@ -18,7 +18,9 @@ from routing.serializers import (
     RouteResponseSerializer,
     price_freshness,
 )
+from routing.services.legs import Leg
 from routing.services.mapbox import Route
+from routing.services.naive_baseline import Savings
 from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
 
 
@@ -473,6 +475,168 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
         self.assertEqual(data["total_gallons"], "0.00")
         self.assertEqual(data["map_url"], "https://example.test/map")
         self.assertEqual(data["fuel_stops"], [])
+
+
+class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
+    """vehicle/legs/savings/alternatives/price_as_of top-level fields --
+    the D-04/D-11/D-16/D-27 response contract."""
+
+    def _minimal_instance(self):
+        route = Route(
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
+        )
+        plan = FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+        return {"route": route, "plan": plan, "map_url": None}
+
+    def test_minimal_v1_shaped_instance_serializes_without_raising(self):
+        serializer = RouteResponseSerializer(self._minimal_instance(), context={})
+
+        data = serializer.data
+
+        self.assertIsNone(data["savings"])
+        self.assertIsNone(data["savings_note"])
+        self.assertEqual(data["alternatives"], [])
+        self.assertEqual(data["alternatives_considered"], 0)
+        self.assertIsNone(data["vehicle"])
+        self.assertEqual(data["legs"], [])
+        self.assertIn("price_as_of", data)
+        self.assertIn("price_data_note", data)
+
+    def test_vehicle_echo_includes_derived_starting_fuel_mi(self):
+        instance = self._minimal_instance()
+        instance["vehicle"] = {
+            "mpg": Decimal("6"),
+            "tank_range_mi": Decimal("500"),
+            "starting_fuel": Decimal("0.5"),
+        }
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(
+            data["vehicle"],
+            {
+                "mpg": "6",
+                "tank_range_mi": "500",
+                "starting_fuel": "0.5",
+                "starting_fuel_mi": "250",
+            },
+        )
+
+    def test_legs_render_exact_key_set(self):
+        instance = self._minimal_instance()
+        instance["legs"] = [
+            Leg(
+                from_name="START",
+                to_name="FINISH",
+                distance_mi=Decimal("500"),
+                duration_s=Decimal("18000"),
+                gallons=Decimal("0"),
+                cost=Decimal("0"),
+            )
+        ]
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(len(data["legs"]), 1)
+        leg = data["legs"][0]
+        self.assertEqual(
+            set(leg.keys()), {"from", "to", "distance_mi", "duration_s", "gallons", "cost"}
+        )
+        self.assertEqual(leg["from"], "START")
+        self.assertEqual(leg["to"], "FINISH")
+        self.assertEqual(leg["duration_s"], 18000)
+
+    def test_savings_percent_renders_as_percentage_number(self):
+        instance = self._minimal_instance()
+        instance["savings"] = Savings(
+            amount=Decimal("10.00"),
+            percent=Decimal("0.2"),
+            naive_total_cost=Decimal("50.00"),
+            naive_total_gallons=Decimal("15"),
+            naive_stop_count=2,
+        )
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(data["savings"]["percent"], 20.0)
+        self.assertEqual(data["savings"]["amount"], "10.00")
+        self.assertEqual(data["savings"]["naive_stop_count"], 2)
+
+    def test_null_savings_with_note_leaves_rest_of_payload_intact(self):
+        instance = self._minimal_instance()
+        instance["savings"] = None
+        instance["savings_note"] = "naive_plan_infeasible"
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertIsNone(data["savings"])
+        self.assertEqual(data["savings_note"], "naive_plan_infeasible")
+        self.assertEqual(data["total_route_mi"], "500")
+
+    def test_alternatives_considered_matches_array_length(self):
+        instance = self._minimal_instance()
+        instance["alternatives"] = [
+            {
+                "total_route_mi": Decimal("500"),
+                "duration_s": Decimal("18000"),
+                "total_cost": Decimal("40.00"),
+                "chosen": True,
+                "feasible": True,
+            },
+            {
+                "total_route_mi": Decimal("520"),
+                "duration_s": Decimal("19000"),
+                "total_cost": None,
+                "chosen": False,
+                "feasible": False,
+            },
+        ]
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(data["alternatives_considered"], len(data["alternatives"]))
+        self.assertEqual(data["alternatives_considered"], 2)
+        chosen_flags = [a["chosen"] for a in data["alternatives"]]
+        self.assertEqual(chosen_flags.count(True), 1)
+
+    def test_infeasible_alternative_renders_null_cost_not_omitted(self):
+        instance = self._minimal_instance()
+        instance["alternatives"] = [
+            {
+                "total_route_mi": Decimal("520"),
+                "duration_s": Decimal("19000"),
+                "total_cost": None,
+                "chosen": False,
+                "feasible": False,
+            }
+        ]
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(len(data["alternatives"]), 1)
+        alt = data["alternatives"][0]
+        self.assertIsNone(alt["total_cost"])
+        self.assertFalse(alt["feasible"])
+        no_geometry_or_stop_keys = {"geometry", "route_geometry", "stops", "fuel_stops"}
+        self.assertFalse(no_geometry_or_stop_keys & set(alt.keys()))
+
+    def test_total_duration_s_and_fuel_stop_count(self):
+        instance = self._minimal_instance()
+        instance["route"] = Route(
+            total_route_mi=Decimal("500"),
+            geometry=LineString(),
+            raw_coordinates=[],
+            duration_s=Decimal("18000"),
+        )
+        stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=42)
+        instance["plan"] = FuelPlan(
+            stops=[stop], total_cost=Decimal("90.00"), total_gallons=Decimal("30")
+        )
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(data["total_duration_s"], 18000)
+        self.assertEqual(data["fuel_stop_count"], 1)
 
 
 class FuelStopDistanceFromStartTests(SimpleTestCase):
