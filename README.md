@@ -18,7 +18,7 @@ Open `.env` and set two [Mapbox](https://www.mapbox.com/) tokens: a secret token
 docker compose up --build
 ```
 
-Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all ~6,738 geocoded stations, which takes a few seconds. `nginx` waits for `web` to report healthy before it starts serving, so you won't hit broken requests during startup. If port 80 is already taken on your machine, change the host side of `nginx.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
+Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all ~6,738 geocoded stations, which takes a few seconds; `web` itself waits for `redis` to report healthy before it starts, so you won't hit a broken cache the moment it comes up. If port 80 is already taken on your machine, change the host side of `web.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
 
 Even without Mapbox tokens the stack boots and the map page loads. A route request just returns a clear 502 `upstream_error` until both `MAPBOX_TOKEN` and `MAPBOX_PUBLIC_TOKEN` are set.
 
@@ -43,22 +43,20 @@ Both show the same plan: the summary card with total cost, gallons, route miles,
 
 ## Architecture
 
-**Request path.** A browser hits Nginx on a single origin. Nginx serves the built SPA bundle and reverse-proxies `/api/*` to gunicorn, so there is no CORS to configure. The view makes at most one Mapbox Directions call, narrows the candidate stations with an indexed bounding-box query and an in-process geometric corridor test, runs a pure in-memory solver, and caches the full response in Redis (shared across all gunicorn workers) before returning it.
+**Request path.** A browser hits a single gunicorn process on one origin. WhiteNoise, running inside that same process, serves the built SPA bundle and Django/DRF's own static assets ahead of the URL resolver; a client-side deep link that isn't a real file falls through to a catch-all view that returns the same SPA shell. Everything else is namespaced under `/api/`, so there is still no CORS to configure -- it's still one origin, just without a separate proxy in front of it. The route view makes at most one Mapbox Directions call, narrows the candidate stations with an indexed bounding-box query and an in-process geometric corridor test, runs a pure in-memory solver, and caches the full response in Redis (shared across all gunicorn workers) before returning it.
 
 ```mermaid
 flowchart LR
     Browser["Browser<br/>(React + MUI SPA)"]
-    Nginx["Nginx :80<br/>serves SPA bundle<br/>+ proxies /api/*"]
-    Gunicorn["gunicorn<br/>(3 workers)<br/>POST /api/route"]
+    Gunicorn["gunicorn workers<br/>WhiteNoise (SPA + static)<br/>+ Django/DRF (/api/*)"]
     Mapbox["Mapbox<br/>Directions API<br/>(1 call)"]
     Corridor["Indexed bbox prefilter<br/>+ perpendicular<br/>corridor filter"]
     Solver["Greedy cost-optimal<br/>fuel-stop solver"]
     Redis[("Redis<br/>response cache")]
     SQLite[("SQLite<br/>~6,738 stations")]
 
-    Browser -- "GET /, static assets" --> Nginx
-    Browser -- "POST /api/route" --> Nginx
-    Nginx -- "proxy_pass /api/" --> Gunicorn
+    Browser -- "GET /, static assets" --> Gunicorn
+    Browser -- "POST /api/route" --> Gunicorn
     Gunicorn -- "cache get/set" --> Redis
     Gunicorn -- "route geometry + distance" --> Mapbox
     Gunicorn --> Corridor
@@ -91,7 +89,7 @@ flowchart LR
 | `MAPBOX_PUBLIC_TOKEN` | *(none, required)* | Public (`pk.*`) Mapbox token used only to build the browser-facing `map_url`. Must start with `pk.`; a missing or non-`pk.` value makes every route request 502. See "Mapbox tokens" below. |
 | `DJANGO_SECRET_KEY` | dev fallback | Django's cryptographic signing key. |
 | `DJANGO_DEBUG` | `True` locally / `False` in Docker | Debug mode. Docker Compose forces this off. |
-| `DJANGO_ALLOWED_HOSTS` | `*` locally / `web,localhost,127.0.0.1,nginx` in Docker | Comma-separated allowed `Host:` headers. |
+| `DJANGO_ALLOWED_HOSTS` | `*` locally / `web,localhost,127.0.0.1` in Docker | Comma-separated allowed `Host:` headers. |
 | `DB_ENGINE` / `DB_NAME` / `DB_HOST` / `DB_USER` / `DB_PASSWORD` / `DB_PORT` | SQLite at `db.sqlite3` | Only SQLite is used. Docker points `DB_NAME` at a named volume so the seeded database survives container restarts. |
 | `CORRIDOR_ROOFTOP_MI` | `5` | Half-width of the "in-corridor" band for precisely-geocoded (rooftop) stations. |
 | `CORRIDOR_CITY_MI` | `20` | Half-width of the band for city-level-geocoded stations. Looser geocoding precision needs a wider net. |
@@ -114,6 +112,18 @@ flowchart LR
 | `FUEL_PRICE_DATA_NOTE` | see `config/settings/base.py` | The full data-vintage caveat shipped in the JSON payload itself. |
 
 On secrets: `.env` is gitignored and never committed, and `.env.example` (committed) carries only placeholders. The Mapbox token is a runtime-only environment variable on the `web` container. The SPA holds no token of its own, since map tiles come from OpenStreetMap through Leaflet rather than Mapbox. The `render.yaml` Blueprint that declares the live deployment's service follows the same rule at the infrastructure level: every credential (the Django secret key, the Postgres and Redis connection details, both Mapbox tokens) is declared in the Blueprint's non-synced form, so the hosting dashboard prompts for it rather than it ever being written into a committed file — `render.yaml` itself carries only non-secret configuration (throttle rates, gunicorn tuning, the settings module path, and so on).
+
+## Free-tier deployment
+
+The live deployment (when published) runs on Render's free web-service tier, backed by Neon (Postgres) and Upstash (Redis) -- three independent $0 services, not a production SLA. Three things worth knowing before judging response times or data freshness:
+
+1. **Cold starts.** Render spins the free-tier instance down after about 15 minutes with no inbound traffic. The first request after that idle window wakes it back up, which can take roughly a minute; every request after that is fast again. An external cron pings `GET /api/health` every ~10 minutes to keep the instance warm during normal use, so this mostly only shows up after a long gap between visits, not mid-demo.
+2. **Data vintage.** Fuel prices are a static truck-stop snapshot with no per-row timestamp -- not live quotes. Cross-referencing the dataset's own price statistics (mean ~$3.50/gal, a California high near $6.40) against EIA's published on-highway diesel averages dates it to roughly late 2024/early 2025 (`FUEL_PRICE_AS_OF`, `2025-01-01`). Every price and cost figure the API returns reflects that one snapshot, not today's pump prices.
+3. **Free-tier scope.** This is a single instance running a small worker count (`WEB_CONCURRENCY=2`), a free-tier database and cache, no horizontal scaling, and no uptime guarantee -- a demo deployment, not a production one.
+
+### Readiness and liveness
+
+Two probes exist because they answer two different questions. `GET /api/health` touches no dependency at all -- it's what the keep-warm cron and Docker Compose's own healthcheck poll, so neither one puts load on the database or cache on a schedule. `GET /api/ready` actually checks the database, cache, and Mapbox token configuration, and is what the hosting platform gates traffic routing on: an instance reporting `not_ready` never receives real requests. See both response shapes in the API reference below.
 
 ## API reference
 
@@ -158,17 +168,48 @@ curl -s -X POST http://localhost/api/route \
 | 422 | `route_not_found` | Mapbox found no drivable route (e.g. an island with no connecting road) | `{"error":{"code":"route_not_found","message":"Mapbox found no route: code='NoRoute'","detail":{}}}` |
 | 422 | `infeasible_route` | The cheapest-cost plan still requires a leg longer than the 500-mile range | `{"error":{"code":"infeasible_route","message":"No feasible fuel plan: gap of 547 mi between 'START' and 'CHEVRON #383766' exceeds max range of 500 mi","detail":{"from_station":"START","to_station":"CHEVRON #383766","gap_mi":"547","max_range_mi":"500"}}}` |
 | 502 | `upstream_error` | The Mapbox call itself failed (bad/missing token, network error, transient 5xx after retries are exhausted) | `{"error":{"code":"upstream_error","message":"Upstream routing provider failed."}}` |
+| 429 | `rate_limited` | `POST /api/route` exceeded its burst (`ROUTE_THROTTLE_BURST_RATE`, default 20/min) or sustained (`ROUTE_THROTTLE_SUSTAINED_RATE`, default 200/day) rate limit. No other endpoint is throttled. | `{"error":{"code":"rate_limited","message":"Too many requests.","detail":{"retry_after_s":42}}}` |
 
-The `infeasible_route` and `route_not_found` examples are both live, reproducible requests. See the demo walkthrough below.
+The `infeasible_route` and `route_not_found` examples are both live, reproducible requests. See the demo walkthrough below. A 429 also carries a `Retry-After` header (seconds until the next allowed request, set by DRF itself); `retry_after_s` in the body mirrors the same value.
 
 ### `GET /api/health`
 
-A dependency-free liveness probe. It touches no database, cache, or Mapbox, and Docker Compose's healthcheck polls it before letting Nginx start serving traffic.
+A dependency-free liveness probe. It touches no database, cache, or Mapbox, so it stays fast and always answers even on a freshly-booted, unseeded instance. Docker Compose's own healthcheck polls it to report the `web` container's health status, and on a live deploy it's what an external keep-warm cron hits to prevent the free-tier instance from spinning down (see "Free-tier deployment" above).
 
 ```bash
 curl -s http://localhost/api/health
 # {"status":"ok"}
 ```
+
+### `GET /api/ready`
+
+A dependency-aware readiness probe: reports whether the database, cache, and Mapbox token configuration are actually usable. This is what the hosting platform's own health check gates traffic routing on, not `/api/health` -- an instance reporting `not_ready` never receives real requests. It makes no live Mapbox call, so it stays cheap even under frequent polling.
+
+```bash
+curl -s http://localhost/api/ready
+```
+
+Healthy (`200`):
+
+```json
+{
+  "status": "ready",
+  "checks": { "db": true, "cache": true, "tokens": true },
+  "station_count": 6738
+}
+```
+
+Unhealthy (`503`, any check failing):
+
+```json
+{
+  "status": "not_ready",
+  "checks": { "db": true, "cache": false, "tokens": true },
+  "station_count": 6738
+}
+```
+
+`station_count` is informational only -- it never fails the check on its own, since a freshly-seeded database briefly reporting `0` is expected the first time a new database boots, not a real outage.
 
 ### Trying it yourself
 
@@ -189,7 +230,7 @@ Four explicit assumptions are baked into the model:
 - **Offline US Census geocoding for the station dataset.** Mapbox's free geocoding tier doesn't allow permanently storing its results under the terms of service, so using it to backfill a persisted `lat`/`lng` column would be a violation. The US Census Bulk Geocoder has no such restriction and takes the whole dataset in one batch file, so the one-time `geocode_stations` backfill uses it and resolves about 6,738 of the CSV's rows to routable coordinates.
 - **A greedy solver that's provably optimal for this problem.** At each point along the route the algorithm buys just enough fuel to reach the nearest strictly-cheaper reachable station, or fills the tank and jumps to the cheapest reachable station when nothing cheaper is in range. That rule is optimal here (buy cheap fuel as early as you can, and never pay more than you have to just to reach it), and it runs in a single pass with no backtracking. It optimizes for total cost rather than stop count or distance, so the number of stops tracks the price landscape along a corridor, not trip length alone. A 1,329-mile Dallas → DC route needs 10 stops while the longer 1,437-mile Dallas → LA route needs only 5, and both are correct outputs for their respective prices. Every leg still stays at or under 500 miles; total trip length is otherwise unbounded.
 - **A lazily-built STRtree prefilter plus a corridor-distance test, no PostGIS.** A process-level shapely `STRtree` built once from the routable station set replaces the original per-request DB bbox query, so the request path issues zero database queries after the first use. The route geometry is buffered by the wider of the corridor's two axis pads (never the narrower one, so the buffer only ever over-includes) and queried against the tree; survivors then get the same precise perpendicular-distance test as before, projected to a local equirectangular plane first (a degree of longitude isn't the same distance as a degree of latitude). That precise test is what's accurate over the endpoint-distance shortcut, which includes or drops stations wrongly depending on the route's shape; the STRtree swap on top of it is a pure performance change with an identical result set — see "Corridor benchmark" below for measured numbers. Still no PostGIS/GDAL system dependency for a dataset this small.
-- **Redis, because it actually matters here.** The Docker stack runs 3 gunicorn workers. Django's process-local `LocMemCache` would give each worker its own copy, so a repeat request could quietly miss depending on which worker handled it, which would make a cache-hit demo dishonest. Redis is shared across the workers, so a repeat is genuinely served from cache no matter who answers it. A cold request runs the full pipeline (~0.3-1s, mostly the Mapbox round trip); a cache hit comes back in about 10ms.
+- **Redis, because it actually matters here.** The Docker stack runs multiple gunicorn workers (`WEB_CONCURRENCY`, 2 by default). Django's process-local `LocMemCache` would give each worker its own copy, so a repeat request could quietly miss depending on which worker handled it, which would make a cache-hit demo dishonest. Redis is shared across the workers, so a repeat is genuinely served from cache no matter who answers it. A cold request runs the full pipeline (~0.3-1s, mostly the Mapbox round trip); a cache hit comes back in about 10ms.
 - **A pooled, retrying HTTP session for Mapbox.** The Mapbox client reuses a single `requests.Session`, so keep-alive avoids a fresh TLS handshake on every call, with bounded retries on connection resets and transient 5xx/429 responses. A stale keep-alive connection or a brief upstream blip then recovers on its own instead of surfacing a spurious 502.
 
 ## Corridor benchmark
