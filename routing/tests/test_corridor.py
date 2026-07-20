@@ -11,8 +11,20 @@ from django.test import TestCase, override_settings
 from shapely.geometry import LineString
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
-from routing.services.corridor import candidates
+from routing.services.corridor import candidates, reset_index
 from routing.services.mapbox import Route
+
+
+class CorridorTestCase(TestCase):
+    """Shared base: resets the process-level STRtree index before every
+    test so no test can inherit a stale tree built from a previous test's
+    (rolled-back) Station rows -- the module global survives Django's
+    per-test transaction rollback, so this is the only correct place to
+    invalidate it (D-29)."""
+
+    def setUp(self):
+        super().setUp()
+        reset_index()
 
 
 def _make_station(
@@ -42,7 +54,7 @@ def _make_station(
     )
 
 
-class CorridorCurveInclusionTests(TestCase):
+class CorridorCurveInclusionTests(CorridorTestCase):
     """A station near the middle of a
     curving route is included even though it is far from the straight
     start-finish chord; a station near that chord but far from the
@@ -95,7 +107,7 @@ class CorridorCurveInclusionTests(TestCase):
         self.assertEqual(result, [])
 
 
-class CorridorPositioningTests(TestCase):
+class CorridorPositioningTests(CorridorTestCase):
     """distance_from_start_mi is the project()/length fraction
     times the route's own total_route_mi, within tolerance, and always
     lies in [0, total_route_mi]."""
@@ -131,7 +143,7 @@ class CorridorPositioningTests(TestCase):
         self.assertLessEqual(result[0].distance_from_start_mi, self.TOTAL_ROUTE_MI)
 
 
-class CorridorPrecisionTieringTests(TestCase):
+class CorridorPrecisionTieringTests(CorridorTestCase):
     """A station ~10 mi off the route is excluded at the 5-mi
     rooftop tier but included at the 20-mi city tier."""
 
@@ -169,7 +181,7 @@ class CorridorPrecisionTieringTests(TestCase):
         self.assertIn(city_station.opis_id, result_ids)
 
 
-class CorridorRoutableEnforcementTests(TestCase):
+class CorridorRoutableEnforcementTests(CorridorTestCase):
     """A failed/pending station inside the bbox -- even
     directly on the route -- must never become a candidate; only
     Station.objects.routable() rows are eligible."""
@@ -206,7 +218,7 @@ class CorridorRoutableEnforcementTests(TestCase):
         self.assertEqual(candidates(self._route()), [])
 
 
-class CorridorQueryCountTests(TestCase):
+class CorridorQueryCountTests(CorridorTestCase):
     """The bbox prefilter is exactly one query, no
     N+1, regardless of how many stations are seeded."""
 
@@ -233,7 +245,7 @@ class CorridorQueryCountTests(TestCase):
             candidates(self._route())
 
 
-class CorridorIndexUsageTest(TestCase):
+class CorridorIndexUsageTest(CorridorTestCase):
     """assertNumQueries proves count, not query
     plan -- supplement with an EXPLAIN QUERY PLAN assertion that the
     bbox prefilter hits the (latitude, longitude) composite index

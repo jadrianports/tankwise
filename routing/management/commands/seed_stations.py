@@ -21,6 +21,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 
 from routing.models import Station
+from routing.services.corridor import reset_index
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,11 @@ class Command(BaseCommand):
                         updated += 1
                     else:
                         unchanged += 1
+
+        # The corridor STRtree is a process-level cache of Station rows
+        # (routing.services.corridor._INDEX); a reseed inside a long-lived
+        # process must not serve a stale tree.
+        reset_index()
 
         if skipped:
             self.stdout.write(self.style.WARNING(f"Skipped {skipped} malformed row(s)"))
