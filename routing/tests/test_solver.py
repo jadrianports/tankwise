@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from routing.services import Candidate, solve
+from routing.services import Candidate, PurchaseReason, solve
 from routing.services.exceptions import InfeasibleRouteError, InvalidRouteInputError
 
 
@@ -177,3 +177,212 @@ class InvalidInputTests(SimpleTestCase):
 
         with self.assertRaises(InvalidRouteInputError):
             solve(candidates, Decimal("500"))
+
+
+class StartingFuelTests(SimpleTestCase):
+    """Regression coverage for the START-node landmine: a partial start
+    tank must never be treated as a free, purchasable full tank."""
+
+    def test_explicit_full_tank_matches_omitted_default(self):
+        candidates = [
+            make_candidate("3.00", "400", name="NEAR_EXPENSIVE", opis_id=1),
+            make_candidate("2.00", "800", name="FAR_CHEAP", opis_id=2),
+        ]
+
+        explicit = solve(candidates, Decimal("1000"), starting_fuel=Decimal(1))
+        omitted = solve(candidates, Decimal("1000"))
+
+        self.assertEqual(explicit.stops, omitted.stops)
+        self.assertEqual(explicit.total_cost, omitted.total_cost)
+        self.assertEqual(explicit.total_gallons, omitted.total_gallons)
+
+    def test_no_phantom_start_stop_across_starting_fuel_values(self):
+        # A single real station well within reach at every tested
+        # starting_fuel; the finish is reachable from that station on a
+        # full tank, so every one of these values produces a plan with
+        # exactly one real stop.
+        candidates = [make_candidate("3.00", "50", name="C1", opis_id=1)]
+
+        for starting_fuel in (Decimal("0.25"), Decimal("0.5"), Decimal("0.99")):
+            with self.subTest(starting_fuel=starting_fuel):
+                plan = solve(candidates, Decimal("520"), starting_fuel=starting_fuel)
+
+                self.assertTrue(all(s.opis_id is not None for s in plan.stops))
+                self.assertEqual(len(plan.stops), 1)
+                self.assertEqual(plan.stops[0].opis_id, 1)
+
+    def test_zero_starting_fuel_cannot_reach_anything(self):
+        # Zero fuel at a non-purchasable origin is genuinely infeasible --
+        # the old solver would instead have granted a free full tank.
+        with self.assertRaises(InfeasibleRouteError):
+            solve([], Decimal("100"), starting_fuel=Decimal("0.0"))
+
+    def test_reduced_reachability_raises_with_partial_range_not_tank_capacity(self):
+        candidates = [make_candidate("3.00", "400", name="A", opis_id=1)]
+
+        with self.assertRaises(InfeasibleRouteError) as ctx:
+            solve(
+                candidates,
+                Decimal("900"),
+                tank_range_mi=Decimal("500"),
+                mpg=Decimal("10"),
+                starting_fuel=Decimal("0.5"),
+            )
+
+        err = ctx.exception
+        self.assertEqual(err.from_station, "START")
+        self.assertEqual(err.to_station, "A")
+        self.assertEqual(err.gap_mi, Decimal("400"))
+        self.assertEqual(err.max_range_mi, Decimal("250"))
+
+    def test_partial_tank_purchase_happens_at_the_real_station(self):
+        candidates = [make_candidate("3.00", "50", name="C1", opis_id=1)]
+
+        plan = solve(
+            candidates,
+            Decimal("520"),
+            tank_range_mi=Decimal("500"),
+            mpg=Decimal("10"),
+            starting_fuel=Decimal("0.5"),
+        )
+
+        self.assertEqual(len(plan.stops), 1)
+        self.assertEqual(plan.stops[0].opis_id, 1)
+        self.assertEqual(plan.stops[0].distance_from_start_mi, Decimal("50"))
+        self.assertEqual(plan.stops[0].gallons, Decimal("27"))
+        self.assertEqual(plan.total_cost, Decimal("81.00"))
+
+    def test_starting_fuel_below_zero_is_invalid(self):
+        with self.assertRaises(InvalidRouteInputError):
+            solve([], Decimal("100"), starting_fuel=Decimal("-0.1"))
+
+    def test_starting_fuel_above_one_is_invalid(self):
+        with self.assertRaises(InvalidRouteInputError):
+            solve([], Decimal("100"), starting_fuel=Decimal("1.5"))
+
+
+class RationaleTests(SimpleTestCase):
+    """Coverage for FuelStop's structured, branch-recorded rationale
+    fields: purchase_reason, the aimed-at station, skipped-candidate
+    context, and corridor price context."""
+
+    def test_fill_to_continue_reach_cheaper_and_reach_finish_reasons(self):
+        c1 = make_candidate("5.00", "50", name="C1", opis_id=1)
+        c2 = make_candidate("6.00", "340", name="C2", opis_id=2)
+        c3 = make_candidate("1.00", "500", name="C3", opis_id=3)
+
+        plan = solve(
+            [c1, c2, c3],
+            Decimal("540"),
+            tank_range_mi=Decimal("300"),
+            mpg=Decimal("10"),
+        )
+
+        self.assertEqual(len(plan.stops), 3)
+        stop1, stop2, stop3 = plan.stops
+
+        self.assertEqual(stop1.opis_id, 1)
+        self.assertEqual(stop1.purchase_reason, PurchaseReason.FILL_TO_CONTINUE)
+        self.assertEqual(stop1.reason_target_opis_id, 2)
+        self.assertEqual(stop1.reason_target_name, "C2")
+        self.assertEqual(stop1.gallons, Decimal("5"))
+        self.assertEqual(stop1.cost, Decimal("25.00"))
+        self.assertEqual(stop1.skipped_count, 0)
+        self.assertIsNone(stop1.skipped_avg_price)
+        self.assertEqual(stop1.price_percentile, Decimal(1) / Decimal(3))
+        self.assertEqual(stop1.corridor_avg_price, Decimal("4.00"))
+
+        self.assertEqual(stop2.opis_id, 2)
+        self.assertEqual(stop2.purchase_reason, PurchaseReason.REACH_CHEAPER_STOP)
+        self.assertEqual(stop2.reason_target_opis_id, 3)
+        self.assertEqual(stop2.reason_target_name, "C3")
+        self.assertEqual(stop2.gallons, Decimal("15"))
+        self.assertEqual(stop2.cost, Decimal("90.00"))
+        self.assertEqual(stop2.skipped_count, 0)
+        self.assertIsNone(stop2.skipped_avg_price)
+        self.assertEqual(stop2.price_percentile, Decimal(2) / Decimal(3))
+        self.assertEqual(stop2.corridor_avg_price, Decimal("4.00"))
+
+        self.assertEqual(stop3.opis_id, 3)
+        self.assertEqual(stop3.purchase_reason, PurchaseReason.REACH_FINISH)
+        self.assertIsNone(stop3.reason_target_opis_id)
+        self.assertIsNone(stop3.reason_target_name)
+        self.assertEqual(stop3.gallons, Decimal("4"))
+        self.assertEqual(stop3.cost, Decimal("4.00"))
+        self.assertEqual(stop3.skipped_count, 0)
+        self.assertIsNone(stop3.skipped_avg_price)
+        self.assertEqual(stop3.price_percentile, Decimal(0))
+        self.assertEqual(stop3.corridor_avg_price, Decimal("4.00"))
+
+        self.assertEqual(plan.total_cost, Decimal("119.00"))
+        self.assertEqual(plan.total_gallons, Decimal("24"))
+
+    def test_top_up_at_cheapest_reason(self):
+        d1 = make_candidate("1.00", "50", name="D1", opis_id=1)
+        d2 = make_candidate("3.00", "220", name="D2", opis_id=2)
+
+        plan = solve(
+            [d1, d2],
+            Decimal("400"),
+            tank_range_mi=Decimal("200"),
+            mpg=Decimal("10"),
+        )
+
+        self.assertEqual(len(plan.stops), 2)
+        stop1, stop2 = plan.stops
+
+        self.assertEqual(stop1.opis_id, 1)
+        self.assertEqual(stop1.purchase_reason, PurchaseReason.TOP_UP_AT_CHEAPEST)
+        self.assertEqual(stop1.reason_target_opis_id, 2)
+        self.assertEqual(stop1.reason_target_name, "D2")
+        self.assertEqual(stop1.gallons, Decimal("5"))
+        self.assertEqual(stop1.cost, Decimal("5.00"))
+        self.assertEqual(stop1.price_percentile, Decimal(0))
+        self.assertEqual(stop1.corridor_avg_price, Decimal("2.00"))
+
+        self.assertEqual(stop2.purchase_reason, PurchaseReason.REACH_FINISH)
+        self.assertIsNone(stop2.reason_target_opis_id)
+
+    def test_skipped_count_and_avg_price_between_stops(self):
+        x1 = make_candidate("4.00", "200", name="X1", opis_id=1)
+        x2 = make_candidate("2.00", "450", name="X2", opis_id=2)
+
+        plan = solve(
+            [x1, x2],
+            Decimal("900"),
+            tank_range_mi=Decimal("500"),
+            mpg=Decimal("10"),
+        )
+
+        # Only X2 is ever purchased -- the solver hops directly to it from
+        # START since it is the cheapest reachable candidate, skipping the
+        # nearer, pricier X1 without ever stopping there.
+        self.assertEqual(len(plan.stops), 1)
+        stop = plan.stops[0]
+
+        self.assertEqual(stop.opis_id, 2)
+        self.assertEqual(stop.purchase_reason, PurchaseReason.REACH_FINISH)
+        self.assertEqual(stop.skipped_count, 1)
+        self.assertEqual(stop.skipped_avg_price, Decimal("4.00"))
+        self.assertEqual(stop.price_percentile, Decimal(0))
+        self.assertEqual(stop.corridor_avg_price, Decimal("3.00"))
+
+    def test_fuel_stop_rationale_fields_default(self):
+        from routing.services.solver import FuelStop
+
+        stop = FuelStop(
+            name="x",
+            opis_id=1,
+            price_per_gallon=Decimal(1),
+            distance_from_start_mi=Decimal(1),
+            gallons=Decimal(1),
+            cost=Decimal(1),
+        )
+
+        self.assertIsNone(stop.purchase_reason)
+        self.assertIsNone(stop.reason_target_opis_id)
+        self.assertIsNone(stop.reason_target_name)
+        self.assertEqual(stop.skipped_count, 0)
+        self.assertIsNone(stop.skipped_avg_price)
+        self.assertIsNone(stop.price_percentile)
+        self.assertIsNone(stop.corridor_avg_price)
