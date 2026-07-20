@@ -39,6 +39,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.cache import cache
+from django.db import connection
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -85,6 +86,63 @@ class HealthView(APIView):
 
     def get(self, request):
         return Response({"status": "ok"})
+
+
+class ReadyView(APIView):
+    """`GET /api/ready` -- the dependency-aware readiness probe Render
+    gates traffic routing on, in contrast to `HealthView`'s
+    dependency-free liveness check consumed by the Docker Compose
+    healthcheck and the external keep-warm pinger.
+
+    Reports three independent booleans -- db connectivity, cache
+    round-trip, and Mapbox token configuration -- and never makes a
+    live Mapbox call, so the probe stays sub-100ms and costs zero API
+    budget even though Render polls it continuously.
+
+    The db and cache checks are wrapped in narrow `except Exception`
+    clauses that collapse any failure to `False` -- a third sanctioned,
+    documented deviation from this app's no-try/except-in-views norm
+    (alongside `RouteView`'s two). A DB or cache driver's exception
+    message can carry a hostname, username, or connection string, and
+    this endpoint's body is publicly reachable, so failures are
+    reported as booleans and nothing else ever crosses that boundary.
+    """
+
+    def get(self, request):
+        db_ok = self._check_db()
+        cache_ok = self._check_cache()
+        tokens_ok = self._check_tokens()
+
+        station_count = Station.objects.count() if db_ok else None
+
+        all_ok = db_ok and cache_ok and tokens_ok
+        payload = {
+            "status": "ready" if all_ok else "not_ready",
+            "checks": {"db": db_ok, "cache": cache_ok, "tokens": tokens_ok},
+            "station_count": station_count,
+        }
+        return Response(payload, status=200 if all_ok else 503)
+
+    def _check_db(self):
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            return True
+        except Exception:
+            return False
+
+    def _check_cache(self):
+        try:
+            probe_key = "_ready_probe"
+            cache.set(probe_key, "ok", timeout=5)
+            return cache.get(probe_key) == "ok"
+        except Exception:
+            return False
+
+    def _check_tokens(self):
+        token = settings.MAPBOX_TOKEN
+        public_token = settings.MAPBOX_PUBLIC_TOKEN
+        return bool(token) and bool(public_token) and public_token.startswith("pk.")
 
 
 class RouteView(APIView):
