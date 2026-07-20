@@ -21,6 +21,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
+from routing.services.corridor import reset_index
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -143,6 +144,7 @@ class RouteViewCallBudgetTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_coordinate_happy_path_single_call_and_full_contract(self):
         _make_station(701)
@@ -238,6 +240,7 @@ class RouteViewCacheTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_repeat_request_hits_cache_with_zero_additional_calls(self):
         _make_station(702)
@@ -261,6 +264,7 @@ class RouteViewValidationErrorTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_missing_finish_returns_400_invalid_input(self):
         with mock.patch(MOCK_TARGET) as mock_get:
@@ -307,6 +311,7 @@ class RouteViewDomainErrorTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_no_route_returns_422_route_not_found(self):
         with mock.patch(
@@ -366,6 +371,7 @@ class TokenLeakRegressionTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_secret_token_absent_and_public_token_present_in_full_response(self):
         _make_station(704)

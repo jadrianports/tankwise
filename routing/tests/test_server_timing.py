@@ -16,6 +16,7 @@ from rest_framework import status
 from rest_framework.test import APITestCase
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
+from routing.services.corridor import reset_index
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -100,6 +101,7 @@ class ServerTimingCacheMissTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_coordinate_happy_path_carries_stage_metrics_and_no_body_leak(self):
         _make_station(801)
@@ -129,6 +131,7 @@ class ServerTimingCacheHitTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_repeat_request_header_contains_only_cache_metric(self):
         _make_station(802)
@@ -157,6 +160,7 @@ class ServerTimingGeocodeTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_address_happy_path_has_exactly_one_geocode_metric(self):
         with mock.patch(
@@ -189,6 +193,7 @@ class ServerTimingErrorTests(APITestCase):
 
     def setUp(self):
         cache.clear()
+        reset_index()
 
     def test_infeasible_route_carries_partial_route_and_corridor_timing(self):
         # No stations seeded -- the 600-mi route's START-to-FINISH gap

@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from django.db import connection
 from django.test import TestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from shapely.geometry import LineString
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
@@ -265,3 +266,85 @@ class CorridorIndexUsageTest(CorridorTestCase):
         self.assertIn("SEARCH", plan_text)
         self.assertNotIn("SCAN TABLE routing_station", plan_text)
         self.assertNotIn("SCAN routing_station", plan_text)
+
+
+class StrtreeIndexTests(CorridorTestCase):
+    """The STRtree index: explicit invalidation, a DB-free second call,
+    the high-latitude buffer-anisotropy safety margin, and the
+    empty-table edge case."""
+
+    ROUTE_COORDS = [(-97.00, 30.00), (-97.00, 40.00)]
+
+    def _route(self):
+        return Route(
+            total_route_mi=Decimal("700"),
+            geometry=LineString(self.ROUTE_COORDS),
+            raw_coordinates=self.ROUTE_COORDS,
+        )
+
+    def test_station_created_after_index_build_is_invisible_until_reset(self):
+        # Build the index against an empty table.
+        self.assertEqual(candidates(self._route()), [])
+
+        station = _make_station(
+            opis_id=601,
+            geocode_status=GeocodeStatus.OK,
+            latitude=Decimal("35.00"),
+            longitude=Decimal("-97.00"),
+            geocode_precision=GeocodePrecision.ROOFTOP,
+        )
+
+        # Stale index: the new row is invisible until reset_index() runs.
+        self.assertEqual(candidates(self._route()), [])
+
+        reset_index()
+
+        result_ids = {c.opis_id for c in candidates(self._route())}
+        self.assertIn(station.opis_id, result_ids)
+
+    def test_second_candidates_call_issues_zero_queries(self):
+        _make_station(
+            opis_id=602,
+            geocode_status=GeocodeStatus.OK,
+            latitude=Decimal("35.00"),
+            longitude=Decimal("-97.00"),
+            geocode_precision=GeocodePrecision.ROOFTOP,
+        )
+
+        candidates(self._route())  # first call: builds the index (1 query)
+
+        with CaptureQueriesContext(connection) as ctx:
+            candidates(self._route())
+
+        self.assertEqual(len(ctx.captured_queries), 0)
+
+    def test_high_latitude_north_south_route_is_not_under_buffered(self):
+        """A station genuinely within the 20-mi city corridor of a
+        north-south route at ~47 deg latitude must survive the STRtree
+        buffer query. At this latitude cos(lat) ~= 0.68, so the
+        longitude-axis pad is meaningfully larger than the latitude-axis
+        pad; buffering by anything smaller than the larger pad would
+        under-include and silently drop this station before the precise
+        perpendicular test ever runs (Pitfall 2)."""
+        route = Route(
+            total_route_mi=Decimal("276"),
+            geometry=LineString([(-97.00, 45.00), (-97.00, 49.00)]),
+            raw_coordinates=[(-97.00, 45.00), (-97.00, 49.00)],
+        )
+        # ~18 real miles east of the route at the route's mean latitude
+        # (47 deg) -- within the 20-mi city tier, but farther east in
+        # degrees than the (smaller) latitude-axis pad would allow.
+        station = _make_station(
+            opis_id=603,
+            geocode_status=GeocodeStatus.OK,
+            latitude=Decimal("47.00"),
+            longitude=Decimal("-97.00") + Decimal("0.3815564873288794405526510175"),
+            geocode_precision=GeocodePrecision.CITY,
+        )
+
+        result_ids = {c.opis_id for c in candidates(route)}
+
+        self.assertIn(station.opis_id, result_ids)
+
+    def test_empty_station_table_returns_empty_list_without_raising(self):
+        self.assertEqual(candidates(self._route()), [])
