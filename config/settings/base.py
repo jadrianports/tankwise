@@ -86,6 +86,12 @@ if DB_ENGINE == "django.db.backends.sqlite3":
         }
     }
 else:
+    # DB_HOST points at Neon's pooled `-pooler` endpoint for the running app
+    # (PgBouncer already pools connections, so CONN_MAX_AGE defaults to 0 --
+    # stacking Django's own persistent connections on top would be a second,
+    # redundant pooling layer). entrypoint.sh's migrate step instead targets
+    # DB_MIGRATE_HOST, the direct (non-pooled) endpoint, because Neon's own
+    # docs flag transaction-mode pooling as error-prone for schema migrations.
     DATABASES = {
         "default": {
             "ENGINE": DB_ENGINE,
@@ -94,6 +100,9 @@ else:
             "USER": _env("DB_USER", ""),
             "PASSWORD": _env("DB_PASSWORD", ""),
             "PORT": _env("DB_PORT", ""),
+            "OPTIONS": {"sslmode": _env("DB_SSLMODE", "require")},
+            "CONN_MAX_AGE": int(_env("DB_CONN_MAX_AGE", "0")),
+            "CONN_HEALTH_CHECKS": _env("DB_CONN_HEALTH_CHECKS", "True") == "True",
         }
     }
 
