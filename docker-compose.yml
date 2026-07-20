@@ -14,13 +14,22 @@ services:
         required: false
     environment:
       DJANGO_DEBUG: "False"
-      DJANGO_ALLOWED_HOSTS: "web,localhost,127.0.0.1,nginx"
+      DJANGO_ALLOWED_HOSTS: "web,localhost,127.0.0.1"
       CACHE_BACKEND: "redis"
       REDIS_URL: "redis://redis:6379/0"
       DB_NAME: "/app/data-db/db.sqlite3"
     depends_on:
       redis:
         condition: service_healthy
+    # Host port 80 -> http://localhost. Remap the left-hand side (e.g.
+    # "8080:80") if port 80 is already in use on the host. Carried over
+    # from the retired nginx service now that D-07 unifies serving onto
+    # this one container -- WhiteNoise serves the SPA + API together.
+    ports:
+      - "80:8000"
+    # Stays on /api/health, not /api/ready -- this compose healthcheck
+    # keeps its dependency-free v1.0 target; only the hosting platform's
+    # own check uses /api/ready (D-19).
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status == 200 else 1)"]
       interval: 10s
@@ -29,16 +38,6 @@ services:
       start_period: 30s
     volumes:
       - sqlite_data:/app/data-db
-
-  nginx:
-    build: ./frontend
-    # Host port 80 -> http://localhost. Remap the left-hand side (e.g.
-    # "8080:80") if port 80 is already in use on the host.
-    ports:
-      - "80:80"
-    depends_on:
-      web:
-        condition: service_healthy
 
 volumes:
   sqlite_data:

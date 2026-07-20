@@ -6,8 +6,9 @@ export default defineConfig({
   plugins: [react()],
   server: {
     // In `npm run dev`, forward the SPA's relative /api calls to the Django dev
-    // server. In Docker, Nginx serves the same /api path, so the SPA code never
-    // changes between dev and production. It always fetches a relative /api/route.
+    // server. In Docker, this same gunicorn service serves /api directly via
+    // WhiteNoise (no nginx sidecar, D-07), so the SPA code never changes
+    // between dev and production. It always fetches a relative /api/route.
     proxy: {
       '/api': {
         target: 'http://localhost:8000',

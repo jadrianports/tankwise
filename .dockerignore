@@ -17,9 +17,13 @@ db.sqlite3-journal
 .env.*
 !.env.example
 
+# The bare `frontend` entry is gone -- the root Dockerfile's stage 1 now
+# builds the SPA from `frontend/` source, so the build context must
+# include the directory. node_modules and dist stay excluded so the build
+# stage installs cleanly from the lockfile and never inherits a stale
+# host build.
 frontend/node_modules
 frontend/dist
-frontend
 
 .pytest_cache
 .coverage
