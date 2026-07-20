@@ -2,6 +2,7 @@
 serializer/field behavior.
 """
 import datetime
+import json
 import math
 from decimal import Decimal
 
@@ -720,3 +721,200 @@ class RouteResponseSerializerGeometrySimplificationTests(SimpleTestCase):
         for lng, lat in geometry:
             self.assertTrue(-98 <= lng <= -87)
             self.assertTrue(29 <= lat <= 43)
+
+
+class ResponseContractTests(SimpleTestCase):
+    """Pins the additive-only promise: every v1.0 response key/format is
+    a proven subset of the v2 response, and the fully populated v2
+    payload survives an end-to-end JSON round-trip. Builds `FuelStop`,
+    `Leg`, `Savings`, and `Route` instances by hand -- no Mapbox call, DB
+    row, or view invocation involved.
+    """
+
+    # The exact key sets a v1.0 client's request/response carried,
+    # frozen here so a regression in either shows up as a failing test
+    # rather than a silent contract break.
+    V1_TOP_LEVEL_KEYS = {
+        "start",
+        "finish",
+        "route_geometry",
+        "total_route_mi",
+        "fuel_stops",
+        "total_cost",
+        "total_gallons",
+        "map_url",
+    }
+    V1_FUEL_STOP_KEYS = {
+        "name",
+        "station_id",
+        "location",
+        "distance_from_start_mi",
+        "price_per_gallon",
+        "gallons",
+        "cost",
+    }
+
+    def _v1_shaped_instance_and_context(self):
+        raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
+        route = Route(
+            total_route_mi=Decimal("500"),
+            geometry=LineString(raw_coords),
+            raw_coordinates=raw_coords,
+        )
+        stop = make_fuel_stop("3.129", "100.6", "30", "93.87", name="STOP1", opis_id=42)
+        plan = FuelPlan(
+            stops=[stop], total_cost=Decimal("93.87"), total_gallons=Decimal("30")
+        )
+        instance = {"route": route, "plan": plan, "map_url": "https://example.test/map"}
+        context = {
+            "stop_coords": {42: {"latitude": Decimal("39.0"), "longitude": Decimal("-88.0")}},
+            "start_coords": {"latitude": Decimal("41.8781"), "longitude": Decimal("-87.6298")},
+            "finish_coords": {"latitude": Decimal("38.6270"), "longitude": Decimal("-90.1994")},
+        }
+        return instance, context
+
+    def _fully_populated_instance(self):
+        instance, context = self._v1_shaped_instance_and_context()
+        instance["vehicle"] = {
+            "mpg": Decimal("6"),
+            "tank_range_mi": Decimal("500"),
+            "starting_fuel": Decimal("0.75"),
+        }
+        instance["plan"] = FuelPlan(
+            stops=[
+                FuelStop(
+                    name="STOP1",
+                    opis_id=42,
+                    price_per_gallon=Decimal("3.129"),
+                    distance_from_start_mi=Decimal("100.6"),
+                    gallons=Decimal("30"),
+                    cost=Decimal("93.87"),
+                    purchase_reason=PurchaseReason.FILL_TO_CONTINUE,
+                    reason_target_opis_id=7,
+                    reason_target_name="NEXT",
+                    skipped_count=1,
+                    skipped_avg_price=Decimal("3.40"),
+                    price_percentile=Decimal("0.25"),
+                    corridor_avg_price=Decimal("3.35"),
+                )
+            ],
+            total_cost=Decimal("93.87"),
+            total_gallons=Decimal("30"),
+        )
+        instance["legs"] = [
+            Leg(
+                from_name="START",
+                to_name="STOP1",
+                distance_mi=Decimal("100.6"),
+                duration_s=Decimal("6000"),
+                gallons=Decimal("0"),
+                cost=Decimal("0"),
+            ),
+            Leg(
+                from_name="STOP1",
+                to_name="FINISH",
+                distance_mi=Decimal("399.4"),
+                duration_s=Decimal("21000"),
+                gallons=Decimal("30"),
+                cost=Decimal("93.87"),
+            ),
+        ]
+        instance["savings"] = Savings(
+            amount=Decimal("10.13"),
+            percent=Decimal("0.0975"),
+            naive_total_cost=Decimal("104.00"),
+            naive_total_gallons=Decimal("32"),
+            naive_stop_count=2,
+        )
+        instance["alternatives"] = [
+            {
+                "total_route_mi": Decimal("500"),
+                "duration_s": Decimal("27000"),
+                "total_cost": Decimal("93.87"),
+                "chosen": True,
+                "feasible": True,
+            },
+            {
+                "total_route_mi": Decimal("520"),
+                "duration_s": Decimal("28500"),
+                "total_cost": None,
+                "chosen": False,
+                "feasible": False,
+            },
+        ]
+        return instance, context
+
+    def test_v1_top_level_keys_are_subset_with_unchanged_formatting(self):
+        instance, context = self._v1_shaped_instance_and_context()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        self.assertTrue(self.V1_TOP_LEVEL_KEYS.issubset(data.keys()))
+        # Same inputs, same formatting as before this plan's new fields
+        # were added -- proven, not assumed.
+        self.assertEqual(data["total_route_mi"], "500")
+        self.assertEqual(data["total_cost"], "93.87")
+        self.assertEqual(data["total_gallons"], "30.00")
+        self.assertEqual(data["map_url"], "https://example.test/map")
+        self.assertEqual(
+            data["start"], {"latitude": "41.8781", "longitude": "-87.6298"}
+        )
+        self.assertEqual(data["route_geometry"][0], [-87.6298, 41.8781])
+
+    def test_v1_fuel_stop_keys_are_subset_with_unchanged_formatting(self):
+        instance, context = self._v1_shaped_instance_and_context()
+
+        data = RouteResponseSerializer(instance, context=context).data
+        stop = data["fuel_stops"][0]
+
+        self.assertTrue(self.V1_FUEL_STOP_KEYS.issubset(stop.keys()))
+        self.assertEqual(stop["name"], "STOP1")
+        self.assertEqual(stop["station_id"], 42)
+        self.assertEqual(stop["price_per_gallon"], "3.13")
+        self.assertEqual(stop["gallons"], "30.00")
+        self.assertEqual(stop["cost"], "93.87")
+        self.assertEqual(stop["distance_from_start_mi"], "101")
+
+    def test_naive_plan_infeasible_savings_note_leaves_payload_valid(self):
+        instance, context = self._v1_shaped_instance_and_context()
+        instance["savings"] = None
+        instance["savings_note"] = "naive_plan_infeasible"
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        self.assertIsNone(data["savings"])
+        self.assertEqual(data["savings_note"], "naive_plan_infeasible")
+        self.assertTrue(self.V1_TOP_LEVEL_KEYS.issubset(data.keys()))
+
+    def test_exactly_one_alternative_chosen(self):
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        chosen = [a for a in data["alternatives"] if a["chosen"]]
+        self.assertEqual(len(chosen), 1)
+
+    def test_infeasible_alternative_total_cost_null_feasible_false(self):
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        infeasible = [a for a in data["alternatives"] if not a["feasible"]]
+        self.assertEqual(len(infeasible), 1)
+        self.assertIsNone(infeasible[0]["total_cost"])
+
+    def test_fully_populated_payload_is_json_serializable_end_to_end(self):
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        # Raises TypeError if any raw Decimal (or other non-JSON-native
+        # value) leaked through -- the assertion is that this does not
+        # raise, proving the whole cached payload round-trips.
+        serialized = json.dumps(data)
+        round_tripped = json.loads(serialized)
+
+        self.assertEqual(round_tripped["savings"]["percent"], 9.8)
+        self.assertEqual(
+            round_tripped["fuel_stops"][0]["rationale"]["price_percentile"], 25.0
+        )
