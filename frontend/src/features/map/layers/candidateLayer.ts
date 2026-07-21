@@ -51,7 +51,14 @@ export function buildCandidateGeoJSON(
 // thresholds `PriceLegend.tsx` renders -- both call `computeQuantileBins`
 // independently against the same candidates array, so they can never
 // disagree (Don't-Hand-Roll, D-33).
-export function buildCircleColorExpression(thresholds: number[]): ExpressionSpecification {
+//
+// With zero thresholds (a corridor that returned no candidate prices, e.g.
+// the initial load before any solve) a `step` would be degenerate -- Mapbox
+// requires at least one stop/output pair and rejects `['step', input, base]`,
+// throwing on addLayer. Return the cheapest ramp color as a flat constant in
+// that case: there is nothing to bin, and the layer has no features anyway.
+export function buildCircleColorExpression(thresholds: number[]): ExpressionSpecification | string {
+  if (thresholds.length === 0) return CANDIDATE_RAMP[0];
   const expression: ExpressionSpecification = ['step', ['get', 'price_per_gallon'], CANDIDATE_RAMP[0]];
   thresholds.slice(0, CANDIDATE_RAMP.length - 1).forEach((threshold, i) => {
     expression.push(threshold, CANDIDATE_RAMP[i + 1]);
@@ -107,7 +114,12 @@ export function applyCandidateLayer(
     map.setPaintProperty(CANDIDATE_LAYER_ID, 'circle-color', buildCircleColorExpression(thresholds));
   }
 
-  map.setLayoutProperty(CANDIDATE_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
+  // Guard against a layer that failed to add (defensive -- with the constant
+  // colour fallback above addLayer no longer throws on an empty corridor, but
+  // never call setLayoutProperty on a layer the style doesn't have).
+  if (map.getLayer(CANDIDATE_LAYER_ID)) {
+    map.setLayoutProperty(CANDIDATE_LAYER_ID, 'visibility', visible ? 'visible' : 'none');
+  }
 
   return thresholds;
 }
