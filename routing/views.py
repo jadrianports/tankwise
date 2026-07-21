@@ -40,6 +40,7 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.cache import cache
+from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 from django.http import FileResponse, JsonResponse
 from django.views import View
@@ -51,7 +52,11 @@ from routing.cache import build_cache_key
 from routing.map_url import build_map_url
 from routing.models import Station
 from routing.pipeline.bbox import is_valid as bbox_is_valid
-from routing.serializers import RouteRequestSerializer, RouteResponseSerializer
+from routing.serializers import (
+    RouteRequestSerializer,
+    RouteResponseSerializer,
+    price_freshness,
+)
 from routing.services import corridor, naive_baseline, solver
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.legs import build_legs
@@ -146,6 +151,45 @@ class ReadyView(APIView):
         token = settings.MAPBOX_TOKEN
         public_token = settings.MAPBOX_PUBLIC_TOKEN
         return bool(token) and bool(public_token) and public_token.startswith("pk.")
+
+
+class ConfigView(APIView):
+    """`GET /api/config` -- serves the browser-facing `pk.` public token so
+    the SPA can initialize Mapbox GL JS at runtime, plus the fuel-price
+    dataset vintage so the frontend needs no second request for it (D-05).
+
+    Declares no `throttle_classes` attribute, exactly like `HealthView`/
+    `ReadyView` -- this stays unthrottled by construction since it gates
+    first paint and does no DB or Mapbox work.
+
+    Reuses `routing/map_url.py`'s exact two-condition validation: raises
+    `ImproperlyConfigured` when `MAPBOX_PUBLIC_TOKEN` is unset, and again
+    when it does not start with `pk.` -- never caught here, so it
+    propagates to `routing.exceptions.custom_exception_handler` per the
+    no-try/except view-pipeline discipline (see module docstring). Reads
+    only the public token setting; the secret `MAPBOX_TOKEN` is never
+    referenced by this view.
+    """
+
+    def get(self, request):
+        token = settings.MAPBOX_PUBLIC_TOKEN
+        if not token:
+            raise ImproperlyConfigured(
+                "MAPBOX_PUBLIC_TOKEN is not set; /api/config cannot serve a token."
+            )
+        if not token.startswith("pk."):
+            raise ImproperlyConfigured(
+                "MAPBOX_PUBLIC_TOKEN must start with 'pk.'; a secret token may "
+                "have been pasted into the public token slot."
+            )
+        freshness = price_freshness()
+        return Response(
+            {
+                "mapbox_public_token": token,
+                "price_as_of": freshness["price_as_of"],
+                "price_data_note": freshness["price_data_note"],
+            }
+        )
 
 
 class SpaFallbackView(View):

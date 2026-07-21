@@ -16,7 +16,8 @@ from unittest import mock
 
 import requests
 from django.core.cache import cache
-from django.test import SimpleTestCase, override_settings
+from django.core.exceptions import ImproperlyConfigured
+from django.test import RequestFactory, SimpleTestCase, override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 from shapely.geometry import LineString
@@ -28,7 +29,7 @@ from routing.services.exceptions import InfeasibleRouteError
 from routing.services.mapbox import Route
 from routing.services.solver import Candidate, FuelPlan
 from routing.timing import ServerTiming
-from routing.views import RouteView
+from routing.views import ConfigView, RouteView
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -417,6 +418,52 @@ class TokenLeakRegressionTests(APITestCase):
         self.assertNotIn(FAKE_SECRET, response.content.decode())
         self.assertIn(FAKE_PUBLIC, response.data["map_url"])
         mock_get.assert_called_once()
+
+
+CONFIG_URL = "/api/config"
+
+
+@override_settings(MAPBOX_TOKEN=FAKE_SECRET, MAPBOX_PUBLIC_TOKEN=FAKE_PUBLIC)
+class ConfigViewTests(APITestCase):
+    """`GET /api/config` serves the pk. public token, unthrottled, and
+    never leaks the secret MAPBOX_TOKEN -- same leak-regression pattern as
+    `TokenLeakRegressionTests` above, extended to this new endpoint."""
+
+    def test_config_returns_public_token_and_never_leaks_secret(self):
+        response = self.client.get(CONFIG_URL)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data["mapbox_public_token"], FAKE_PUBLIC)
+        self.assertNotIn(FAKE_SECRET, json.dumps(response.data))
+        self.assertNotIn(FAKE_SECRET, response.content.decode())
+
+    def test_config_includes_price_freshness_fields(self):
+        response = self.client.get(CONFIG_URL)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn("price_as_of", response.data)
+        self.assertIn("price_data_note", response.data)
+
+
+class ConfigViewMisconfiguredTokenTests(SimpleTestCase):
+    """Direct unit tests of `ConfigView.get` -- an unset or non-`pk.`
+    public token must raise `ImproperlyConfigured`, uncaught, mirroring
+    `test_map_url.py`'s coverage of the same two-condition guard."""
+
+    def setUp(self):
+        self.factory = RequestFactory()
+
+    @override_settings(MAPBOX_PUBLIC_TOKEN=None)
+    def test_unset_public_token_raises_improperly_configured(self):
+        request = self.factory.get(CONFIG_URL)
+        with self.assertRaises(ImproperlyConfigured):
+            ConfigView().get(request)
+
+    @override_settings(MAPBOX_PUBLIC_TOKEN="sk.oops-wrong-slot")
+    def test_non_pk_prefixed_public_token_raises_improperly_configured(self):
+        request = self.factory.get(CONFIG_URL)
+        with self.assertRaises(ImproperlyConfigured):
+            ConfigView().get(request)
 
 
 _UNIT_VEHICLE = {
