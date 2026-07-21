@@ -7,8 +7,8 @@ A Django REST API that takes a start and finish location in the continental US a
 ## Quickstart
 
 ```bash
-git clone https://github.com/jadrianports/fuel-route-optimizer.git
-cd fuel-route-optimizer
+git clone https://github.com/jadrianports/tankwise.git
+cd tankwise
 cp .env.example .env
 ```
 
@@ -274,6 +274,4 @@ A scripted path through the four presets built into the map page's sidebar. Each
 
 ## License
 
-© 2026 jadrianports. **All Rights Reserved.**
-
-This repository is shared publicly for evaluation purposes only. It is **not** open-source software. No license, express or implied, is granted to any person to use, copy, reproduce, modify, publish, redistribute, sublicense, or create derivative works from any part of this code, in whole or in part, without the author's prior written permission. See the [`LICENSE`](LICENSE) file for the full notice.
+Released under the MIT License. See [`LICENSE`](LICENSE) for the full text.

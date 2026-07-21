@@ -1,4 +1,4 @@
-# Render Blueprint for the Fuel Route Optimizer API.
+# Render Blueprint for TankWise.
 #
 # Declares exactly one free-plan Docker web service. This file is
 # reviewable infrastructure-as-code: every secret is prompted for in the
@@ -22,7 +22,7 @@
 # converges to the same rows.
 services:
   - type: web
-    name: fuel-route-optimizer
+    name: tankwise
     runtime: docker
     plan: free
     region: oregon
