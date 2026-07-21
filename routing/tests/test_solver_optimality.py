@@ -143,7 +143,7 @@ def _brute_force_optimum(candidates, total_route_mi, tank_range_mi, mpg, startin
 
 
 class SolverOptimalityTests(SimpleTestCase):
-    """VEH-07: the solver's output must match an independent exhaustive
+    """The solver's output must match an independent exhaustive
     oracle's optimum across randomized price/position landscapes,
     including partial starting tanks -- the exact case the START-node fix
     exists to protect."""

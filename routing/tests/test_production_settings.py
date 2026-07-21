@@ -1,4 +1,4 @@
-"""Tests for `config/settings/production.py` -- the DEP-03 hardened profile.
+"""Tests for `config/settings/production.py` -- the hardened deploy profile.
 
 Imports the module directly via importlib with a controlled environment
 rather than switching DJANGO_SETTINGS_MODULE mid-suite, since the rest of

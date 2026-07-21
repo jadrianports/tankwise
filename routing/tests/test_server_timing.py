@@ -1,5 +1,5 @@
 """Endpoint integration tests for the `Server-Timing` header on
-`POST /api/route` (FND-04).
+`POST /api/route`.
 
 Self-contained -- deliberately does NOT import from `test_views.py` so
 this module runs independently of any other plan's edits to that file.

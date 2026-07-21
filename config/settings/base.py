@@ -129,7 +129,7 @@ MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
-# Fuel price dataset vintage (VEH-08). A constant, not a Station column
+# Fuel price dataset vintage. A constant, not a Station column
 # -- the source CSV has one vintage and no per-row dates, so a column
 # would store thousands of identical copies plus a migration and a
 # reseed for zero added information, while a constant survives a
