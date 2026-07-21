@@ -59,10 +59,18 @@ export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 // Demo trip chips (UX-05, D-35). Long-haul routes chosen to suit the
 // realistic semi range above -- a real driver reads a 500-mi range on a
 // Class 8 and knows it's wrong, so demo chips are coast-to-coast /
-// Dallas-Seattle class routes that still land 2-3 fuel stops, not the
-// v1.0-era short happy-path routes sized for the old unrealistic 500-mi
-// default. Fixed "lat,lng" coordinate strings, never addresses, so a
-// repeat click always hits the same normalized cache key.
+// Dallas-Seattle class routes, not the v1.0-era short happy-path routes
+// sized for the old unrealistic 500-mi default. Fixed "lat,lng"
+// coordinate strings, never addresses, so a repeat click always hits the
+// same normalized cache key.
+//
+// Both demo trips return ~6 stops at the hero preset, not the 2-3 assumed
+// while planning. That is the solver working as designed: it minimizes
+// dollars, not stop count, so it takes opportunistic `top_up_at_cheapest`
+// purchases wherever fuel is cheap. LA->NYC is ~2,790 mi on a ~1,050 mi
+// range, so 2 stops is only the physical floor -- every stop beyond that
+// is the optimizer buying cheap. Copy here and in the UI says "multiple
+// fuel stops" rather than a fixed count for exactly this reason.
 export interface DemoTrip {
   label: string;
   description: string;
