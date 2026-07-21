@@ -3,6 +3,7 @@ import Box from '@mui/material/Box';
 
 import AppShell from './components/AppShell';
 import Sidebar from './components/Sidebar';
+import BottomSheet from './components/BottomSheet';
 import MapView from './features/map/MapView';
 import ShareExportBar from './features/share-export/ShareExportBar';
 import { useShareUrl } from './features/share-export/useShareUrl';
@@ -79,14 +80,19 @@ function App() {
             height: { md: 'calc(100vh - 64px)' },
           }}
         >
+          {/* Permanent desktop sidebar (md+, D-18's ~440px scrolling panel).
+              Below md, PlannerFormSection/VehicleSection/ResultsSection/
+              RecentTripsSection instead render inside the mobile
+              BottomSheet (D-42) -- this Box is never mounted at xs, so its
+              content never duplicates the sheet's own composition. */}
           <Box
             component="aside"
             sx={{
+              display: { xs: 'none', md: 'flex' },
               width: { md: SIDEBAR_WIDTH },
               flexShrink: 0,
               overflowY: { md: 'auto' },
               p: 3,
-              display: 'flex',
               flexDirection: 'column',
               gap: 3,
               bgcolor: 'background.paper',
@@ -100,7 +106,11 @@ function App() {
           <Box
             component="main"
             className="print-hide"
-            sx={{ flexGrow: 1, height: { xs: 400, md: 'auto' }, minHeight: { xs: 400, md: 'auto' } }}
+            sx={{
+              flexGrow: 1,
+              height: { xs: 'calc(100vh - 64px)', md: 'auto' },
+              minHeight: { xs: 'calc(100vh - 64px)', md: 'auto' },
+            }}
           >
             <MapView
               data={data}
@@ -109,6 +119,15 @@ function App() {
               focusStopRequest={focusStopRequest}
             />
           </Box>
+        </Box>
+
+        {/* Mobile bottom sheet (D-42): three snap points over the still-live
+            map above. Never mounted at md+ -- `display: none` on this
+            wrapper removes the sheet's own `position: fixed` Paper from
+            the render entirely, so it can never overlap the desktop
+            sidebar. */}
+        <Box className="print-hide" sx={{ display: { xs: 'block', md: 'none' } }}>
+          <BottomSheet />
         </Box>
       </RoutePlanContext.Provider>
     </Box>
