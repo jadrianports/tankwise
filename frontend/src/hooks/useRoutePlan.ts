@@ -1,13 +1,25 @@
 import { useCallback, useRef, useState } from 'react';
 
 import { planRoute } from '../api/routeClient';
-import type { RouteResponse } from '../types/routeContract';
+import { HERO_VEHICLE_PRESET_ID, VEHICLE_PRESETS } from '../constants/presets';
+import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
-export type RoutePlanStatus = 'idle' | 'loading' | 'success' | 'error';
+// D-38: the app loads with the hero preset (Semi loaded) selected and
+// sends it explicitly -- the backend's own default (10 mpg / 500 mi) is
+// unchanged for any request that omits `vehicle` entirely, but every
+// request this hook issues always carries one.
+const HERO_VEHICLE = VEHICLE_PRESETS.find((preset) => preset.id === HERO_VEHICLE_PRESET_ID)!.vehicle;
+
+// `rate_limited` is a distinct status (not `error`) so a 429 never trips
+// ResultsSection's error-alert branch or clears the last good `data` --
+// D-15/D-17 require the previous plan to stay fully visible while a 429
+// cooldown counts down.
+export type RoutePlanStatus = 'idle' | 'loading' | 'success' | 'error' | 'rate_limited';
 
 export interface RoutePlanError {
   code: string;
   message: string;
+  retryAfterS?: number;
 }
 
 export interface UseRoutePlanResult {
@@ -16,6 +28,12 @@ export interface UseRoutePlanResult {
   error: RoutePlanError | null;
   submit: (start: string, finish: string) => Promise<void>;
   retry: () => void;
+  // Updates the vehicle profile used by every future submit/retry, and --
+  // if a route has already been solved at least once -- immediately
+  // re-solves using the last-submitted (already-resolved) start/finish
+  // coordinates. Never re-geocodes (D-07): a slider/chip change only ever
+  // reuses cached coordinates, it never touches AddressAutocomplete.
+  resolveVehicle: (vehicle: VehicleProfileRequest) => void;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -43,8 +61,15 @@ export function useRoutePlan(): UseRoutePlanResult {
   // Last-submitted (start, finish) pair -- lets an `upstream_error` state
   // offer a real Retry button (UX-07) that resubmits the same request,
   // without ResultsSection needing to know the last-entered coordinates
-  // itself.
+  // itself. Also what `resolveVehicle` reuses so a slider/chip change
+  // never re-geocodes (D-07).
   const lastArgsRef = useRef<{ start: string; finish: string } | null>(null);
+  // Current vehicle profile, sent on every submit (D-38's hero default,
+  // updated live by `resolveVehicle` as the user picks a preset/drags a
+  // slider). A `useRef` (not `useState`) because it's read inside `submit`
+  // without needing its own re-render -- VehicleSection owns the visible
+  // slider/chip UI state independently.
+  const vehicleRef = useRef<VehicleProfileRequest>(HERO_VEHICLE);
 
   const submit = useCallback(async (start: string, finish: string) => {
     lastArgsRef.current = { start, finish };
@@ -59,7 +84,7 @@ export function useRoutePlan(): UseRoutePlanResult {
 
     let result;
     try {
-      result = await planRoute(start, finish, controller.signal);
+      result = await planRoute(start, finish, vehicleRef.current, controller.signal);
     } catch (err) {
       if (isAbortError(err)) {
         // Intentional cancellation -- a newer submit superseded this one.
@@ -79,6 +104,14 @@ export function useRoutePlan(): UseRoutePlanResult {
     if (result.ok) {
       setData(result.data);
       setStatus('success');
+      setError(null);
+    } else if (result.code === 'rate_limited') {
+      // D-15/D-17: a 429 must never blank the last good plan or read as a
+      // solver failure -- `data` is deliberately left untouched, and the
+      // distinct `rate_limited` status keeps ResultsSection's
+      // `status === 'error'` alert branch from firing.
+      setError({ code: result.code, message: result.message, retryAfterS: result.retryAfterS });
+      setStatus('rate_limited');
     } else {
       setData(null);
       setError({ code: result.code, message: result.message });
@@ -92,5 +125,15 @@ export function useRoutePlan(): UseRoutePlanResult {
     void submit(last.start, last.finish);
   }, [submit]);
 
-  return { status, data, error, submit, retry };
+  const resolveVehicle = useCallback(
+    (vehicle: VehicleProfileRequest) => {
+      vehicleRef.current = vehicle;
+      const last = lastArgsRef.current;
+      if (!last) return; // no route solved yet -- nothing to re-solve against
+      void submit(last.start, last.finish);
+    },
+    [submit]
+  );
+
+  return { status, data, error, submit, retry, resolveVehicle };
 }

@@ -1,7 +1,7 @@
 import { createContext, useContext } from 'react';
 
 import type { RoutePlanError, RoutePlanStatus } from '../hooks/useRoutePlan';
-import type { RouteResponse } from '../types/routeContract';
+import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
 // A StopList row click carries a `nonce` (not just the stop key) so MapView
 // re-fires its fly-to/popup-open effect even when the same stop is clicked
@@ -34,6 +34,13 @@ export interface RoutePlanContextValue {
   solve: (start: string, finish: string) => Promise<void>;
   retry: () => void;
   focusStop: (key: string | number) => void;
+  // Vehicle preset/what-if slider bridge (UX-02/UX-12, D-07/D-14): updates
+  // the vehicle profile used by the next solve and, if a route already
+  // exists, immediately re-solves reusing the already-resolved
+  // start/finish coordinates -- never re-geocodes. Consumed by
+  // features/vehicle/useDebouncedResolve.ts, not called directly by
+  // VehicleSection's chips/sliders.
+  resolveVehicle: (vehicle: VehicleProfileRequest) => void;
 }
 
 export const RoutePlanContext = createContext<RoutePlanContextValue | null>(null);

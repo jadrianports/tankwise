@@ -1,7 +1,7 @@
 // Typed fetch client for POST /api/route, plus a pure per-error-code envelope
 // mapper. The envelope shape and every code/detail
 // key here are grounded directly in routing/exceptions.py -- not guessed.
-import type { RouteResponse } from '../types/routeContract';
+import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
 const GENERIC_FALLBACK_MESSAGE = 'Something went wrong. Please try again.';
 
@@ -80,6 +80,11 @@ export interface PlanRouteFailure {
   ok: false;
   code: string;
   message: string;
+  // Only populated for a `rate_limited` (429) failure -- the raw seconds
+  // from `error.detail.retry_after_s` (Phase 8 D-15), kept as a number
+  // (not re-parsed from the already-composed message string) so a caller
+  // can drive an actual countdown timer (D-17).
+  retryAfterS?: number;
 }
 
 export type PlanRouteResult = PlanRouteSuccess | PlanRouteFailure;
@@ -98,9 +103,14 @@ function isAbortError(err: unknown): boolean {
 // must never surface as a user-facing error; only the caller (which knows
 // whether the abort was itself vs. a stale race) can safely decide to
 // ignore it.
+// `vehicle` (UX-12, Phase 7 D-01) is optional -- omitting it lets the
+// backend fall back to its own documented default (10 mpg / 500 mi / full
+// tank, D-38). Every preset-chip/slider-driven call passes it explicitly
+// so the hero preset wins in the UI without changing that API default.
 export async function planRoute(
   start: string,
   finish: string,
+  vehicle?: VehicleProfileRequest | null,
   signal?: AbortSignal
 ): Promise<PlanRouteResult> {
   let res: Response;
@@ -108,7 +118,7 @@ export async function planRoute(
     res = await fetch('/api/route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ start, finish }),
+      body: JSON.stringify(vehicle ? { start, finish, vehicle } : { start, finish }),
       signal,
     });
   } catch (err) {
@@ -129,5 +139,9 @@ export async function planRoute(
   }
 
   const { code, message, detail } = body.error;
-  return { ok: false, code, message: mapErrorToMessage({ code, message, detail }) };
+  const retryAfterS =
+    typeof (detail as { retry_after_s?: unknown })?.retry_after_s === 'number'
+      ? (detail as { retry_after_s: number }).retry_after_s
+      : undefined;
+  return { ok: false, code, message: mapErrorToMessage({ code, message, detail }), retryAfterS };
 }

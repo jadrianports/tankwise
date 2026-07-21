@@ -22,7 +22,7 @@ type ConfigState =
 // non-overlay 440px sidebar (Sidebar's section slots) fixed on md+
 // (stacked column below 900px); the map fills the remaining width.
 function App() {
-  const { status, data, error, submit, retry } = useRoutePlan();
+  const { status, data, error, submit, retry, resolveVehicle } = useRoutePlan();
   const [config, setConfig] = useState<ConfigState>({ status: 'loading' });
 
   // Bridges a StopList row click (features/results, inside Sidebar) to
@@ -58,7 +58,7 @@ function App() {
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
       <AppShell />
 
-      <RoutePlanContext.Provider value={{ status, data, error, solve: submit, retry, focusStop }}>
+      <RoutePlanContext.Provider value={{ status, data, error, solve: submit, retry, focusStop, resolveVehicle }}>
         <Box
           sx={{
             display: 'flex',

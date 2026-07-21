@@ -140,8 +140,57 @@ test('planRoute passes the AbortSignal straight through to fetch', async () => {
   };
   const controller = new AbortController();
   try {
-    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', controller.signal);
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', undefined, controller.signal);
     assert.equal(capturedOptions.signal, controller.signal);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('planRoute includes the nested vehicle object in the request body when provided', async () => {
+  const originalFetch = global.fetch;
+  let capturedOptions;
+  global.fetch = async (_url, options) => {
+    capturedOptions = options;
+    return { ok: true, json: async () => ({}) };
+  };
+  try {
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', { mpg: 6.5, tank_range_mi: 1050, starting_fuel: 1 });
+    assert.deepEqual(JSON.parse(capturedOptions.body).vehicle, { mpg: 6.5, tank_range_mi: 1050, starting_fuel: 1 });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('planRoute omits vehicle from the request body when not provided', async () => {
+  const originalFetch = global.fetch;
+  let capturedOptions;
+  global.fetch = async (_url, options) => {
+    capturedOptions = options;
+    return { ok: true, json: async () => ({}) };
+  };
+  try {
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
+    assert.equal('vehicle' in JSON.parse(capturedOptions.body), false);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('planRoute maps a rate_limited response and surfaces retryAfterS as a number', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    ok: false,
+    json: async () => ({
+      error: { code: 'rate_limited', message: 'Too many requests.', detail: { retry_after_s: 7 } },
+    }),
+  });
+  try {
+    const result = await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'rate_limited');
+    assert.equal(result.retryAfterS, 7);
+    assert.match(result.message, /Catching up/);
   } finally {
     global.fetch = originalFetch;
   }
