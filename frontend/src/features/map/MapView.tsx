@@ -8,10 +8,13 @@ import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import type { RouteResponse } from '../../types/routeContract';
+import type { CandidateStation, RouteResponse } from '../../types/routeContract';
 import { useMapStyle } from './useMapStyle';
 import { useTerrain, getConditionalPitch } from './useTerrain';
 import StyleSwitcher from './StyleSwitcher';
+import CandidateToggle from './CandidateToggle';
+import PriceLegend from './PriceLegend';
+import { applyCandidateLayer } from './layers/candidateLayer';
 
 const ROUTE_SOURCE_ID = 'route-line';
 
@@ -66,6 +69,14 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
   const routeColorRef = useRef(ROUTE_COLOR.light);
   routeColorRef.current = isDark ? ROUTE_COLOR.dark : ROUTE_COLOR.light;
 
+  // Candidate price layer (MAP-03, D-11/D-12) -- on by default (D-12).
+  const [candidatesVisible, setCandidatesVisible] = useState(true);
+  const candidatesVisibleRef = useRef(candidatesVisible);
+  candidatesVisibleRef.current = candidatesVisible;
+
+  const candidatesRef = useRef<CandidateStation[]>([]);
+  candidatesRef.current = data?.candidate_stations ?? [];
+
   // Adds the route line the first time it's needed and updates it in
   // place on every later call -- the API's route_geometry is already
   // [lng, lat] GeoJSON order, exactly what a Mapbox GL source wants (no
@@ -100,12 +111,31 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
     });
   }, []);
 
+  // Adds/updates the candidate GeoJSON source + circle layer, using the
+  // current visibility ref so a toggle flip doesn't require resubscribing
+  // any style.load listener.
+  const applyCandidates = useCallback((map: MapboxMap) => {
+    applyCandidateLayer(map, candidatesRef.current, candidatesVisibleRef.current);
+  }, []);
+
+  // Composed re-add callback: both the route line and the candidate layer
+  // must survive a genuine style reload (streets<->satellite), so both are
+  // re-registered from the same style.load handler (09-RESEARCH.md
+  // Pitfall 1).
+  const applyMapLayers = useCallback(
+    (map: MapboxMap) => {
+      applyRouteLine(map);
+      applyCandidates(map);
+    },
+    [applyRouteLine, applyCandidates]
+  );
+
   // Theme axis (no reload, UX-09) + base-style axis (streets<->satellite,
   // genuine reload, MAP-02) -- deliberately two separate mechanisms
-  // (09-RESEARCH.md Pitfall 2). applyRouteLine is registered as the
-  // re-add callback so the route line survives the satellite/streets
-  // reload's style.load, and it also runs on the very first load.
-  const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyRouteLine);
+  // (09-RESEARCH.md Pitfall 2). applyMapLayers is registered as the
+  // re-add callback so the route line AND the candidate layer survive the
+  // satellite/streets reload's style.load, and both run on the first load.
+  const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyMapLayers);
   useTerrain(mapInstance);
 
   const handleLoad = useCallback(() => {
@@ -124,6 +154,18 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
     if (!mapInstance) return;
     applyRouteLine(mapInstance);
   }, [mapInstance, data, applyRouteLine]);
+
+  // Re-draws the candidate layer whenever a new plan is solved OR the
+  // toggle flips -- recomputing thresholds per response (never cached
+  // across trips, since percentiles are corridor-relative, D-33).
+  useEffect(() => {
+    if (!mapInstance) return;
+    applyCandidates(mapInstance);
+  }, [mapInstance, data, candidatesVisible, applyCandidates]);
+
+  const toggleCandidates = useCallback(() => {
+    setCandidatesVisible((prev) => !prev);
+  }, []);
 
   const startLng = toNumber(data?.start?.longitude);
   const startLat = toNumber(data?.start?.latitude);
@@ -232,6 +274,10 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
         )}
       </Map>
       <StyleSwitcher isSatellite={isSatellite} onToggle={toggleSatellite} />
+      <CandidateToggle visible={candidatesVisible} onToggle={toggleCandidates} />
+      {candidatesVisible && data && data.candidate_stations.length > 0 && (
+        <PriceLegend candidates={data.candidate_stations} />
+      )}
     </Box>
   );
 }
