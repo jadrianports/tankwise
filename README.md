@@ -6,7 +6,7 @@
 [![Live demo: coming soon](https://img.shields.io/badge/live%20demo-coming%20soon-lightgrey.svg)](#free-tier-deployment)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![Django 6.0](https://img.shields.io/badge/django-6.0-092e20.svg)](https://www.djangoproject.com/)
-[![Node 20](https://img.shields.io/badge/node-20-339933.svg)](https://nodejs.org/)
+[![Node 24](https://img.shields.io/badge/node-24-339933.svg)](https://nodejs.org/)
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev/)
 
 TankWise is a route and cost-optimal fuel-stop planner built for truckers and small-fleet dispatchers: give it a start and finish location anywhere in the continental US and it returns the driving route, the cheapest feasible sequence of fuel stops along it, and the total fuel cost for the trip — chosen from 6,290 routable truck-stop stations (8,151 raw price rows, 6,738 successfully geocoded). A React, MUI, and Mapbox GL JS single-page app renders the route, the stops, and the savings story on an interactive map, and the whole stack (API, cache, SPA) starts with one `docker compose up`.
@@ -264,7 +264,7 @@ The Seattle → Miami route shows the largest STRtree win because its bounding b
 ## Testing
 
 - **Backend:** `python manage.py test` runs the full Django/DRF suite. It covers the solver's edge cases (the exact 500-mile boundary, an infeasible gap, a single candidate station, a sub-500-mile trip that needs no stops, and the "greedy trap" where a farther but cheaper station has to win), the corridor filter's geometry, the Mapbox client and its error mapping, the cache-key normalizer, the full serializer and response contract, and the `/api/route` and `/api/health` views end to end.
-- **Frontend:** `node --test src/api/routeClient.test.mjs` and `node --test src/utils/format.test.mjs` (run from `frontend/`) cover the per-error-code message mapper and the formatting helpers, with no extra test-runner dependency. On some Node/OS combinations `node --test src/api/` as a directory argument doesn't recurse, so pass the explicit file path instead.
+- **Frontend:** `npm test` (run from `frontend/`) runs the Vitest suite — 39 tests across the per-error-code message mapper, the formatting helpers, the CSV and GeoJSON exporters, the `useRoutePlan` submit state machine, and error rendering in the results panel. `npm run test:coverage` writes an lcov report to `frontend/coverage/`.
 - **API collections:** the `bruno/` (primary) and `postman/` collections exercise all nine request/response scenarios above against a running server, including the two error paths and a repeat-request cache-hit check.
 
 ## Demo walkthrough
