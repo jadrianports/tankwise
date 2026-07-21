@@ -9,9 +9,11 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import type { RouteResponse } from '../../types/routeContract';
+import { useMapStyle } from './useMapStyle';
+import { useTerrain, getConditionalPitch } from './useTerrain';
+import StyleSwitcher from './StyleSwitcher';
 
 const ROUTE_SOURCE_ID = 'route-line';
-const BASE_STYLE = 'mapbox://styles/mapbox/standard';
 
 // Route polyline hex (light/dark) -- primary green, never fuel amber
 // (09-UI-SPEC.md: "route line color = primary/neutral not fuel amber").
@@ -98,6 +100,14 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
     });
   }, []);
 
+  // Theme axis (no reload, UX-09) + base-style axis (streets<->satellite,
+  // genuine reload, MAP-02) -- deliberately two separate mechanisms
+  // (09-RESEARCH.md Pitfall 2). applyRouteLine is registered as the
+  // re-add callback so the route line survives the satellite/streets
+  // reload's style.load, and it also runs on the very first load.
+  const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyRouteLine);
+  useTerrain(mapInstance);
+
   const handleLoad = useCallback(() => {
     setMapInstance(mapRef.current?.getMap() ?? null);
   }, []);
@@ -172,9 +182,10 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
     <Box sx={{ position: 'relative', height: '100%', width: '100%' }}>
       <Map
         {...viewState}
+        pitch={getConditionalPitch(viewState.zoom)}
         ref={mapRef}
         mapboxAccessToken={token}
-        mapStyle={BASE_STYLE}
+        mapStyle={styleUrl}
         onMove={handleMove}
         onLoad={handleLoad}
         style={{ width: '100%', height: '100%' }}
@@ -220,6 +231,7 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
           </Marker>
         )}
       </Map>
+      <StyleSwitcher isSatellite={isSatellite} onToggle={toggleSatellite} />
     </Box>
   );
 }
