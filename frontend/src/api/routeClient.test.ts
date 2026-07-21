@@ -1,7 +1,6 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from 'vitest';
 
-import { mapErrorToMessage, planRoute } from './routeClient.ts';
+import { mapErrorToMessage, planRoute } from './routeClient';
 
 test('invalid_input with populated detail flattens the specific field message', () => {
   const message = mapErrorToMessage({
@@ -9,8 +8,8 @@ test('invalid_input with populated detail flattens the specific field message', 
     message: 'Invalid request.',
     detail: { start: ['Coordinate (50.4452, -104.6189) is outside the continental US.'] },
   });
-  assert.match(message, /outside the continental US/);
-  assert.notEqual(message, 'Invalid request.');
+  expect(message).toMatch(/outside the continental US/);
+  expect(message).not.toBe('Invalid request.');
 });
 
 test('invalid_input with empty detail falls back to the specific message', () => {
@@ -19,7 +18,7 @@ test('invalid_input with empty detail falls back to the specific message', () =>
     message: 'Address must be at most 256 characters, got 300.',
     detail: {},
   });
-  assert.equal(message, 'Address must be at most 256 characters, got 300.');
+  expect(message).toBe('Address must be at most 256 characters, got 300.');
 });
 
 test('infeasible_route builds the gap-detail sentence from detail', () => {
@@ -33,8 +32,7 @@ test('infeasible_route builds the gap-detail sentence from detail', () => {
       max_range_mi: '500',
     },
   });
-  assert.equal(
-    message,
+  expect(message).toBe(
     "No fuel stop reachable within 500 mi between Pilot Travel Center and Love's #123 (gap: 512.3 mi)."
   );
 });
@@ -45,7 +43,7 @@ test('route_not_found returns the fixed copy', () => {
     message: 'No route found.',
     detail: {},
   });
-  assert.equal(message, 'No drivable route between these points.');
+  expect(message).toBe('No drivable route between these points.');
 });
 
 test('upstream_error returns the fixed copy', () => {
@@ -54,13 +52,13 @@ test('upstream_error returns the fixed copy', () => {
     message: 'Upstream routing provider failed.',
     detail: {},
   });
-  assert.equal(message, 'Map service unavailable. Please retry.');
+  expect(message).toBe('Map service unavailable. Please retry.');
 });
 
 test('unknown/missing code falls back to the generic message', () => {
   const message = mapErrorToMessage({ code: 'something_unexpected', message: 'huh', detail: {} });
-  assert.equal(message, 'Something went wrong. Please try again.');
-  assert.equal(mapErrorToMessage(null), 'Something went wrong. Please try again.');
+  expect(message).toBe('Something went wrong. Please try again.');
+  expect(mapErrorToMessage(null)).toBe('Something went wrong. Please try again.');
 });
 
 test('rate_limited frames the 429 as catching-up, with the countdown seconds', () => {
@@ -69,144 +67,147 @@ test('rate_limited frames the 429 as catching-up, with the countdown seconds', (
     message: 'Too many requests.',
     detail: { retry_after_s: 5 },
   });
-  assert.match(message, /Catching up/);
-  assert.match(message, /5s/);
+  expect(message).toMatch(/Catching up/);
+  expect(message).toMatch(/5s/);
 });
 
 test('config_error returns the map-pane copy without touching the rest of the app', () => {
   const message = mapErrorToMessage({ code: 'config_error', message: 'n/a', detail: {} });
-  assert.match(message, /Map unavailable/);
-  assert.match(message, /route planner below still works/);
+  expect(message).toMatch(/Map unavailable/);
+  expect(message).toMatch(/route planner below still works/);
 });
 
 test('planRoute POSTs to the relative /api/route path and resolves success', async () => {
-  const originalFetch = global.fetch;
-  let capturedUrl;
-  let capturedOptions;
-  global.fetch = async (url, options) => {
+  const originalFetch = globalThis.fetch;
+  let capturedUrl: RequestInfo | URL | undefined;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (url: RequestInfo | URL, options?: RequestInit) => {
     capturedUrl = url;
     capturedOptions = options;
     return { ok: true, json: async () => ({ total_cost: '12.34' }) };
-  };
+  }) as unknown as typeof fetch;
   try {
     const result = await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
-    assert.equal(capturedUrl, '/api/route');
-    assert.equal(capturedOptions.method, 'POST');
-    assert.equal(JSON.parse(capturedOptions.body).start, '39.7392,-104.9903');
-    assert.equal(result.ok, true);
-    assert.deepEqual(result.data, { total_cost: '12.34' });
+    expect(capturedUrl).toBe('/api/route');
+    expect(capturedOptions?.method).toBe('POST');
+    expect(JSON.parse(capturedOptions?.body as string).start).toBe('39.7392,-104.9903');
+    expect(result.ok).toBe(true);
+    expect(result.ok && result.data).toEqual({ total_cost: '12.34' });
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute maps a non-ok response through the error envelope', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => ({
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
     ok: false,
     json: async () => ({ error: { code: 'route_not_found', message: 'No route found.', detail: {} } }),
-  });
+  })) as unknown as typeof fetch;
   try {
     const result = await planRoute('33.3879,-118.4163', '34.0522,-118.2437');
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'route_not_found');
-    assert.equal(result.message, 'No drivable route between these points.');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('route_not_found');
+    expect(!result.ok && result.message).toBe('No drivable route between these points.');
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute falls back to the generic network message when fetch rejects', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
     throw new Error('network down');
-  };
+  }) as unknown as typeof fetch;
   try {
     const result = await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'network_error');
-    assert.equal(result.message, 'Something went wrong. Please try again.');
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('network_error');
+    expect(!result.ok && result.message).toBe('Something went wrong. Please try again.');
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute passes the AbortSignal straight through to fetch', async () => {
-  const originalFetch = global.fetch;
-  let capturedOptions;
-  global.fetch = async (_url, options) => {
+  const originalFetch = globalThis.fetch;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (_url: RequestInfo | URL, options?: RequestInit) => {
     capturedOptions = options;
     return { ok: true, json: async () => ({}) };
-  };
+  }) as unknown as typeof fetch;
   const controller = new AbortController();
   try {
     await planRoute('39.7392,-104.9903', '39.0997,-94.5786', undefined, controller.signal);
-    assert.equal(capturedOptions.signal, controller.signal);
+    expect(capturedOptions?.signal).toBe(controller.signal);
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute includes the nested vehicle object in the request body when provided', async () => {
-  const originalFetch = global.fetch;
-  let capturedOptions;
-  global.fetch = async (_url, options) => {
+  const originalFetch = globalThis.fetch;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (_url: RequestInfo | URL, options?: RequestInit) => {
     capturedOptions = options;
     return { ok: true, json: async () => ({}) };
-  };
+  }) as unknown as typeof fetch;
   try {
     await planRoute('39.7392,-104.9903', '39.0997,-94.5786', { mpg: 6.5, tank_range_mi: 1050, starting_fuel: 1 });
-    assert.deepEqual(JSON.parse(capturedOptions.body).vehicle, { mpg: 6.5, tank_range_mi: 1050, starting_fuel: 1 });
+    expect(JSON.parse(capturedOptions?.body as string).vehicle).toEqual({
+      mpg: 6.5,
+      tank_range_mi: 1050,
+      starting_fuel: 1,
+    });
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute omits vehicle from the request body when not provided', async () => {
-  const originalFetch = global.fetch;
-  let capturedOptions;
-  global.fetch = async (_url, options) => {
+  const originalFetch = globalThis.fetch;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (_url: RequestInfo | URL, options?: RequestInit) => {
     capturedOptions = options;
     return { ok: true, json: async () => ({}) };
-  };
+  }) as unknown as typeof fetch;
   try {
     await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
-    assert.equal('vehicle' in JSON.parse(capturedOptions.body), false);
+    expect('vehicle' in JSON.parse(capturedOptions?.body as string)).toBe(false);
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute maps a rate_limited response and surfaces retryAfterS as a number', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => ({
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
     ok: false,
     json: async () => ({
       error: { code: 'rate_limited', message: 'Too many requests.', detail: { retry_after_s: 7 } },
     }),
-  });
+  })) as unknown as typeof fetch;
   try {
     const result = await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'rate_limited');
-    assert.equal(result.retryAfterS, 7);
-    assert.match(result.message, /Catching up/);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('rate_limited');
+    expect(!result.ok && result.retryAfterS).toBe(7);
+    expect(!result.ok && result.message).toMatch(/Catching up/);
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });
 
 test('planRoute rethrows AbortError distinctly, never as a network_error result', async () => {
-  const originalFetch = global.fetch;
-  global.fetch = async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => {
     throw new DOMException('The operation was aborted.', 'AbortError');
-  };
+  }) as unknown as typeof fetch;
   try {
-    await assert.rejects(
-      () => planRoute('39.7392,-104.9903', '39.0997,-94.5786'),
-      (err) => err instanceof DOMException && err.name === 'AbortError'
+    await expect(planRoute('39.7392,-104.9903', '39.0997,-94.5786')).rejects.toSatisfy(
+      (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
     );
   } finally {
-    global.fetch = originalFetch;
+    globalThis.fetch = originalFetch;
   }
 });

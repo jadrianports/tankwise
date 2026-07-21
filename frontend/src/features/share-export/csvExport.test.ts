@@ -1,8 +1,11 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from 'vitest';
 
-import { buildStopsCsv } from './csvExport.ts';
+import { buildStopsCsv } from './csvExport';
+import type { RouteResponse } from '../../types/routeContract';
 
+// Only `fuel_stops` is exercised by buildStopsCsv -- the fixture is cast
+// through `unknown` rather than filling in every unrelated RouteResponse
+// field this function never reads.
 const FIXTURE = {
   fuel_stops: [
     {
@@ -22,25 +25,25 @@ const FIXTURE = {
       cost: '140.86',
     },
   ],
-};
+} as unknown as RouteResponse;
 
 test('buildStopsCsv writes the D-29 header row', () => {
   const csv = buildStopsCsv(FIXTURE);
   const [header] = csv.split('\r\n');
-  assert.equal(header, 'Stop #,Station Name,Station ID,Miles From Start,Price/Gal,Gallons,Cost');
+  expect(header).toBe('Stop #,Station Name,Station ID,Miles From Start,Price/Gal,Gallons,Cost');
 });
 
 test('buildStopsCsv writes one row per fuel stop, numbered from 1', () => {
   const csv = buildStopsCsv(FIXTURE);
   const rows = csv.split('\r\n');
-  assert.equal(rows.length, 3); // header + 2 stops
-  assert.equal(rows[1], '1,Pilot Travel Center,ST-1,210.5,3.459,58.62,202.79');
+  expect(rows.length).toBe(3); // header + 2 stops
+  expect(rows[1]).toBe('1,Pilot Travel Center,ST-1,210.5,3.459,58.62,202.79');
 });
 
 test('buildStopsCsv falls back to an empty station id field, never the string "null"', () => {
   const csv = buildStopsCsv(FIXTURE);
   const rows = csv.split('\r\n');
-  assert.equal(rows[2], '2,Loves Travel Stop,,640.2,3.512,40.10,140.86');
+  expect(rows[2]).toBe('2,Loves Travel Stop,,640.2,3.512,40.10,140.86');
 });
 
 test('buildStopsCsv quotes a station name containing a comma', () => {
@@ -55,7 +58,7 @@ test('buildStopsCsv quotes a station name containing a comma', () => {
         cost: '35',
       },
     ],
-  });
+  } as unknown as RouteResponse);
   const rows = csv.split('\r\n');
-  assert.equal(rows[1], '1,"Loves, Exit 42",ST-2,100,3.5,10,35');
+  expect(rows[1]).toBe('1,"Loves, Exit 42",ST-2,100,3.5,10,35');
 });

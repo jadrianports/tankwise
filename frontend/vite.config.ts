@@ -1,4 +1,7 @@
-import { defineConfig } from 'vite'
+// Imported from 'vitest/config' (not 'vite') so the `test` key below is
+// type-checked too -- both work at runtime, but this keeps the Vitest
+// options honest against typos.
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // https://vite.dev/config/
@@ -14,6 +17,15 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+    },
+  },
+  test: {
+    environment: 'jsdom',
+    setupFiles: './src/test/setup.ts',
+    coverage: {
+      provider: 'v8',
+      // lcov feeds the Codecov frontend flag wired up in a later plan.
+      reporter: ['text', 'lcov'],
     },
   },
 })
