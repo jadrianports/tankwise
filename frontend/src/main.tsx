@@ -7,7 +7,7 @@ import './fonts'
 import theme from './theme'
 import App from './App.jsx'
 
-createRoot(document.getElementById('root')).render(
+createRoot(document.getElementById('root')!).render(
   <StrictMode>
     {/* Applies the persisted color scheme's class to <html> before first paint
         so there is no light/dark flash on load. */}
