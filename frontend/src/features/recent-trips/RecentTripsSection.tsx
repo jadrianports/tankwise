@@ -1,18 +1,60 @@
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
+import List from '@mui/material/List';
+import ListItem from '@mui/material/ListItem';
+import ListItemButton from '@mui/material/ListItemButton';
+import ListItemText from '@mui/material/ListItemText';
+import IconButton from '@mui/material/IconButton';
+import CloseIcon from '@mui/icons-material/Close';
 
-// Placeholder slot -- a later plan replaces this with the last-5-trips
-// localStorage list (UX-06/D-41). Deliberately minimal this plan
-// (09-03-PLAN.md Task 1) -- see PlannerFormSection.tsx for the same note.
+import { useRecentTrips } from './useRecentTrips';
+import { requestLoadTrip } from '../share-export/tripState';
+import { useRoutePlanContext } from '../../context/RoutePlanContext';
+
+// D-41/UX-06: last 5 trip inputs, deduped, newest first. Clicking a row
+// hands the trip to PlannerFormSection (a sibling Sidebar section) via
+// tripState.ts's requestLoadTrip bridge, which repopulates the form and
+// re-solves; a single click removes one entry with no confirm dialog
+// (low-stakes, instantly reconstructable, per 09-UI-SPEC.md's Destructive
+// confirmation contract).
 function RecentTripsSection() {
+  const { trips, remove } = useRecentTrips();
+  const { status } = useRoutePlanContext();
+  const isLoading = status === 'loading';
+
+  if (trips.length === 0) {
+    // Nothing to show yet -- an empty, half-explained section adds no
+    // value before the first trip is ever solved.
+    return null;
+  }
+
   return (
     <Box>
       <Typography variant="h6" component="h2" gutterBottom>
         Recent trips
       </Typography>
-      <Typography variant="body2" color="text.secondary">
-        Your last few trips will appear here in a later plan.
-      </Typography>
+      <List dense disablePadding>
+        {trips.map((trip, index) => (
+          <ListItem
+            key={`${trip.start}|${trip.finish}|${trip.vehicle}|${trip.savedAt}`}
+            disablePadding
+            secondaryAction={
+              <IconButton
+                edge="end"
+                aria-label={`Remove ${trip.startLabel} to ${trip.finishLabel} from recent trips`}
+                onClick={() => remove(index)}
+                sx={{ minWidth: 44, minHeight: 44 }}
+              >
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            }
+          >
+            <ListItemButton disabled={isLoading} onClick={() => requestLoadTrip(trip)} sx={{ pr: 6 }}>
+              <ListItemText primary={`${trip.startLabel} → ${trip.finishLabel}`} />
+            </ListItemButton>
+          </ListItem>
+        ))}
+      </List>
     </Box>
   );
 }
