@@ -3,13 +3,13 @@ import type { Map as MapboxMap } from 'mapbox-gl';
 
 import type { CandidateStation, FuelStop, RouteResponse } from '../../types/routeContract';
 
-// Fixed ~20-30s total regardless of trip length (D-24) -- a viewer's
+// Fixed ~20-30s total regardless of trip length -- a viewer's
 // patience is constant, not proportional to route distance. Per-stop
 // dwell is DERIVED from (budget / stop_count), never a hardcoded
 // constant: the demo hauls (LA->NYC, Dallas->Seattle) land ~6 stops at
-// the shipped vehicle presets, not the 2-3 originally assumed while
-// planning (09-06-SUMMARY.md), so a fixed per-stop beat sized for 2-3
-// stops would overrun a 6-stop trip badly.
+// the shipped vehicle presets, not the 2-3 originally assumed, so a
+// fixed per-stop beat sized for 2-3 stops would overrun a 6-stop trip
+// badly.
 const TOTAL_BUDGET_MS = 25_000;
 const DWELL_BUDGET_SHARE = 0.5;
 const MIN_DWELL_MS = 900;
@@ -19,7 +19,7 @@ const MIN_LEG_MS = 500;
 const INITIAL_FLY_MS = 800;
 const EASE_OUT_MS = 500;
 
-// Chase cam is low and pitched (D-23) and stays pitched for the ENTIRE
+// Chase cam is low and pitched and stays pitched for the ENTIRE
 // playback regardless of zoom (see the `isPlayback` override MapView.tsx
 // passes to useTerrain.ts's `getConditionalPitch`) -- only altitude
 // (zoom) changes between the travel and ease-out beats, so neither beat
@@ -99,17 +99,17 @@ function computeDwellMs(stopCount: number): number {
   return Math.min(MAX_DWELL_MS, Math.max(MIN_DWELL_MS, raw));
 }
 
-// Local, unexported prefers-reduced-motion check. BottomSheet.tsx (09-08)
+// Local, unexported prefers-reduced-motion check. BottomSheet.tsx
 // already carries an equivalent independent implementation for its own
-// snap-point transition; this hook sits outside that file's declared
-// scope, so it duplicates the same small check rather than extracting a
-// shared one out of a file this plan never touches.
+// snap-point transition; this hook duplicates the same small check
+// rather than extracting a shared one out of a file it otherwise never
+// touches.
 function prefersReducedMotion(): boolean {
   return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 // Resolves once the map's imperative camera move settles. Under reduced
-// motion, `jumpTo` is used directly (an instant jump cut, D-26) rather
+// motion, `jumpTo` is used directly (an instant jump cut) rather
 // than relying on mapbox-gl-js's own built-in prefers-reduced-motion
 // handling -- mapbox-gl-js silently skips ANY flyTo/easeTo animation once
 // the OS signal is on unless the call is marked `essential: true`, and
@@ -146,14 +146,14 @@ function locationTuple(
 }
 
 // Scripts a fixed-duration chase-cam fly-through of the already-fetched
-// response (MAP-04, D-23..26) -- composed entirely from `data`'s own
-// legs/fuel_stops/candidate_stations/vehicle fields, no new fetch.
+// response -- composed entirely from `data`'s own legs/fuel_stops/
+// candidate_stations/vehicle fields, no new fetch.
 export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): UseChaseCamResult {
   const [status, setStatus] = useState<ChaseCamStatus>('idle');
   const [currentBeat, setCurrentBeat] = useState<ChaseCamBeat | null>(null);
   const [tankFraction, setTankFraction] = useState(1);
 
-  // Monotonic generation guard -- the same D-04 sequence-guard pattern
+  // Monotonic generation guard -- the same sequence-guard pattern
   // useRoutePlan.ts uses to invalidate a stale network response, applied
   // here to a stale in-flight playback instead: `skip()` bumps the
   // generation so every pending `await` inside a still-running `play()`
@@ -178,7 +178,7 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
     );
   }, [map, data]);
 
-  // D-26: always available; ends playback at any time and returns to the
+  // Always available; ends playback at any time and returns to the
   // static view -- this is deliberately NOT the same as a natural
   // completion, which ends in the savings finale instead (see `play`'s
   // final `setStatus('finished')`).
@@ -268,7 +268,7 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
       const fuelRemainingMi = fuelMi;
       setTankFraction(clamp01(fuelMi / tankRangeMi));
 
-      // Ease UP and OUT (D-23): only altitude (zoom) changes here, pitch
+      // Ease UP and OUT: only altitude (zoom) changes here, pitch
       // stays at STOP_PITCH (== TRAVEL_PITCH) so this beat never fights
       // the map's own controlled pitch prop.
       if (stopPoint) {
@@ -283,10 +283,9 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
 
       const thisStopMi = Number(stop.distance_from_start_mi);
       const stopMiSafe = Number.isFinite(thisStopMi) ? thisStopMi : prevStopMi;
-      // Phase 7 D-19's exact skipped rule, re-derived frontend-side
-      // (D-10): every in-corridor candidate strictly between the
-      // previous and this stop's own mile marker was passed over in
-      // favor of this one.
+      // Matches the backend's own skipped rule, re-derived frontend-side:
+      // every in-corridor candidate strictly between the previous and
+      // this stop's own mile marker was passed over in favor of this one.
       const skippedCandidates = candidates.filter((c) => {
         const d = Number(c.distance_from_start_mi);
         return Number.isFinite(d) && d > prevStopMi && d < stopMiSafe;
@@ -333,7 +332,7 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
     fuelMi = Math.max(0, fuelMi - (Number(finalLeg?.distance_mi) || 0));
     setTankFraction(clamp01(fuelMi / tankRangeMi));
     setCurrentBeat(null);
-    // Natural completion ends in the savings finale (D-23..26) -- unlike
+    // Natural completion ends in the savings finale -- unlike
     // `skip()`, which returns straight to the static view.
     setStatus('finished');
   }, [map, data, status]);

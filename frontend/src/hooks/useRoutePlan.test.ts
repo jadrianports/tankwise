@@ -80,7 +80,7 @@ test('a rate_limited failure keeps the previous data intact and exposes retryAft
   });
 
   await waitFor(() => expect(result.current.status).toBe('rate_limited'));
-  // D-15/D-17: `data` must NOT be cleared by a 429 -- the last good plan
+  // `data` must NOT be cleared by a 429 -- the last good plan
   // stays fully visible while the cooldown counts down.
   expect(result.current.data).toEqual(FIRST_ROUTE);
   expect(result.current.error?.code).toBe('rate_limited');

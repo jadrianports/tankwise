@@ -1,9 +1,9 @@
 // Hand-written types for the POST /api/route response contract, mirrored
-// directly from `routing/serializers.py::RouteResponseSerializer` (and its
-// candidate_stations[] addition landed earlier this phase -- see
-// 09-01-SUMMARY.md). Money, gallon and mile fields are full-precision
-// Decimal STRINGS from the backend, quantized only for display via
-// `utils/format.ts` -- never typed as `number` here. Seconds/percent/count
+// directly from `routing/serializers.py::RouteResponseSerializer`
+// (including its candidate_stations[] addition). Money, gallon and mile
+// fields are full-precision Decimal STRINGS from the backend, quantized
+// only for display via `utils/format.ts` -- never typed as `number`
+// here. Seconds/percent/count
 // fields are already plain JSON numbers server-side (see
 // `_duration_repr`/`_percent_repr`), so they stay `number` (or `number |
 // null`, matching the backend's own None-safety).
@@ -46,7 +46,7 @@ export interface FuelStop {
   rationale: Rationale;
 }
 
-// `_candidate_stations_repr` output (D-09/D-10, landed in 09-01).
+// `_candidate_stations_repr` output.
 export interface CandidateStation {
   // Never null in practice: a candidate with no opis_id, or no resolvable
   // row in candidate_coords, is filtered out server-side before this array
@@ -58,7 +58,7 @@ export interface CandidateStation {
   distance_from_start_mi: string;
 }
 
-// `_legs_repr` output. N+1 legs for N stops (Phase 7 D-22).
+// `_legs_repr` output. N+1 legs for N stops.
 export interface Leg {
   from: string;
   to: string;
@@ -80,7 +80,7 @@ export interface Savings {
 
 // `_vehicle_repr` output -- the resolved vehicle profile echoed back,
 // including the derived `starting_fuel_mi` that makes the free-tank
-// assumption visible (Phase 7 D-04).
+// assumption visible.
 export interface VehicleEcho {
   mpg: string;
   tank_range_mi: string;
@@ -122,18 +122,17 @@ export interface RouteResponse {
 }
 
 // The request-side nested vehicle profile POSTed to /api/route --
-// matches `routing/serializers.py::VehicleSerializer` exactly (Phase 7
-// D-01). All three keys are optional server-side (defaulted to 10mpg /
-// 500mi / a full tank), but preset chips always send all three explicitly
-// so the hero preset wins in the UI without changing the API default
-// (D-38).
+// matches `routing/serializers.py::VehicleSerializer` exactly. All three
+// keys are optional server-side (defaulted to 10mpg / 500mi / a full
+// tank), but preset chips always send all three explicitly so the hero
+// preset wins in the UI without changing the API default.
 export interface VehicleProfileRequest {
   mpg: number;
   tank_range_mi: number;
   starting_fuel: number;
 }
 
-// `GET /api/config`'s response shape (landed in 09-01).
+// `GET /api/config`'s response shape.
 export interface ConfigResponse {
   mapbox_public_token: string;
   price_as_of: string;

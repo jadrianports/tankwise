@@ -9,7 +9,7 @@ interface DemoTripChipsProps {
   onSelect: (trip: DemoTrip) => void;
 }
 
-// One-click long-haul demo trip chips (UX-05, D-35/D-39). Consumes the
+// One-click long-haul demo trip chips. Consumes the
 // shared DEMO_TRIPS constant from constants/presets.ts -- the single
 // source of truth for these routes -- rather than redefining a second
 // list; a repeat click always hits the same fixed "lat,lng" cache key.

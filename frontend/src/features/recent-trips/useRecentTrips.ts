@@ -1,4 +1,4 @@
-// D-41/UX-06: the last 5 trip INPUTS (never the solved plan), deduped,
+// The last 5 trip INPUTS (never the solved plan), deduped,
 // newest first, stored via tripState.ts's canonical TripState shape so a
 // recent trip can never disagree with what the app would compute for the
 // same inputs.

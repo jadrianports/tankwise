@@ -6,7 +6,7 @@ import Typography from '@mui/material/Typography';
 import { SearchBoxCore, SearchSession } from '@mapbox/search-js-core';
 import type { SearchBoxSuggestion } from '@mapbox/search-js-core';
 
-// A resolved suggestion (coords sent to POST /api/route, D-07) or a
+// A resolved suggestion (coords sent to POST /api/route) or a
 // free-typed value that never resolved to a suggestion (falls back to the
 // raw string -- the backend's LocationField is already polymorphic).
 export interface ResolvedAddress {
@@ -27,11 +27,11 @@ const MIN_QUERY_LENGTH = 3;
 
 // Wraps @mapbox/search-js-core's low-level SearchBoxCore/SearchSession
 // (NOT the prebuilt <SearchBox> web component -- its own styling system
-// would fight the locked MUI theme.js scale, per 09-RESEARCH.md's Standard
-// Stack). Calls suggest() on input and retrieve() on selection, using the
-// pk. token fetched from GET /api/config.
+// would fight the locked MUI theme.js scale). Calls suggest() on input
+// and retrieve() on selection, using the pk. token fetched from
+// GET /api/config.
 //
-// One SearchSession instance PER FIELD (Pitfall 3): every mounted
+// One SearchSession instance PER FIELD: every mounted
 // AddressAutocomplete owns its own SearchBoxCore + SearchSession pair in a
 // component-local ref, never a shared module-level singleton -- so the
 // Start field's session can never double-bill or corrupt proximity bias
@@ -100,7 +100,7 @@ function AddressAutocomplete({ label, token, displayValue, onResolve, disabled }
       onResolve({ value: `${lat},${lng}`, label: resolvedLabel });
     } catch {
       // Retrieval failed -- leave the typed text as-is; the blur handler
-      // below falls back to sending it as a raw string (D-07).
+      // below falls back to sending it as a raw string.
     }
   };
 

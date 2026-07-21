@@ -1,14 +1,14 @@
-// The single canonical trip-state serialization shape (D-27/D-41 "one
-// trip-state shape"). Reused unchanged by useRecentTrips.ts here and by
-// the share URL a later plan builds -- never fork a second shape.
+// The single canonical trip-state serialization shape. Reused unchanged
+// by useRecentTrips.ts and by the share URL below -- never fork a second
+// shape.
 //
 // `start`/`finish` are the RESOLVED values already sent to POST /api/route
 // (a "lat,lng" string once an autocomplete suggestion resolves, or the raw
-// typed string as D-07's fallback); `startLabel`/`finishLabel` are the
+// typed string as a fallback); `startLabel`/`finishLabel` are the
 // human-readable display labels, kept client-side only. `vehicle` is a
 // VehiclePreset id (constants/presets.ts) -- lean enough for both a query
-// string and localStorage, and the single source of truth a later
-// vehicle-preset plan can read/write without this shape changing.
+// string and localStorage, and the single source of truth other
+// vehicle-preset consumers can read/write without this shape changing.
 import { HERO_VEHICLE_PRESET_ID } from '../../constants/presets';
 
 export interface TripState {

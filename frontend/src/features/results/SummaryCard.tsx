@@ -16,9 +16,9 @@ export interface SummaryCardProps {
   data: RouteResponse;
 }
 
-// D-22: a one-line trust badge only, never the full alternatives
-// comparison table -- Phase 7 shipped `alternatives[]` but no Phase 9
-// requirement covers rendering it.
+// A one-line trust badge only, never the full alternatives comparison
+// table -- the backend response includes `alternatives[]`, but rendering
+// the full comparison table is out of scope here.
 function alternativesBadgeText(count: number): string {
   if (count <= 1) {
     return 'This was the only feasible route option found.';
@@ -26,15 +26,15 @@ function alternativesBadgeText(count: number): string {
   return `Compared ${count} route options — this one's cheapest.`;
 }
 
-// Sidebar summary card (D-19/UX-14): total fuel cost is the hero (Display
-// type, fuel amber -- theme.js reserves amber for fuel cost/price only),
-// the savings figure is pinned directly beneath it and always visible
+// Sidebar summary card: total fuel cost is the hero (Display type, fuel
+// amber -- theme.js reserves amber for fuel cost/price only), the
+// savings figure is pinned directly beneath it and always visible
 // (Display type, PRIMARY GREEN -- savings is never amber), and a third
 // line annualizes savings across a fleet at an adjustable hauls/week
-// count. A $0 short trip (Phase 7 D-04's free starting tank) is presented
-// as an honest result via the echoed vehicle profile, not left to look
-// broken. Ends with the alternatives trust badge and the UX-11 price
-// disclaimer.
+// count. A $0 short trip (the backend's free starting-tank assumption)
+// is presented as an honest result via the echoed vehicle profile, not
+// left to look broken. Ends with the alternatives trust badge and the
+// price disclaimer.
 function SummaryCard({ data }: SummaryCardProps) {
   const [haulsPerWeek, setHaulsPerWeek] = useState(DEFAULT_HAULS_PER_WEEK);
 

@@ -10,8 +10,8 @@ export interface TankGaugeProps {
 // and again when a stop's own purchase is added back; the CSS `width`
 // transition below supplies the visible drain/refill motion, no separate
 // animation loop needed. Fill color stays fuel amber throughout (never
-// destructive red) so the gauge never collides with D-13's skipped-
-// station flash color.
+// destructive red) so the gauge never collides with the reserved
+// skipped-station flash color.
 function TankGauge({ fraction }: TankGaugeProps) {
   const pct = Math.round(Math.min(1, Math.max(0, fraction)) * 100);
 

@@ -12,7 +12,7 @@ import { useRoutePlanContext } from '../context/RoutePlanContext';
 
 export type SnapPoint = 'peek' | 'half' | 'full';
 
-// D-42: peek shows total cost + savings with zero interaction; half adds
+// Peek shows total cost + savings with zero interaction; half adds
 // the stop list; full shows everything -- fixed viewport-relative heights,
 // not content-derived, so the sheet's own height (not a scroll position)
 // is what reveals more content per snap point.
@@ -30,11 +30,10 @@ const HANDLE_LABEL: Record<SnapPoint, string> = {
   full: 'Collapse plan panel',
 };
 
-// Baseline `prefers-reduced-motion` support (D-26 is stated as belonging to
-// the later playback plan, but the layout/transition-level respect for it
-// starts here, per this task's own action text): the sheet's own
-// snap-point height transition is skipped entirely under reduced motion,
-// snapping instead of animating.
+// Baseline `prefers-reduced-motion` support: playback has its own,
+// separate motion handling, but layout/transition-level respect for the
+// preference starts here -- the sheet's own snap-point height transition
+// is skipped entirely under reduced motion, snapping instead of animating.
 function usePrefersReducedMotion(): boolean {
   const [reduced, setReduced] = useState(
     () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -51,27 +50,26 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-// Mobile plan panel (UX-08, D-42, xs/sm only -- App.tsx never mounts this
-// at md+). A plain fixed-position Paper, deliberately NOT MUI's
-// Drawer/SwipeableDrawer: both render a full-viewport modal backdrop that
-// would trap every pointer/touch event outside the drawer's own bounds,
-// which breaks D-42's explicit "the map stays interactive behind it at
-// peek and half" requirement outright. This Paper only ever covers its own
-// bottom slice of the viewport -- the map above it receives pointer events
-// completely normally, with no backdrop element in the way at any snap
-// point.
+// Mobile plan panel (xs/sm only -- App.tsx never mounts this at md+). A
+// plain fixed-position Paper, deliberately NOT MUI's Drawer/SwipeableDrawer:
+// both render a full-viewport modal backdrop that would trap every
+// pointer/touch event outside the drawer's own bounds, which breaks the
+// requirement that the map stays interactive behind it at peek and half.
+// This Paper only ever covers its own bottom slice of the viewport -- the
+// map above it receives pointer events completely normally, with no
+// backdrop element in the way at any snap point.
 //
 // Tap-to-cycle (not drag-to-resize) is the sheet's primary interaction:
-// a real `<button>` (44px target, D-42/UX-10) advances peek -> half ->
-// full -> peek on click/Enter/Space, which is reliably keyboard- and
-// screen-reader-operable in a way a raw touch-drag gesture is not.
+// a real `<button>` (44px target) advances peek -> half -> full -> peek
+// on click/Enter/Space, which is reliably keyboard- and screen-reader-
+// operable in a way a raw touch-drag gesture is not.
 //
-// D-18: `full` renders the literal `<Sidebar />` -- the exact same
-// component tree and section order as the desktop aside, so "same content
-// order" holds by construction rather than by a second hand-maintained
-// copy. `peek`/`half` compose the SAME already-exported SummaryCard/
-// StopList components (not a duplicated summary), just a smaller subset of
-// them, ahead of the point where dragging to `full` reveals the rest.
+// `full` renders the literal `<Sidebar />` -- the exact same component
+// tree and section order as the desktop aside, so "same content order"
+// holds by construction rather than by a second hand-maintained copy.
+// `peek`/`half` compose the SAME already-exported SummaryCard/StopList
+// components (not a duplicated summary), just a smaller subset of them,
+// ahead of the point where dragging to `full` reveals the rest.
 function BottomSheet() {
   const { status, data, error } = useRoutePlanContext();
   const [snap, setSnap] = useState<SnapPoint>('peek');

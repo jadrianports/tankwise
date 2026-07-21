@@ -13,7 +13,7 @@ export const CANDIDATE_SOURCE_ID = 'candidate-stations';
 export const CANDIDATE_LAYER_ID = 'candidate-stations-circle';
 
 // ColorBrewer YlOrBr 5-class -- verified colorblind-safe, contains no red
-// hue (D-33/09-UI-SPEC.md Data Visualization). Cheapest to most expensive.
+// hue. Cheapest to most expensive.
 export const CANDIDATE_RAMP = ['#FFFFD4', '#FED98E', '#FE9929', '#D95F0E', '#993404'] as const;
 
 export interface CandidateFeatureProperties {
@@ -30,7 +30,7 @@ export function candidatePrices(candidates: CandidateStation[]): number[] {
 }
 
 // Builds the GeoJSON FeatureCollection straight from the five locked
-// candidate_stations[] fields (D-10) -- no transformation beyond
+// candidate_stations[] fields -- no transformation beyond
 // Number(price_per_gallon) for the paint expression.
 export function buildCandidateGeoJSON(
   candidates: CandidateStation[]
@@ -50,7 +50,7 @@ export function buildCandidateGeoJSON(
 // A `step` expression keyed on `price_per_gallon`, using the SAME
 // thresholds `PriceLegend.tsx` renders -- both call `computeQuantileBins`
 // independently against the same candidates array, so they can never
-// disagree (Don't-Hand-Roll, D-33).
+// disagree.
 //
 // With zero thresholds (a corridor that returned no candidate prices, e.g.
 // the initial load before any solve) a `step` would be degenerate -- Mapbox
@@ -76,7 +76,7 @@ function buildCandidateLayerSpec(thresholds: number[]): CircleLayerSpecification
       'circle-radius': 5,
       'circle-opacity': 0.75,
     },
-    // Deliberately no `cluster`/`clusterRadius` on the source (D-11) -- a
+    // Deliberately no `cluster`/`clusterRadius` on the source -- a
     // cluster bubble averages away the cheap/expensive texture this layer
     // exists to show.
   };
@@ -87,8 +87,8 @@ function buildCandidateLayerSpec(thresholds: number[]): CircleLayerSpecification
  * data + thresholds in place thereafter. Called both on first map load and
  * from inside `useMapStyle`'s `style.load` re-add callback, since a
  * genuine style reload (streets<->satellite) discards every custom
- * source/layer (09-RESEARCH.md Pitfall 1) -- this is what makes the
- * candidate layer survive a satellite switch.
+ * source/layer -- this is what makes the candidate layer survive a
+ * satellite switch.
  *
  * Returns the computed thresholds (not otherwise consumed by the caller;
  * exposed for symmetry/testability with PriceLegend's identical call).

@@ -10,13 +10,12 @@ export interface UseMapStyleResult {
   toggleSatellite: () => void;
 }
 
-// Two deliberately SEPARATE axes (09-RESEARCH.md Pitfall 2 -- do not merge
-// into one "theme" hook):
+// Two deliberately SEPARATE axes -- do not merge into one "theme" hook:
 //
-// - Theme axis (isDark, UX-09): `setConfigProperty` reconfigures the
-//   CURRENT style in place -- no reload, no style.load refire (D-31,
-//   confirmed against current Mapbox Standard behavior).
-// - Base-style axis (streets<->satellite, MAP-02): a genuine style
+// - Theme axis (isDark): `setConfigProperty` reconfigures the
+//   CURRENT style in place -- no reload, no style.load refire (confirmed
+//   against current Mapbox Standard behavior).
+// - Base-style axis (streets<->satellite): a genuine style
 //   reload, driven by the `mapStyle` prop this hook exposes as `styleUrl`.
 //   `mapbox://styles/mapbox/standard` and `...standard-satellite` are two
 //   separate style documents -- switching between them discards every
@@ -44,10 +43,9 @@ export function useMapStyle(
   }, [map, isDark]);
 
   // Base-style axis: register the re-add BEFORE the swap so it fires the
-  // moment the new style finishes loading (09-RESEARCH.md Pattern
-  // 2/Pitfall 1). Also covers the very first load, since style.load fires
-  // then too -- so this is the one place the route line (and later the
-  // candidate layer) gets added at all.
+  // moment the new style finishes loading. Also covers the very first
+  // load, since style.load fires then too -- so this is the one place
+  // the route line (and later the candidate layer) gets added at all.
   useEffect(() => {
     if (!map) return;
 

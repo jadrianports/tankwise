@@ -10,9 +10,9 @@ import type { VehicleProfileRequest } from '../../types/routeContract';
 
 const HERO_PRESET = VEHICLE_PRESETS.find((preset) => preset.id === HERO_VEHICLE_PRESET_ID)!;
 
-// The what-if engine (UX-12/UX-02): four diesel preset chips at the
-// locked D-36 figures (Semi loaded selected by default, D-38) plus bounded
-// MPG/tank/starting-fuel sliders that live-re-solve on a debounce. Owns
+// The what-if engine: four diesel preset chips at the locked figures
+// (Semi loaded selected by default) plus bounded MPG/tank/starting-fuel
+// sliders that live-re-solve on a debounce. Owns
 // only the locally-visible chip/slider values -- the actual re-solve
 // (debounce, coordinate reuse, 429 pause/countdown) lives in
 // useDebouncedResolve.ts / useRoutePlan.ts, reached through

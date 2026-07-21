@@ -17,8 +17,8 @@ export interface JustificationPopupProps {
 }
 
 // The 4-value purchase_reason enum translated into a human sentence
-// (Phase 7 D-17/D-18: the backend emits no prose, structured fields only --
-// this is the one place that prose gets written, frontend-side).
+// (the backend emits no prose, structured fields only -- this is the one
+// place that prose gets written, frontend-side).
 const REASON_COPY: Record<PurchaseReason, (stop: FuelStop) => string> = {
   reach_cheaper_stop: (stop) =>
     `Bought just enough fuel here to reach ${
@@ -38,7 +38,7 @@ function justificationText(stop: FuelStop): string {
   return REASON_COPY[purchase_reason](stop);
 }
 
-// Phase 7 D-19's exact skipped rule, re-derived frontend-side (D-10):
+// Matches the backend's own skipped rule, re-derived frontend-side:
 // "passed N stations since the last stop" plus their average price.
 function skippedText(stop: FuelStop): string | null {
   const { skipped_count, skipped_avg_price } = stop.rationale;
@@ -55,10 +55,9 @@ function percentileText(stop: FuelStop): string | null {
   return `This price beats ${pct}% of the corridor's candidate stations${avg}.`;
 }
 
-// Accessible dialog (not a Leaflet popup, UX-13) opened on a chosen-stop
+// Accessible dialog (not a Leaflet popup) opened on a chosen-stop
 // marker's activation. Every sentence here is composed frontend-side from
-// the structured `rationale` fields -- no backend prose field is consumed
-// (Phase 7 D-17 holds).
+// the structured `rationale` fields -- no backend prose field is consumed.
 function JustificationPopup({ stop, number, open, onClose }: JustificationPopupProps) {
   const skipped = skippedText(stop);
   const percentile = percentileText(stop);

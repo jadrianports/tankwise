@@ -8,9 +8,9 @@ export interface StyleSwitcherProps {
   onToggle: () => void;
 }
 
-// Streets<->satellite toggle (D-31's base-style axis, independent of the
-// dark/light theme toggle in AppShell). >=44px touch target per
-// 09-UI-SPEC.md's spacing-scale exception for icon-only controls (UX-10).
+// Streets<->satellite toggle (the base-style axis, independent of the
+// dark/light theme toggle in AppShell). >=44px touch target, matching
+// the spacing used for other icon-only controls.
 function StyleSwitcher({ isSatellite, onToggle }: StyleSwitcherProps) {
   const label = isSatellite ? 'Switch to streets view' : 'Switch to satellite view';
 

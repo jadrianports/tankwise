@@ -13,8 +13,8 @@ import { useRoutePlan } from './hooks/useRoutePlan';
 import { RoutePlanContext } from './context/RoutePlanContext';
 import type { FocusStopRequest } from './context/RoutePlanContext';
 
-// ~440px scrolling sidebar (D-18, widened from the old 380px) + map
-// filling the remaining viewport.
+// ~440px scrolling sidebar (widened from the old 380px) + map filling
+// the remaining viewport.
 const SIDEBAR_WIDTH = 440;
 
 type ConfigState =
@@ -29,18 +29,18 @@ function App() {
   const { status, data, error, submit, retry, resolveVehicle } = useRoutePlan();
   const [config, setConfig] = useState<ConfigState>({ status: 'loading' });
 
-  // Shareable trip URLs (UX-04, D-27/D-28): decodes window.location.search
-  // on mount and auto-solves with the encoded vehicle profile if present;
-  // shareUrl is the current plan's own shareable link, null until a plan
-  // has been solved.
+  // Shareable trip URLs: decodes window.location.search on mount and
+  // auto-solves with the encoded vehicle profile if present; shareUrl is
+  // the current plan's own shareable link, null until a plan has been
+  // solved.
   const { shareUrl } = useShareUrl(submit, data);
 
   // Bridges a StopList row click (features/results, inside Sidebar) to
-  // MapView's own camera fly-to/popup-open logic (features/map, 09-04's
-  // focusStop) without either module importing the other -- App.tsx is
-  // their shared ancestor, so it owns the request state and hands the
-  // setter down through context while passing the resulting request to
-  // MapView as a plain prop.
+  // MapView's own camera fly-to/popup-open logic (features/map, focusStop)
+  // without either module importing the other -- App.tsx is their shared
+  // ancestor, so it owns the request state and hands the setter down
+  // through context while passing the resulting request to MapView as a
+  // plain prop.
   const [focusStopRequest, setFocusStopRequest] = useState<FocusStopRequest | null>(null);
   const focusNonceRef = useRef(0);
   const focusStop = useCallback((key: string | number) => {
@@ -48,9 +48,9 @@ function App() {
     setFocusStopRequest({ key, nonce: focusNonceRef.current });
   }, []);
 
-  // Fetch the pk. token once at boot (D-05). A missing/misconfigured
-  // token degrades to the map-pane-only config-error state (D-08) inside
-  // MapView; it never blocks the planner sidebar.
+  // Fetch the pk. token once at boot. A missing/misconfigured token
+  // degrades to the map-pane-only config-error state inside MapView; it
+  // never blocks the planner sidebar.
   useEffect(() => {
     let cancelled = false;
     fetchConfig().then((result) => {
@@ -80,10 +80,10 @@ function App() {
             height: { md: 'calc(100vh - 64px)' },
           }}
         >
-          {/* Permanent desktop sidebar (md+, D-18's ~440px scrolling panel).
+          {/* Permanent desktop sidebar (md+, the ~440px scrolling panel).
               Below md, PlannerFormSection/VehicleSection/ResultsSection/
               RecentTripsSection instead render inside the mobile
-              BottomSheet (D-42) -- this Box is never mounted at xs, so its
+              BottomSheet -- this Box is never mounted at xs, so its
               content never duplicates the sheet's own composition. */}
           <Box
             component="aside"
@@ -121,7 +121,7 @@ function App() {
           </Box>
         </Box>
 
-        {/* Mobile bottom sheet (D-42): three snap points over the still-live
+        {/* Mobile bottom sheet: three snap points over the still-live
             map above. Never mounted at md+ -- `display: none` on this
             wrapper removes the sheet's own `position: fixed` Paper from
             the render entirely, so it can never overlap the desktop

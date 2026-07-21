@@ -26,16 +26,16 @@ import SavingsModal from '../playback/SavingsModal';
 const ROUTE_SOURCE_ID = 'route-line';
 
 // Route polyline hex (light/dark) -- primary green, never fuel amber
-// (09-UI-SPEC.md: "route line color = primary/neutral not fuel amber").
+// (route line color stays primary/neutral, not fuel amber).
 const ROUTE_COLOR = { light: '#0F6D4F', dark: '#34C796' };
 
-// D-13's reserved destructive red (theme.js's `error` palette, light/dark)
+// The reserved destructive red (theme.js's `error` palette, light/dark)
 // for the playback's individual skipped-station flash -- literal hex
 // here, matching this file's existing ROUTE_COLOR pattern, and NEVER the
 // candidateLayer.ts YlOrBr price ramp.
 const SKIPPED_FLASH_COLOR = { light: '#D32F2F', dark: '#EF5350' };
 
-// Continental-US default center/zoom shown before the first solve (D-39) --
+// Continental-US default center/zoom shown before the first solve --
 // carried over from the retired Leaflet RouteMap.jsx.
 const DEFAULT_VIEW_STATE: CameraViewState = {
   longitude: -98.5795,
@@ -69,7 +69,7 @@ export interface MapViewProps {
 }
 
 // react-map-gl's <Map> owns the mapboxgl.Map create/destroy lifecycle
-// itself (StrictMode-safe mount/cleanup, MAP-01) -- no hand-rolled
+// itself (StrictMode-safe mount/cleanup) -- no hand-rolled
 // useEffect(() => new mapboxgl.Map(...)) anywhere in this file.
 function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const { mode } = useColorScheme();
@@ -85,7 +85,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const routeColorRef = useRef(ROUTE_COLOR.light);
   routeColorRef.current = isDark ? ROUTE_COLOR.dark : ROUTE_COLOR.light;
 
-  // Candidate price layer (MAP-03, D-11/D-12) -- on by default (D-12).
+  // Candidate price layer -- on by default.
   const [candidatesVisible, setCandidatesVisible] = useState(true);
   const candidatesVisibleRef = useRef(candidatesVisible);
   candidatesVisibleRef.current = candidatesVisible;
@@ -93,7 +93,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const candidatesRef = useRef<CandidateStation[]>([]);
   candidatesRef.current = data?.candidate_stations ?? [];
 
-  // Chosen-stop justification popup (UX-13, D-34) -- keyed off
+  // Chosen-stop justification popup -- keyed off
   // `station_id ?? index`, same null-safe convention used throughout this
   // codebase for station lists.
   const [openStopKey, setOpenStopKey] = useState<string | number | null>(null);
@@ -141,8 +141,9 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
 
   // Composed re-add callback: both the route line and the candidate layer
   // must survive a genuine style reload (streets<->satellite), so both are
-  // re-registered from the same style.load handler (09-RESEARCH.md
-  // Pitfall 1).
+  // re-registered from the same style.load handler -- a Mapbox GL style
+  // swap tears down and rebuilds every source/layer, so anything added
+  // outside a style.load listener is silently lost on the next reload.
   const applyMapLayers = useCallback(
     (map: MapboxMap) => {
       applyRouteLine(map);
@@ -151,17 +152,17 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
     [applyRouteLine, applyCandidates]
   );
 
-  // Theme axis (no reload, UX-09) + base-style axis (streets<->satellite,
-  // genuine reload, MAP-02) -- deliberately two separate mechanisms
-  // (09-RESEARCH.md Pitfall 2). applyMapLayers is registered as the
-  // re-add callback so the route line AND the candidate layer survive the
-  // satellite/streets reload's style.load, and both run on the first load.
+  // Theme axis (no reload) + base-style axis (streets<->satellite,
+  // genuine reload) -- deliberately two separate mechanisms. applyMapLayers
+  // is registered as the re-add callback so the route line AND the
+  // candidate layer survive the satellite/streets reload's style.load,
+  // and both run on the first load.
   const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyMapLayers);
   useTerrain(mapInstance);
 
-  // Trip playback (MAP-04, cuttable): composed entirely from the
-  // already-fetched `data` prop -- no new fetch (D-23..26). `mapInstance`
-  // (the raw mapboxgl.Map, not the react-map-gl MapRef wrapper) is what
+  // Trip playback: composed entirely from the already-fetched `data` prop
+  // -- no new fetch. `mapInstance` (the raw mapboxgl.Map, not the
+  // react-map-gl MapRef wrapper) is what
   // the chase cam scripts flyTo/jumpTo/fitBounds against.
   const chaseCam = useChaseCam(mapInstance, data);
 
@@ -184,7 +185,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
 
   // Re-draws the candidate layer whenever a new plan is solved OR the
   // toggle flips -- recomputing thresholds per response (never cached
-  // across trips, since percentiles are corridor-relative, D-33).
+  // across trips, since percentiles are corridor-relative).
   useEffect(() => {
     if (!mapInstance) return;
     applyCandidates(mapInstance);
@@ -220,7 +221,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const finishLng = toNumber(data?.finish?.longitude);
   const finishLat = toNumber(data?.finish?.latitude);
 
-  // Camera holds position on every re-solve (D-16): fitBounds runs ONLY
+  // Camera holds position on every re-solve: fitBounds runs ONLY
   // from an effect scoped to the resolved start/finish coordinates, never
   // to every new plan response -- a later slider re-solve keeps the same
   // start/finish and must never move the camera.
@@ -263,7 +264,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
     focusStop(entry.key, lng, lat);
   }, [focusStopRequest, data, focusStop]);
 
-  // D-08: a missing/misconfigured pk. token shows a config-error only in
+  // A missing/misconfigured pk. token shows a config-error only in
   // this map pane -- the sidebar planner keeps working regardless.
   if (tokenStatus !== 'ready' || !token) {
     return (

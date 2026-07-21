@@ -11,11 +11,11 @@ interface PresetChipsProps {
   onSelect: (preset: VehiclePreset) => void;
 }
 
-// Four diesel vehicle preset chips (UX-12, D-36/D-37/D-38). Sourced
-// directly from constants/presets.ts's locked VEHICLE_PRESETS -- no
-// figures are redefined or "improved" here. Each chip's secondary text
+// Four diesel vehicle preset chips. Sourced directly from
+// constants/presets.ts's locked VEHICLE_PRESETS -- no figures are
+// redefined or "improved" here. Each chip's secondary text
 // (e.g. "6.5 mpg · ~1,050 mi") makes the preset self-explanatory without a
-// details panel, per 09-UI-SPEC.md's copywriting contract.
+// details panel.
 function PresetChips({ presets, selectedId, disabled, onSelect }: PresetChipsProps) {
   return (
     <Box>
@@ -50,7 +50,7 @@ function PresetChips({ presets, selectedId, disabled, onSelect }: PresetChipsPro
           );
         })}
       </Box>
-      {/* D-37: every preset is diesel; the UI must say so once, near the chips. */}
+      {/* Every preset is diesel; the UI must say so once, near the chips. */}
       <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
         All presets price against truck-stop diesel — Sedan and RV are diesel too.
       </Typography>

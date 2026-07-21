@@ -1,7 +1,7 @@
-// Client-side GeoJSON export (UX-04, D-29): the route LineString plus one
-// Point per CHOSEN stop, carrying its plan facts as properties.
+// Client-side GeoJSON export: the route LineString plus one Point per
+// CHOSEN stop, carrying its trip facts as properties.
 // `candidate_stations[]` is DELIBERATELY never read here -- candidates are
-// map texture, not trip data (D-29, T-09-18), and would swamp the file.
+// map texture, not trip data, and would swamp the file.
 import type { Feature, FeatureCollection, LineString, Point } from 'geojson';
 
 import type { RouteResponse } from '../../types/routeContract';

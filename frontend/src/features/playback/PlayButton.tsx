@@ -7,14 +7,14 @@ export interface PlayButtonProps {
   disabled?: boolean;
 }
 
-// The chase-cam playback trigger (MAP-04) lives in the map's own controls
+// The chase-cam playback trigger lives in the map's own controls
 // (bottom-right, alongside StyleSwitcher/CandidateToggle), not the
-// sidebar (D-25) -- this is what keeps playback cleanly cuttable: pulling
-// this one control (and its MapView mounts) out never touches the
-// results panel. >=44px touch target per 09-UI-SPEC.md's icon-only-
-// control spacing exception (UX-10). Wrapped in a <span> so the Tooltip
-// still fires while the button is disabled (MUI's disabled buttons
-// otherwise swallow pointer events entirely).
+// sidebar -- this keeps playback cleanly separable: pulling this one
+// control (and its MapView mounts) out never touches the results panel.
+// >=44px touch target, matching the spacing used for other icon-only
+// controls. Wrapped in a <span> so the Tooltip still fires while the
+// button is disabled (MUI's disabled buttons otherwise swallow pointer
+// events entirely).
 function PlayButton({ onClick, disabled }: PlayButtonProps) {
   const label = 'Play the fuel stop fly-through';
 

@@ -16,7 +16,7 @@ import { HERO_VEHICLE_PRESET_ID, type DemoTrip } from '../../constants/presets';
 import { fetchConfig } from '../../api/configClient';
 
 interface FieldState {
-  value: string; // resolved value sent to POST /api/route (coords or address string, D-07)
+  value: string; // resolved value sent to POST /api/route (coords or address string)
   label: string; // human-readable, client-side only
 }
 
@@ -30,11 +30,11 @@ function splitDemoLabel(label: string): [string, string] {
   return [startLabel || label, finishLabel || label];
 }
 
-// The planner input surface (UX-01/UX-05/UX-06): two address-autocomplete
-// fields, swap/geolocate controls, the "Find Cheapest Route" CTA, and the
-// long-haul demo trip chips. Fills the Sidebar slot 09-03 established;
-// reads/writes shared solve state via useRoutePlanContext() rather than
-// prop-drilling through Sidebar.tsx or App.tsx.
+// The planner input surface: two address-autocomplete fields,
+// swap/geolocate controls, the "Find Cheapest Route" CTA, and the
+// long-haul demo trip chips. Fills the first Sidebar slot; reads/writes
+// shared solve state via useRoutePlanContext() rather than prop-drilling
+// through Sidebar.tsx or App.tsx.
 function PlannerFormSection() {
   const { status, solve } = useRoutePlanContext();
   const { add: addRecentTrip } = useRecentTrips();
@@ -47,8 +47,8 @@ function PlannerFormSection() {
 
   // pk. token for the Search Box calls, fetched independently of App.tsx's
   // own GET /api/config call (MapView's copy) -- the endpoint is lean and
-  // unthrottled by design (D-05), and keeping this self-contained avoids
-  // growing App.tsx/RoutePlanContext.ts for a single feature's dependency.
+  // unthrottled by design, and keeping this self-contained avoids growing
+  // App.tsx/RoutePlanContext.ts for a single feature's dependency.
   const [tokenState, setTokenState] = useState<{ status: 'loading' | 'ready' | 'error'; token: string | null }>({
     status: 'loading',
     token: null,

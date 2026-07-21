@@ -13,22 +13,21 @@ export interface PlaybackHUDProps {
   onSkip: () => void;
 }
 
-// "passed N stations, avg $X.XX" -- Phase 7's aggregate, composed
-// frontend-side (D-13, D-17: backend emits no prose).
+// "passed N stations, avg $X.XX" -- the backend's own aggregate fields,
+// composed into prose frontend-side (the backend emits no prose itself).
 function aggregateSkippedText(beat: ChaseCamBeat): string | null {
   if (beat.skippedCount <= 0) return null;
   const avg = beat.skippedAvgPrice ? `, avg $${beat.skippedAvgPrice}/gal` : '';
   return `Passed ${beat.skippedCount} station${beat.skippedCount === 1 ? '' : 's'}${avg}.`;
 }
 
-// Map-overlay HUD (D-25): renders over the map surface, never driving the
+// Map-overlay HUD: renders over the map surface, never driving the
 // sidebar's own components. The <GlobalStyles> rule below is what dims
 // the sidebar -- it targets the desktop <aside> App.tsx already renders,
 // scoped to exactly as long as this component stays mounted, so removing
 // the playback feature (unmounting this component) removes the dimming
-// automatically, with no sidebar-side coupling to unpick (D-25's
-// cuttability guarantee: no Sidebar.tsx/App.tsx edits were needed to wire
-// this up).
+// automatically, with no sidebar-side coupling to unpick -- no
+// Sidebar.tsx/App.tsx edits were needed to wire this up.
 function PlaybackHUD({ currentBeat, tankFraction, onSkip }: PlaybackHUDProps) {
   const skipped = currentBeat ? aggregateSkippedText(currentBeat) : null;
 

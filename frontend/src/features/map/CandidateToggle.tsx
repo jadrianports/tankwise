@@ -8,11 +8,11 @@ export interface CandidateToggleProps {
   onToggle: () => void;
 }
 
-// On-by-default control (D-12) that shows/hides the candidate price layer
+// On-by-default control that shows/hides the candidate price layer
 // + its legend together. The price landscape is the most impressive thing
 // on the map, so it defaults to visible; this stays a one-click strip-back
 // to route + chosen stops for a viewer who wants a cleaner view. >=44px
-// touch target per 09-UI-SPEC.md's icon-only-control spacing exception.
+// touch target, matching the spacing used for other icon-only controls.
 function CandidateToggle({ visible, onToggle }: CandidateToggleProps) {
   const label = visible ? 'Hide candidate station prices' : 'Show candidate station prices';
 

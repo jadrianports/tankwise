@@ -11,12 +11,11 @@ import { useRecentTrips } from './useRecentTrips';
 import { requestLoadTrip } from '../share-export/tripState';
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
 
-// D-41/UX-06: last 5 trip inputs, deduped, newest first. Clicking a row
+// Last 5 trip inputs, deduped, newest first. Clicking a row
 // hands the trip to PlannerFormSection (a sibling Sidebar section) via
 // tripState.ts's requestLoadTrip bridge, which repopulates the form and
 // re-solves; a single click removes one entry with no confirm dialog
-// (low-stakes, instantly reconstructable, per 09-UI-SPEC.md's Destructive
-// confirmation contract).
+// (low-stakes, instantly reconstructable).
 function RecentTripsSection() {
   const { trips, remove } = useRecentTrips();
   const { status } = useRoutePlanContext();

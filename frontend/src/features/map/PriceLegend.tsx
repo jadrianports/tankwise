@@ -9,12 +9,12 @@ export interface PriceLegendProps {
   candidates: CandidateStation[];
 }
 
-// Bottom-left horizontal 5-swatch strip (09-UI-SPEC.md Data Visualization)
-// showing each bin's ACTUAL dollar threshold, not a percentile label --
-// computed by calling the SAME shared computeQuantileBins the candidate
-// circle layer uses, independently, against the same candidates array
-// (Don't-Hand-Roll: one threshold function, never duplicated math, so the
-// legend and the map layer can never drift onto different numbers, D-33).
+// Bottom-left horizontal 5-swatch strip showing each bin's ACTUAL dollar
+// threshold, not a percentile label -- computed by calling the SAME
+// shared computeQuantileBins the candidate circle layer uses,
+// independently, against the same candidates array (one threshold
+// function, never duplicated math, so the legend and the map layer
+// can never drift onto different numbers).
 function PriceLegend({ candidates }: PriceLegendProps) {
   const prices = candidatePrices(candidates);
   if (prices.length === 0) return null;

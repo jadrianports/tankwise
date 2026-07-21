@@ -19,7 +19,7 @@ export interface ApiError {
 // exact user-facing copy. Kept
 // independently importable/testable without touching `fetch`.
 //
-// `rate_limited` (D-17) and `config_error` (D-08) are added cases in this
+// `rate_limited` and `config_error` are added cases in this
 // same switch, not a second error-mapping function -- error-copy logic
 // stays in one auditable place. `config_error` is a client-assigned
 // pseudo-code: the backend's own failure mode for a misconfigured token is
@@ -59,8 +59,8 @@ export function mapErrorToMessage(error: ApiError | null | undefined): string {
     case 'upstream_error':
       return 'Map service unavailable. Please retry.';
     case 'rate_limited': {
-      // Phase 8 D-15 supplies retry_after_s via Throttled.wait; framed as
-      // catching-up, never as a solver failure (D-17).
+      // The backend's Throttled.wait supplies retry_after_s; framed as
+      // catching-up, never as a solver failure.
       const { retry_after_s } = (detail ?? {}) as { retry_after_s?: number };
       return `Catching up — retrying in ${retry_after_s ?? '…'}s`;
     }
@@ -81,9 +81,9 @@ export interface PlanRouteFailure {
   code: string;
   message: string;
   // Only populated for a `rate_limited` (429) failure -- the raw seconds
-  // from `error.detail.retry_after_s` (Phase 8 D-15), kept as a number
-  // (not re-parsed from the already-composed message string) so a caller
-  // can drive an actual countdown timer (D-17).
+  // from `error.detail.retry_after_s`, kept as a number (not re-parsed
+  // from the already-composed message string) so a caller can drive an
+  // actual countdown timer.
   retryAfterS?: number;
 }
 
@@ -96,17 +96,17 @@ function isAbortError(err: unknown): boolean {
 // POSTs the relative /api/route path (identical in dev via the Vite proxy and
 // in Docker via the WhiteNoise-served single service -- see vite.config.ts).
 //
-// `signal` (D-04) is threaded straight into `fetch` so a caller (useRoutePlan)
+// `signal` is threaded straight into `fetch` so a caller (useRoutePlan)
 // can cancel an in-flight request when a newer submit supersedes it. An
 // aborted fetch's `AbortError` is rethrown, not swallowed here or mapped
 // through the generic network-error branch -- an intentional cancellation
 // must never surface as a user-facing error; only the caller (which knows
 // whether the abort was itself vs. a stale race) can safely decide to
 // ignore it.
-// `vehicle` (UX-12, Phase 7 D-01) is optional -- omitting it lets the
-// backend fall back to its own documented default (10 mpg / 500 mi / full
-// tank, D-38). Every preset-chip/slider-driven call passes it explicitly
-// so the hero preset wins in the UI without changing that API default.
+// `vehicle` is optional -- omitting it lets the backend fall back to its
+// own documented default (10 mpg / 500 mi / full tank). Every preset-chip/
+// slider-driven call passes it explicitly so the hero preset wins in the
+// UI without changing that API default.
 export async function planRoute(
   start: string,
   finish: string,

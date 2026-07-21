@@ -15,19 +15,18 @@ import LegBreakdown from './LegBreakdown';
 import TankChart from './TankChart';
 import LoadingNarration from './LoadingNarration';
 
-// Composes the full static results story (UX-03/11/13/14) from
-// already-returned response fields: hero cost + savings + fleet math +
-// alternatives badge + price disclaimer (SummaryCard), the stop list, and
-// two collapsible sections (D-20) for the N+1 per-leg breakdown and the
-// running tank chart. None of this depends on MAP-04 playback ever having
-// run.
+// Composes the full static results story from already-returned response
+// fields: hero cost + savings + fleet math + alternatives badge + price
+// disclaimer (SummaryCard), the stop list, and two collapsible sections
+// for the N+1 per-leg breakdown and the running tank chart. None of this
+// depends on playback ever having run.
 //
-// Loading, error, and result all live inside one `aria-live` region
-// (UX-10) so a screen reader announces each state change. A re-solve
-// (once vehicle sliders exist) keeps the last good plan fully rendered
-// with only a thin progress bar rather than blanking to a spinner
-// (D-15) -- the full-takeover LoadingNarration is reserved for the very
-// first solve, when there is no prior plan to keep showing.
+// Loading, error, and result all live inside one `aria-live` region so a
+// screen reader announces each state change. A re-solve (once vehicle
+// sliders exist) keeps the last good plan fully rendered with only a
+// thin progress bar rather than blanking to a spinner -- the
+// full-takeover LoadingNarration is reserved for the very first solve,
+// when there is no prior plan to keep showing.
 function ResultsSection() {
   const { status, data, error, retry } = useRoutePlanContext();
 

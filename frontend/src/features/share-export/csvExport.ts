@@ -1,8 +1,8 @@
-// Client-side CSV export (UX-04, D-29): one row per fuel stop, the
-// dispatcher-facing artifact the plan text asks for. No backend call, no
-// new formatter -- values are written as the backend's own Decimal
-// strings, not re-parsed through utils/format.ts (a spreadsheet wants raw
-// numbers, not "$1,234.56"-style display strings).
+// Client-side CSV export: one row per fuel stop, a dispatcher-facing
+// artifact. No backend call, no new formatter -- values are written as
+// the backend's own Decimal strings, not re-parsed through
+// utils/format.ts (a spreadsheet wants raw numbers, not
+// "$1,234.56"-style display strings).
 import type { RouteResponse } from '../../types/routeContract';
 
 const CSV_HEADERS = ['Stop #', 'Station Name', 'Station ID', 'Miles From Start', 'Price/Gal', 'Gallons', 'Cost'];

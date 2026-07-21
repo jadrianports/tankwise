@@ -14,19 +14,18 @@ export interface FocusStopRequest {
 
 // Shared solve state (status/data/error) plus `solve`/`retry` handlers and
 // the cross-pane `focusStop` bridge, owned by App.tsx and read by Sidebar's
-// section components -- downstream planner-form/vehicle/results plans
-// consume this context instead of prop-drilling through Sidebar.tsx, and
-// never need to edit App.tsx (09-03-PLAN.md Task 1). Split into its own
-// file (rather than exported from App.tsx directly) so App.tsx's only
-// runtime export stays the default component.
+// section components -- planner-form/vehicle/results components consume
+// this context instead of prop-drilling through Sidebar.tsx, and never
+// need to edit App.tsx. Split into its own file (rather than exported
+// from App.tsx directly) so App.tsx's only runtime export stays the
+// default component.
 //
 // `focusStop` is how a sidebar StopList row (features/results) reaches the
 // map pane (features/map/MapView.tsx) without either module importing the
 // other directly: App.tsx owns the actual FocusStopRequest state and hands
 // the setter down through this context, while MapView reads the resulting
-// request as a plain prop and does the camera fly-to/popup-open itself
-// (09-04-PLAN.md already built that half; this context only supplies the
-// missing bridge).
+// request as a plain prop and does the camera fly-to/popup-open itself --
+// this context only supplies the bridge between the two.
 export interface RoutePlanContextValue {
   status: RoutePlanStatus;
   data: RouteResponse | null;
@@ -34,12 +33,11 @@ export interface RoutePlanContextValue {
   solve: (start: string, finish: string) => Promise<void>;
   retry: () => void;
   focusStop: (key: string | number) => void;
-  // Vehicle preset/what-if slider bridge (UX-02/UX-12, D-07/D-14): updates
-  // the vehicle profile used by the next solve and, if a route already
-  // exists, immediately re-solves reusing the already-resolved
-  // start/finish coordinates -- never re-geocodes. Consumed by
-  // features/vehicle/useDebouncedResolve.ts, not called directly by
-  // VehicleSection's chips/sliders.
+  // Vehicle preset/what-if slider bridge: updates the vehicle profile
+  // used by the next solve and, if a route already exists, immediately
+  // re-solves reusing the already-resolved start/finish coordinates --
+  // never re-geocodes. Consumed by features/vehicle/useDebouncedResolve.ts,
+  // not called directly by VehicleSection's chips/sliders.
   resolveVehicle: (vehicle: VehicleProfileRequest) => void;
 }
 

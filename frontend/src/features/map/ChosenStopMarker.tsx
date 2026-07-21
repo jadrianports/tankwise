@@ -5,8 +5,7 @@ import Box from '@mui/material/Box';
 import type { FuelStop } from '../../types/routeContract';
 
 // Carried over pixel-for-pixel from the retired Leaflet
-// FuelStopMarker.jsx's numbered divIcon (09-UI-SPEC.md spacing-scale
-// exception: 32px diameter, 2px outline).
+// FuelStopMarker.jsx's numbered divIcon (32px diameter, 2px outline).
 const COLORS = {
   light: { fill: '#F59E0B', text: '#FFFFFF', outline: '#B45309' },
   dark: { fill: '#FBBF24', text: '#10151B', outline: '#D97706' },
@@ -21,9 +20,9 @@ export interface ChosenStopMarkerProps {
   onActivate: () => void;
 }
 
-// react-map-gl <Marker> wrapping a focusable DOM <button> (D-34, UX-10) --
-// in tab order, keyboard-activatable (Enter/Space), unlike the decorative
-// candidate circle layer. Opens its UX-13 justification popup on
+// react-map-gl <Marker> wrapping a focusable DOM <button> -- in tab
+// order, keyboard-activatable (Enter/Space), unlike the decorative
+// candidate circle layer. Opens its justification popup on
 // activation; the caller (MapView) owns which stop's popup is open and
 // keys every chosen-stop marker off `station_id ?? index`, the same
 // null-safe convention used throughout this codebase.

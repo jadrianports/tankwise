@@ -3,20 +3,19 @@ import type { Map as MapboxMap } from 'mapbox-gl';
 
 const DEM_SOURCE_ID = 'mapbox-dem';
 
-// Regional zoom threshold above which the camera tilts (D-32) -- terrain
+// Regional zoom threshold above which the camera tilts -- terrain
 // relief is essentially invisible at a coast-to-coast overview zoom, and a
 // pitched national view makes reading the route harder.
 const REGIONAL_ZOOM_THRESHOLD = 7;
 const REGIONAL_PITCH = 55;
 
-// Terrain is always loaded (D-32) -- exaggeration 1.5, added fresh on
+// Terrain is always loaded -- exaggeration 1.5, added fresh on
 // every style.load, since a genuine style reload (the streets<->satellite
 // swap in useMapStyle.ts) discards the DEM source and the terrain setting
-// along with everything else (09-RESEARCH.md Pattern 3 / Pitfall 1). This
-// hook owns its own style.load subscription independently of
-// useMapStyle.ts's re-add callback -- unlike the route line (and, later,
-// the candidate layer), terrain needs no external data from MapView, so it
-// is fully self-contained.
+// along with everything else. This hook owns its own style.load
+// subscription independently of useMapStyle.ts's re-add callback --
+// unlike the route line (and, later, the candidate layer), terrain
+// needs no external data from MapView, so it is fully self-contained.
 export function useTerrain(map: MapboxMap | null): void {
   useEffect(() => {
     if (!map) return;
@@ -44,10 +43,9 @@ export function useTerrain(map: MapboxMap | null): void {
   }, [map]);
 }
 
-// Pitch is a controlled-viewState value, not a terrain toggle (D-32):
-// terrain relief stays loaded at every zoom, but the camera only tilts at
-// regional zoom or during trip playback (MAP-04, cuttable -- always false
-// until that plan lands).
+// Pitch is a controlled-viewState value, not a terrain toggle: terrain
+// relief stays loaded at every zoom, but the camera only tilts at
+// regional zoom or during trip playback.
 export function getConditionalPitch(zoom: number, isPlayback = false): number {
   return isPlayback || zoom > REGIONAL_ZOOM_THRESHOLD ? REGIONAL_PITCH : 0;
 }

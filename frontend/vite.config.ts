@@ -10,7 +10,7 @@ export default defineConfig({
   server: {
     // In `npm run dev`, forward the SPA's relative /api calls to the Django dev
     // server. In Docker, this same gunicorn service serves /api directly via
-    // WhiteNoise (no nginx sidecar, D-07), so the SPA code never changes
+    // WhiteNoise (no nginx sidecar), so the SPA code never changes
     // between dev and production. It always fetches a relative /api/route.
     proxy: {
       '/api': {
@@ -24,7 +24,7 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     coverage: {
       provider: 'v8',
-      // lcov feeds the Codecov frontend flag wired up in a later plan.
+      // lcov is the format most coverage-consuming tools (e.g. Codecov) expect.
       reporter: ['text', 'lcov'],
     },
   },

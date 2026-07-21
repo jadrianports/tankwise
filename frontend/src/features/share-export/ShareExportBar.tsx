@@ -15,10 +15,10 @@ export interface ShareExportBarProps {
   shareUrl: string | null;
 }
 
-// UX-04: copy-share-link + CSV + GeoJSON controls. Disabled until a plan
+// Copy-share-link + CSV + GeoJSON controls. Disabled until a plan
 // exists (nothing to share/export before the first solve). Rendered by
-// App.tsx directly -- print-hidden by the caller's own wrapper (D-30: this
-// bar is chrome, not the printable route sheet's content).
+// App.tsx directly -- print-hidden by the caller's own wrapper (this bar
+// is chrome, not the printable route sheet's content).
 function ShareExportBar({ data, shareUrl }: ShareExportBarProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'manual'>('idle');
   const disabled = !data || !shareUrl;

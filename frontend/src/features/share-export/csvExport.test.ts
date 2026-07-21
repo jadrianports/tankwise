@@ -27,7 +27,7 @@ const FIXTURE = {
   ],
 } as unknown as RouteResponse;
 
-test('buildStopsCsv writes the D-29 header row', () => {
+test('buildStopsCsv writes the expected header row', () => {
   const csv = buildStopsCsv(FIXTURE);
   const [header] = csv.split('\r\n');
   expect(header).toBe('Stop #,Station Name,Station ID,Miles From Start,Price/Gal,Gallons,Cost');

@@ -1,13 +1,13 @@
-// Shared quantile-bin threshold math (Don't-Hand-Roll, 09-RESEARCH.md): a
-// SINGLE function that sorts a price array and returns the ascending
-// breakpoints splitting it into `bins` equal-count groups. Both the
-// candidate circle layer's `step` color expression and the price legend
-// call this exact function against the same `candidate_stations[]` prices
-// -- never duplicate this math, or the map and the legend can silently
-// drift onto different thresholds (D-33).
+// Shared quantile-bin threshold math: a SINGLE function that sorts a
+// price array and returns the ascending breakpoints splitting it into
+// `bins` equal-count groups. Both the candidate circle layer's `step`
+// color expression and the price legend call this exact function
+// against the same `candidate_stations[]` prices -- never duplicate this
+// math, or the map and the legend can silently drift onto different
+// thresholds.
 //
-// Percentiles are corridor-relative and recomputed per response (never
-// cached across trips) -- see 09-RESEARCH.md's anti-pattern warning.
+// Percentiles are corridor-relative and recomputed per response --
+// never cached across trips.
 
 /**
  * Splits a sorted copy of `prices` into `bins` equal-count groups and

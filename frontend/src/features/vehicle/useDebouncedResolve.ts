@@ -3,8 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
 import type { VehicleProfileRequest } from '../../types/routeContract';
 
-// D-14: a ten-second drag gesture must cost exactly one request, comfortably
-// inside Phase 8 D-13's ~20/min throttle burst.
+// A ten-second drag gesture must cost exactly one request, comfortably
+// inside the backend's ~20/min throttle burst.
 const DEBOUNCE_MS = 500;
 
 export interface UseDebouncedResolveResult {
@@ -19,12 +19,12 @@ export interface UseDebouncedResolveResult {
 
 // Wraps the hardened `useRoutePlan` submit (via RoutePlanContext's
 // `resolveVehicle`) with a ~500ms debounce and a 429 pause/countdown/
-// self-resume (D-14/D-15/D-16/D-17). `resolveVehicle` itself already
-// reuses the last-resolved (start, finish) pair cached inside
-// `useRoutePlan` -- this hook never touches coordinates directly, so a
-// slider/chip change can never trigger a re-geocode (D-07). The camera
-// holding position (D-16) is unaffected: MapView only refits on
-// start/finish change, and this hook never changes those.
+// self-resume. `resolveVehicle` itself already reuses the last-resolved
+// (start, finish) pair cached inside `useRoutePlan` -- this hook never
+// touches coordinates directly, so a slider/chip change can never
+// trigger a re-geocode. The camera holding position is unaffected:
+// MapView only refits on start/finish change, and this hook never
+// changes those.
 export function useDebouncedResolve(): UseDebouncedResolveResult {
   const { status, error, resolveVehicle, retry } = useRoutePlanContext();
 
@@ -48,7 +48,7 @@ export function useDebouncedResolve(): UseDebouncedResolveResult {
   const onVehicleChange = useCallback(
     (vehicle: VehicleProfileRequest) => {
       pendingRef.current = vehicle;
-      if (isPaused) return; // T-09-12: a 429 suspends slider-triggered requests entirely
+      if (isPaused) return; // A 429 suspends slider-triggered requests entirely
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
       }
@@ -64,7 +64,7 @@ export function useDebouncedResolve(): UseDebouncedResolveResult {
     setRetryCountdown(Math.max(1, Math.ceil(error.retryAfterS)));
   }, [status, error]);
 
-  // Ticks the countdown down once a second; at zero it self-resumes (D-17):
+  // Ticks the countdown down once a second; at zero it self-resumes:
   // applies whatever vehicle value the user last landed on during the
   // cooldown, or -- if nothing changed while paused -- retries the exact
   // request the throttle rejected. Both paths reuse cached coordinates,

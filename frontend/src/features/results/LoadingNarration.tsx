@@ -4,10 +4,8 @@ import Typography from '@mui/material/Typography';
 
 import { useColdStart, type ColdStartStage } from './useColdStart';
 
-// Progressive loading copy (UX-07), verbatim from 09-UI-SPEC.md's
-// Copywriting Contract -- escalates to a named cold-start explanation
-// rather than leaving a slow free-tier solve looking like a hung request
-// (D-40).
+// Progressive loading copy -- escalates to a named cold-start explanation
+// rather than leaving a slow free-tier solve looking like a hung request.
 const STAGE_COPY: Record<ColdStartStage, string> = {
   solving: 'Solving your route…',
   checking: 'Still working — checking fuel prices along the corridor…',

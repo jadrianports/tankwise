@@ -15,11 +15,11 @@ export interface LegBreakdownProps {
   fuelStopCount: number;
 }
 
-// Renders every entry in `legs[]` -- N+1 legs for N stops (Phase 7 D-22),
-// never `fuel_stops[]` -- so a single-stop trip's start->stop and
-// stop->finish legs both show up as their own rows, and a zero-stop trip
-// still shows its one start->finish leg. ETA is driving time only (D-23),
-// paired with the stop count rather than a wall-clock arrival estimate.
+// Renders every entry in `legs[]` -- N+1 legs for N stops, never
+// `fuel_stops[]` -- so a single-stop trip's start->stop and stop->finish
+// legs both show up as their own rows, and a zero-stop trip still shows
+// its one start->finish leg. ETA is driving time only, paired with the
+// stop count rather than a wall-clock arrival estimate.
 function LegBreakdown({ legs, totalDurationS, fuelStopCount }: LegBreakdownProps) {
   return (
     <Box>

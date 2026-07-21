@@ -46,7 +46,7 @@ test('buildTripGeoJson emits one Point per chosen stop with plan facts as proper
   expect(stopFeature.properties?.cost).toBe('202.79');
 });
 
-test('buildTripGeoJson never reads candidate_stations -- candidates are map texture, not trip data (D-29)', () => {
+test('buildTripGeoJson never reads candidate_stations -- candidates are map texture, not trip data', () => {
   const geojson = buildTripGeoJson(FIXTURE);
   const serialized = JSON.stringify(geojson);
   expect(serialized.includes('CAND-1')).toBe(false);

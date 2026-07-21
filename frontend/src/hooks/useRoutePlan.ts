@@ -4,16 +4,16 @@ import { planRoute } from '../api/routeClient';
 import { HERO_VEHICLE_PRESET_ID, VEHICLE_PRESETS } from '../constants/presets';
 import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
-// D-38: the app loads with the hero preset (Semi loaded) selected and
-// sends it explicitly -- the backend's own default (10 mpg / 500 mi) is
-// unchanged for any request that omits `vehicle` entirely, but every
-// request this hook issues always carries one.
+// The app loads with the hero preset (Semi loaded) selected and sends it
+// explicitly -- the backend's own default (10 mpg / 500 mi) is unchanged
+// for any request that omits `vehicle` entirely, but every request this
+// hook issues always carries one.
 const HERO_VEHICLE = VEHICLE_PRESETS.find((preset) => preset.id === HERO_VEHICLE_PRESET_ID)!.vehicle;
 
 // `rate_limited` is a distinct status (not `error`) so a 429 never trips
 // ResultsSection's error-alert branch or clears the last good `data` --
-// D-15/D-17 require the previous plan to stay fully visible while a 429
-// cooldown counts down.
+// the previous plan must stay fully visible while a 429 cooldown counts
+// down.
 export type RoutePlanStatus = 'idle' | 'loading' | 'success' | 'error' | 'rate_limited';
 
 export interface RoutePlanError {
@@ -27,7 +27,7 @@ export interface UseRoutePlanResult {
   data: RouteResponse | null;
   error: RoutePlanError | null;
   // `vehicle` is an optional one-shot override for the very first submit of
-  // a session -- e.g. a share-URL auto-solve (D-27/D-28), which must send
+  // a session -- e.g. a share-URL auto-solve, which must send
   // the ENCODED vehicle profile on its one and only request rather than the
   // hero default `vehicleRef` starts with. Every other caller (the planner
   // form, demo chips, recent trips) omits it and gets the currently
@@ -37,7 +37,7 @@ export interface UseRoutePlanResult {
   // Updates the vehicle profile used by every future submit/retry, and --
   // if a route has already been solved at least once -- immediately
   // re-solves using the last-submitted (already-resolved) start/finish
-  // coordinates. Never re-geocodes (D-07): a slider/chip change only ever
+  // coordinates. Never re-geocodes: a slider/chip change only ever
   // reuses cached coordinates, it never touches AddressAutocomplete.
   resolveVehicle: (vehicle: VehicleProfileRequest) => void;
 }
@@ -50,13 +50,13 @@ function isAbortError(err: unknown): boolean {
 // useState/useCallback is sufficient here -- no external query library needed
 // for a single in-flight request per submit.
 //
-// D-04 (mandatory): a `useRef` sequence counter and an `AbortController`
-// per call. A second submit aborts the first outright (so the browser
-// actually cancels the in-flight request, not just ignores its result),
-// and every `setState` after the `await` is gated on the captured sequence
-// number still matching the ref's current value -- a stale response can
-// never overwrite a newer one, which is exactly the bug D-14's debounced
-// re-solve would otherwise turn from latent into reproducible.
+// A `useRef` sequence counter and an `AbortController` per call. A second
+// submit aborts the first outright (so the browser actually cancels the
+// in-flight request, not just ignores its result), and every `setState`
+// after the `await` is gated on the captured sequence number still
+// matching the ref's current value -- a stale response can never
+// overwrite a newer one, which is exactly the bug the debounced what-if
+// sliders would otherwise turn from latent into reproducible.
 export function useRoutePlan(): UseRoutePlanResult {
   const [status, setStatus] = useState<RoutePlanStatus>('idle');
   const [data, setData] = useState<RouteResponse | null>(null);
@@ -65,16 +65,16 @@ export function useRoutePlan(): UseRoutePlanResult {
   const sequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
   // Last-submitted (start, finish) pair -- lets an `upstream_error` state
-  // offer a real Retry button (UX-07) that resubmits the same request,
+  // offer a real Retry button that resubmits the same request,
   // without ResultsSection needing to know the last-entered coordinates
   // itself. Also what `resolveVehicle` reuses so a slider/chip change
-  // never re-geocodes (D-07).
+  // never re-geocodes.
   const lastArgsRef = useRef<{ start: string; finish: string } | null>(null);
-  // Current vehicle profile, sent on every submit (D-38's hero default,
-  // updated live by `resolveVehicle` as the user picks a preset/drags a
-  // slider). A `useRef` (not `useState`) because it's read inside `submit`
-  // without needing its own re-render -- VehicleSection owns the visible
-  // slider/chip UI state independently.
+  // Current vehicle profile, sent on every submit (starting from the
+  // hero default, updated live by `resolveVehicle` as the user picks a
+  // preset/drags a slider). A `useRef` (not `useState`) because it's read
+  // inside `submit` without needing its own re-render -- VehicleSection
+  // owns the visible slider/chip UI state independently.
   const vehicleRef = useRef<VehicleProfileRequest>(HERO_VEHICLE);
 
   const submit = useCallback(async (start: string, finish: string, vehicle?: VehicleProfileRequest) => {
@@ -113,7 +113,7 @@ export function useRoutePlan(): UseRoutePlanResult {
       setStatus('success');
       setError(null);
     } else if (result.code === 'rate_limited') {
-      // D-15/D-17: a 429 must never blank the last good plan or read as a
+      // A 429 must never blank the last good plan or read as a
       // solver failure -- `data` is deliberately left untouched, and the
       // distinct `rate_limited` status keeps ResultsSection's
       // `status === 'error'` alert branch from firing.

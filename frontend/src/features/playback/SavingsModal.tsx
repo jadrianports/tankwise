@@ -14,9 +14,9 @@ export interface SavingsModalProps {
   onClose: () => void;
 }
 
-// The playback finale (D-23..26): the SAME savings figures the
-// always-visible SummaryCard.tsx renders (D-19/UX-14), in the same
-// fuel-amber-cost / primary-green-savings color split -- this modal never
+// The playback finale: the SAME savings figures the always-visible
+// SummaryCard.tsx renders, in the same fuel-amber-cost /
+// primary-green-savings color split -- this modal never
 // computes a second savings figure, it reads `data.savings` directly.
 // MUI's Dialog renders its own full-viewport backdrop, which is what
 // keeps the rest of the page (including the sidebar) visually dimmed

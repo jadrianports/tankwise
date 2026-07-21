@@ -1,17 +1,17 @@
-/* Driver route sheet (UX-15, D-30): `@media print` over the existing
- * single page -- the share link and the printable sheet are the SAME URL,
- * no second route, no duplicated markup (D-03/D-30). Hides the map, the
- * app bar, and every interactive control; leaves the stop itinerary, the
- * per-leg table, the totals, and the price-as-of disclaimer (all already
- * rendered by SummaryCard/StopList/LegBreakdown inside ResultsSection) as
- * plain content.
+/* Driver route sheet: `@media print` over the existing single page --
+ * the share link and the printable sheet are the SAME URL, no second
+ * route, no duplicated markup. Hides the map, the app bar, and every
+ * interactive control; leaves the stop itinerary, the per-leg table, the
+ * totals, and the price-as-of disclaimer (all already rendered by
+ * SummaryCard/StopList/LegBreakdown inside ResultsSection) as plain
+ * content.
  *
  * MUI applies a stable global class name to every component's root element
  * (`MuiButton-root`, `MuiAppBar-root`, etc.) specifically so external CSS
  * can target it -- this stylesheet uses only those, so it needs zero
- * changes to any component outside this plan's own files. The three
- * non-results sidebar sections (planner form, vehicle controls, recent
- * trips) are wrapped in a `.print-hide` marker Box by Sidebar.tsx; results
+ * changes to any component outside this file. The three non-results
+ * sidebar sections (planner form, vehicle controls, recent trips) are
+ * wrapped in a `.print-hide` marker Box by Sidebar.tsx; results
  * (cost/savings/stop-list/leg-breakdown/tank-chart/disclaimer) render as-is
  * for paper.
  */
@@ -36,7 +36,7 @@
     display: none !important;
   }
 
-  /* Collapsible sections (per-leg breakdown, tank chart, D-20) always
+  /* Collapsible sections (per-leg breakdown, tank chart) always
    * render their content in the DOM even when visually collapsed on
    * screen (MUI's Accordion mounts AccordionDetails by default) -- reveal
    * it in full for print regardless of the on-screen expand state, and

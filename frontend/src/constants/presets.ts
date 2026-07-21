@@ -1,14 +1,13 @@
 import type { VehicleProfileRequest } from '../types/routeContract';
 
-// Vehicle presets (UX-12, D-36/D-37/D-38). Every preset is diesel (D-37) --
-// the dataset is truck-stop diesel prices, so pricing a gasoline sedan
-// against it would be dishonest. Figures are the researcher's cited,
-// fleet-average-shaded synthesis (09-RESEARCH.md Priority Mandate #1):
+// Vehicle presets. Every preset is diesel -- the dataset is truck-stop
+// diesel prices, so pricing a gasoline sedan against it would be
+// dishonest. Figures are a cited, fleet-average-shaded synthesis:
 //   - Semi (loaded): 6.5 mpg, ~1,050 mi -- ATRI's fleet-average 6.65 mpg,
 //     ~160 gal (a 15-25% real-world derate below 200-300 gal nameplate).
-//     This is the hero/default preset (D-38): the app loads with this
-//     selected and sends it explicitly in the request's nested `vehicle`
-//     object; the backend's own default (10 mpg / 500 mi) is unchanged.
+//     This is the hero/default preset: the app loads with this selected
+//     and sends it explicitly in the request's nested `vehicle` object;
+//     the backend's own default (10 mpg / 500 mi) is unchanged.
 //   - Semi (empty): 8.5 mpg, ~1,350 mi -- same 160 gal tanks as loaded
 //     (same physical vehicle), corrected upward from the candidate set's
 //     internally-inconsistent ~1,050 mi to hold gallons constant.
@@ -17,7 +16,7 @@ import type { VehicleProfileRequest } from '../types/routeContract';
 //   - Sedan: 32 mpg, ~450 mi -- shaded down from VW TDI-class 34 mpg
 //     combined EPA, ~14 gal compact-diesel-sedan-class tank.
 // Do NOT substitute the optimistic candidate set or invent alternates --
-// these are the researcher-cited, user-facing figures.
+// these are the cited, user-facing figures.
 export interface VehiclePreset {
   id: string;
   label: string;
@@ -52,11 +51,11 @@ export const VEHICLE_PRESETS: VehiclePreset[] = [
   },
 ];
 
-// D-38: the hero preset wins in the UI; the API default (10mpg/500mi) is
+// The hero preset wins in the UI; the API default (10mpg/500mi) is
 // unchanged for any request that omits `vehicle`.
 export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 
-// Demo trip chips (UX-05, D-35). Long-haul routes chosen to suit the
+// Demo trip chips. Long-haul routes chosen to suit the
 // realistic semi range above -- a real driver reads a 500-mi range on a
 // Class 8 and knows it's wrong, so demo chips are coast-to-coast /
 // Dallas-Seattle class routes, not the v1.0-era short happy-path routes
@@ -78,9 +77,8 @@ export interface DemoTrip {
   finish: string;
 }
 
-// Kept as `PRESET_ROUTES` (not renamed) so the existing `PresetRoutes.jsx`/
-// `App.jsx` (untouched this plan -- replaced wholesale in a later Phase 9
-// plan per 09-PATTERNS.md) keep working against the same import unchanged.
+// Exported as `PRESET_ROUTES`; `DEMO_TRIPS` below is the alias current
+// call sites import.
 export const PRESET_ROUTES: DemoTrip[] = [
   {
     label: 'Los Angeles → New York City',
@@ -102,6 +100,6 @@ export const PRESET_ROUTES: DemoTrip[] = [
   },
 ];
 
-// Alias matching the D-35/UX-05 vocabulary used elsewhere in CONTEXT.md/
-// RESEARCH.md ("demo trip chips") -- same array, same reference.
+// Alias matching the "demo trip chips" vocabulary used elsewhere --
+// same array, same reference.
 export const DEMO_TRIPS = PRESET_ROUTES;

@@ -17,7 +17,7 @@ interface TankSeries {
 }
 
 // Derives a running tank-level series (gallons) purely from already-returned
-// fields -- no new backend field needed (UX-03). Each leg's own `gallons` is
+// fields -- no new backend field needed. Each leg's own `gallons` is
 // the exact consumption the solver already computed for that leg; each
 // stop's own `gallons` is the exact amount purchased there. The result is a
 // sawtooth: the level dips across a leg, then jumps back up at every stop
@@ -60,9 +60,9 @@ function buildTankSeries(legs: Leg[], stops: FuelStop[], vehicle: VehicleEcho): 
   return { distances, levels, capacityGal };
 }
 
-// Running tank-level chart across the N+1 legs (D-22 asymmetry), drawn with
-// @mui/x-charts (D-21) -- already theme-matched to theme.js, including dark
-// mode, so no extra styling is needed here.
+// Running tank-level chart across the N+1 legs, drawn with @mui/x-charts
+// -- already theme-matched to theme.js, including dark mode, so no extra
+// styling is needed here.
 function TankChart({ legs, stops, vehicle }: TankChartProps) {
   const series = vehicle && legs.length > 0 ? buildTankSeries(legs, stops, vehicle) : null;
 
