@@ -8,13 +8,15 @@ import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import type { CandidateStation, RouteResponse } from '../../types/routeContract';
+import type { CandidateStation, FuelStop, RouteResponse } from '../../types/routeContract';
 import { useMapStyle } from './useMapStyle';
 import { useTerrain, getConditionalPitch } from './useTerrain';
 import StyleSwitcher from './StyleSwitcher';
 import CandidateToggle from './CandidateToggle';
 import PriceLegend from './PriceLegend';
+import ChosenStopMarker from './ChosenStopMarker';
 import { applyCandidateLayer } from './layers/candidateLayer';
+import JustificationPopup from '../results/JustificationPopup';
 
 const ROUTE_SOURCE_ID = 'route-line';
 
@@ -76,6 +78,11 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
 
   const candidatesRef = useRef<CandidateStation[]>([]);
   candidatesRef.current = data?.candidate_stations ?? [];
+
+  // Chosen-stop justification popup (UX-13, D-34) -- keyed off
+  // `station_id ?? index`, same null-safe convention used throughout this
+  // codebase for station lists.
+  const [openStopKey, setOpenStopKey] = useState<string | number | null>(null);
 
   // Adds the route line the first time it's needed and updates it in
   // place on every later call -- the API's route_geometry is already
@@ -163,9 +170,30 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
     applyCandidates(mapInstance);
   }, [mapInstance, data, candidatesVisible, applyCandidates]);
 
+  // A new plan invalidates any open justification popup from the previous
+  // solve -- never leave a popup open referencing a stale stop.
+  useEffect(() => {
+    setOpenStopKey(null);
+  }, [data]);
+
   const toggleCandidates = useCallback(() => {
     setCandidatesVisible((prev) => !prev);
   }, []);
+
+  // GL-native rewrite of the retired Leaflet App.jsx's `focusStop`, which
+  // used the Leaflet marker instance's own coordinate lookup plus an
+  // imperative Leaflet-popup-open call: this version flies the map's
+  // camera to the stop's coordinates and opens its justification popup via
+  // React state instead.
+  const focusStop = useCallback((key: string | number, lng: number, lat: number) => {
+    mapRef.current?.flyTo({ center: [lng, lat], zoom: 10 });
+    setOpenStopKey(key);
+  }, []);
+
+  const fuelStops: FuelStop[] = data?.fuel_stops ?? [];
+  const openStopEntry = fuelStops
+    .map((stop, index) => ({ stop, index, key: stop.station_id ?? index }))
+    .find((entry) => entry.key === openStopKey);
 
   const startLng = toNumber(data?.start?.longitude);
   const startLat = toNumber(data?.start?.latitude);
@@ -272,11 +300,36 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
             </Box>
           </Marker>
         )}
+        {fuelStops.map((stop, index) => {
+          const key = stop.station_id ?? index;
+          const lat = toNumber(stop.location?.latitude);
+          const lng = toNumber(stop.location?.longitude);
+          if (lat === null || lng === null) return null;
+          return (
+            <ChosenStopMarker
+              key={key}
+              stop={stop}
+              number={index + 1}
+              longitude={lng}
+              latitude={lat}
+              isOpen={openStopKey === key}
+              onActivate={() => focusStop(key, lng, lat)}
+            />
+          );
+        })}
       </Map>
       <StyleSwitcher isSatellite={isSatellite} onToggle={toggleSatellite} />
       <CandidateToggle visible={candidatesVisible} onToggle={toggleCandidates} />
       {candidatesVisible && data && data.candidate_stations.length > 0 && (
         <PriceLegend candidates={data.candidate_stations} />
+      )}
+      {openStopEntry && (
+        <JustificationPopup
+          stop={openStopEntry.stop}
+          number={openStopEntry.index + 1}
+          open
+          onClose={() => setOpenStopKey(null)}
+        />
       )}
     </Box>
   );
