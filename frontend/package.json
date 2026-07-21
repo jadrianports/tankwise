@@ -16,6 +16,7 @@
     "@emotion/styled": "11.14.1",
     "@fontsource/inter": "5.2.8",
     "@fontsource/space-grotesk": "5.2.10",
+    "@mapbox/search-js-core": "1.5.1",
     "@mui/icons-material": "7.3.11",
     "@mui/material": "7.3.11",
     "@mui/x-charts": "^9.10.0",
