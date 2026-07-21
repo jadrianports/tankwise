@@ -44,6 +44,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 from django.http import FileResponse, JsonResponse
 from django.views import View
+from drf_spectacular.utils import OpenApiExample, extend_schema, inline_serializer
 from rest_framework import serializers
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -231,11 +232,311 @@ class SpaFallbackView(View):
         return FileResponse(index_path.open("rb"), content_type="text/html")
 
 
+# OpenAPI response documentation for RouteView.post (QUA-04 / D-16).
+# RouteResponseSerializer.to_representation (routing/serializers.py) builds
+# its dict by hand rather than declaring fields, so drf-spectacular's
+# auto-introspection sees nothing to walk and would otherwise document the
+# response as an empty/opaque object (Pitfall 5). This tree mirrors that
+# method's real top-level keys, and every nested helper's real keys, exactly
+# -- it only documents the response, it never participates in producing it.
+_FUEL_STOP_RATIONALE_SCHEMA = inline_serializer(
+    name="FuelStopRationale",
+    fields={
+        "purchase_reason": serializers.CharField(),
+        "reason_target_station_id": serializers.IntegerField(allow_null=True),
+        "reason_target_name": serializers.CharField(allow_null=True),
+        "skipped_count": serializers.IntegerField(),
+        "skipped_avg_price": serializers.CharField(allow_null=True),
+        "corridor_avg_price": serializers.CharField(allow_null=True),
+        "price_percentile": serializers.FloatField(allow_null=True),
+    },
+)
+
+_FUEL_STOP_SCHEMA = inline_serializer(
+    name="FuelStop",
+    fields={
+        "name": serializers.CharField(),
+        "station_id": serializers.IntegerField(allow_null=True),
+        "location": inline_serializer(
+            name="FuelStopLocation",
+            fields={
+                "latitude": serializers.CharField(allow_null=True),
+                "longitude": serializers.CharField(allow_null=True),
+            },
+            allow_null=True,
+        ),
+        "distance_from_start_mi": serializers.CharField(),
+        "price_per_gallon": serializers.CharField(),
+        "gallons": serializers.CharField(),
+        "cost": serializers.CharField(),
+        "rationale": _FUEL_STOP_RATIONALE_SCHEMA,
+    },
+    many=True,
+)
+
+_VEHICLE_SCHEMA = inline_serializer(
+    # "VehicleResponse", not "Vehicle" -- avoids a component-name collision
+    # with the request-side VehicleSerializer (routing/serializers.py),
+    # which has a different shape (no starting_fuel_mi).
+    name="VehicleResponse",
+    fields={
+        "mpg": serializers.CharField(),
+        "tank_range_mi": serializers.CharField(),
+        "starting_fuel": serializers.CharField(),
+        "starting_fuel_mi": serializers.CharField(),
+    },
+    allow_null=True,
+)
+
+_LEG_SCHEMA = inline_serializer(
+    name="Leg",
+    fields={
+        "from": serializers.CharField(),
+        "to": serializers.CharField(),
+        "distance_mi": serializers.CharField(),
+        "duration_s": serializers.IntegerField(allow_null=True),
+        "gallons": serializers.CharField(),
+        "cost": serializers.CharField(),
+    },
+    many=True,
+)
+
+_SAVINGS_SCHEMA = inline_serializer(
+    name="Savings",
+    fields={
+        "amount": serializers.CharField(),
+        "percent": serializers.FloatField(allow_null=True),
+        "naive_total_cost": serializers.CharField(),
+        "naive_total_gallons": serializers.CharField(),
+        "naive_stop_count": serializers.IntegerField(),
+    },
+    allow_null=True,
+)
+
+_ALTERNATIVE_SCHEMA = inline_serializer(
+    name="RouteAlternative",
+    fields={
+        "total_route_mi": serializers.CharField(),
+        "duration_s": serializers.IntegerField(allow_null=True),
+        "total_cost": serializers.CharField(allow_null=True),
+        "chosen": serializers.BooleanField(),
+        "feasible": serializers.BooleanField(),
+    },
+    many=True,
+)
+
+_CANDIDATE_STATION_SCHEMA = inline_serializer(
+    name="CandidateStation",
+    fields={
+        "station_id": serializers.IntegerField(),
+        "lat": serializers.FloatField(),
+        "lng": serializers.FloatField(),
+        "price_per_gallon": serializers.CharField(),
+        "distance_from_start_mi": serializers.CharField(),
+    },
+    many=True,
+)
+
+_ROUTE_RESPONSE_SCHEMA = inline_serializer(
+    name="RouteResponse",
+    fields={
+        "start": inline_serializer(
+            name="StartLocation",
+            fields={
+                "latitude": serializers.CharField(allow_null=True),
+                "longitude": serializers.CharField(allow_null=True),
+            },
+            allow_null=True,
+        ),
+        "finish": inline_serializer(
+            name="FinishLocation",
+            fields={
+                "latitude": serializers.CharField(allow_null=True),
+                "longitude": serializers.CharField(allow_null=True),
+            },
+            allow_null=True,
+        ),
+        "route_geometry": serializers.ListField(
+            child=serializers.ListField(child=serializers.FloatField())
+        ),
+        "total_route_mi": serializers.CharField(),
+        "fuel_stops": _FUEL_STOP_SCHEMA,
+        "total_cost": serializers.CharField(),
+        "total_gallons": serializers.CharField(),
+        "map_url": serializers.CharField(allow_null=True),
+        "vehicle": _VEHICLE_SCHEMA,
+        "legs": _LEG_SCHEMA,
+        "total_duration_s": serializers.IntegerField(allow_null=True),
+        "fuel_stop_count": serializers.IntegerField(),
+        "savings": _SAVINGS_SCHEMA,
+        "savings_note": serializers.CharField(allow_null=True),
+        "alternatives_considered": serializers.IntegerField(),
+        "alternatives": _ALTERNATIVE_SCHEMA,
+        "candidate_stations": _CANDIDATE_STATION_SCHEMA,
+        "price_as_of": serializers.CharField(),
+        "price_data_note": serializers.CharField(),
+    },
+)
+
+# Real values, not invented: the request mirrors README's committed Dallas
+# -> Los Angeles curl example; the response reuses that same example's
+# committed fields (start/finish/route_geometry/total_route_mi/fuel_stops/
+# total_cost/total_gallons/map_url) and fills in the v2.0-only fields
+# (vehicle/legs/savings/alternatives/candidate_stations) with values
+# consistent with that same request -- the API-default 10mpg/500mi vehicle,
+# since the README example's request carries no "vehicle" key.
+_ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
+    "Dallas to Los Angeles",
+    value={
+        "start": {"latitude": "32.7767", "longitude": "-96.7970"},
+        "finish": {"latitude": "34.0522", "longitude": "-118.2437"},
+        "route_geometry": [[-96.796754, 32.775944], [-96.845799, 32.764037]],
+        "total_route_mi": "1437",
+        "fuel_stops": [
+            {
+                "name": "One9 #1248",
+                "station_id": 63669,
+                "location": {"latitude": "32.59742800", "longitude": "-96.68090500"},
+                "distance_from_start_mi": "63",
+                "price_per_gallon": "2.76",
+                "gallons": "0.07",
+                "cost": "0.18",
+                "rationale": {
+                    "purchase_reason": "top_up_at_cheapest",
+                    "reason_target_station_id": 66689,
+                    "reason_target_name": "ROSCOE TRAVEL PLAZA",
+                    "skipped_count": 0,
+                    "skipped_avg_price": None,
+                    "corridor_avg_price": "2.98",
+                    "price_percentile": 8.0,
+                },
+            },
+            {
+                "name": "ROSCOE TRAVEL PLAZA",
+                "station_id": 66689,
+                "location": {"latitude": "32.44193400", "longitude": "-100.53223100"},
+                "distance_from_start_mi": "218",
+                "price_per_gallon": "2.76",
+                "gallons": "12.61",
+                "cost": "34.80",
+                "rationale": {
+                    "purchase_reason": "cheapest_in_range",
+                    "reason_target_station_id": None,
+                    "reason_target_name": None,
+                    "skipped_count": 2,
+                    "skipped_avg_price": "2.91",
+                    "corridor_avg_price": "2.98",
+                    "price_percentile": 5.0,
+                },
+            },
+        ],
+        "total_cost": "260.42",
+        "total_gallons": "93.73",
+        "map_url": (
+            "https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/"
+            "pin-s-a+3b82f6(-96.7970,32.7767),pin-s-b+22c55e(-118.2437,34.0522),"
+            "path-3+ef4444-0.8(...)/auto/600x400?access_token=pk.***REDACTED***"
+        ),
+        "vehicle": {
+            "mpg": "10.00",
+            "tank_range_mi": "500.0",
+            "starting_fuel": "1.000",
+            "starting_fuel_mi": "500",
+        },
+        "legs": [
+            {
+                "from": "START",
+                "to": "One9 #1248",
+                "distance_mi": "63",
+                "duration_s": 3780,
+                "gallons": "6.30",
+                "cost": "17.39",
+            },
+            {
+                "from": "One9 #1248",
+                "to": "ROSCOE TRAVEL PLAZA",
+                "distance_mi": "155",
+                "duration_s": 9300,
+                "gallons": "15.50",
+                "cost": "42.78",
+            },
+        ],
+        "total_duration_s": 86400,
+        "fuel_stop_count": 5,
+        "savings": {
+            "amount": "18.30",
+            "percent": 6.6,
+            "naive_total_cost": "278.72",
+            "naive_total_gallons": "93.73",
+            "naive_stop_count": 4,
+        },
+        "savings_note": None,
+        "alternatives_considered": 2,
+        "alternatives": [
+            {
+                "total_route_mi": "1437",
+                "duration_s": 86400,
+                "total_cost": "260.42",
+                "chosen": True,
+                "feasible": True,
+            },
+            {
+                "total_route_mi": "1462",
+                "duration_s": 88200,
+                "total_cost": "264.10",
+                "chosen": False,
+                "feasible": True,
+            },
+        ],
+        "candidate_stations": [
+            {
+                "station_id": 63669,
+                "lat": 32.597428,
+                "lng": -96.680905,
+                "price_per_gallon": "2.76",
+                "distance_from_start_mi": "63",
+            },
+            {
+                "station_id": 66689,
+                "lat": 32.441934,
+                "lng": -100.532231,
+                "price_per_gallon": "2.76",
+                "distance_from_start_mi": "218",
+            },
+        ],
+        "price_as_of": "2025-01-01",
+        "price_data_note": (
+            "Fuel prices come from a static OPIS truck-stop snapshot with no "
+            "per-row timestamp. Price levels are consistent with U.S. retail "
+            "diesel of late 2024-early 2025."
+        ),
+    },
+    request_only=False,
+    response_only=True,
+)
+
+_ROUTE_REQUEST_EXAMPLE = OpenApiExample(
+    "Request with a vehicle override (Semi-loaded preset)",
+    value={
+        "start": "32.7767,-96.7970",
+        "finish": "34.0522,-118.2437",
+        "vehicle": {"mpg": "6.50", "tank_range_mi": "1050.0", "starting_fuel": "1.000"},
+    },
+    request_only=True,
+    response_only=False,
+)
+
+
 class RouteView(APIView):
     """`POST /api/route` -- see module docstring."""
 
     throttle_classes = [RouteBurstThrottle, RouteSustainedThrottle]
 
+    @extend_schema(
+        request=RouteRequestSerializer,
+        responses={200: _ROUTE_RESPONSE_SCHEMA},
+        examples=[_ROUTE_RESPONSE_EXAMPLE, _ROUTE_REQUEST_EXAMPLE],
+    )
     def post(self, request):
         serializer = RouteRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
