@@ -272,6 +272,11 @@ class RouteView(APIView):
                 if s.opis_id is not None and s.opis_id in stop_coords
             ]
 
+            candidate_opis_ids = [
+                c.opis_id for c in winner.candidates if c.opis_id is not None
+            ]
+            candidate_coords = self._coords_for_opis_ids(candidate_opis_ids)
+
             map_url = build_map_url(
                 winner.route,
                 (start_coords["latitude"], start_coords["longitude"]),
@@ -307,6 +312,8 @@ class RouteView(APIView):
                     "start_coords": start_coords,
                     "finish_coords": finish_coords,
                     "stop_coords": stop_coords,
+                    "candidates": winner.candidates,
+                    "candidate_coords": candidate_coords,
                 },
             )
             payload = response_serializer.data
@@ -434,6 +441,14 @@ class RouteView(APIView):
         """One indexed `filter(opis_id__in=...)` query for every stop's
         lat/lng -- never a per-stop `.get()` in a loop."""
         opis_ids = [s.opis_id for s in plan.stops if s.opis_id is not None]
+        return self._coords_for_opis_ids(opis_ids)
+
+    def _coords_for_opis_ids(self, opis_ids):
+        """Sibling of `_stop_coords`, generalized to any list of
+        `opis_id`s -- same one indexed `filter(opis_id__in=...)` query
+        shape, reused for the corridor's (potentially hundreds-long)
+        `candidate_stations[]` lookup so that pass never runs a
+        per-candidate query either."""
         if not opis_ids:
             return {}
         stations = Station.objects.filter(opis_id__in=opis_ids)

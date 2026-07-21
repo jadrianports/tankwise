@@ -22,7 +22,7 @@ from routing.serializers import (
 from routing.services.legs import Leg
 from routing.services.mapbox import Route
 from routing.services.naive_baseline import Savings
-from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
+from routing.services.solver import Candidate, FuelPlan, FuelStop, PurchaseReason
 
 
 def _wiggly_route_coords(start, finish, n=4000):
@@ -640,6 +640,89 @@ class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
         self.assertEqual(data["fuel_stop_count"], 1)
 
 
+class CandidateStationsTests(SimpleTestCase):
+    """candidate_stations[] (D-09/D-10): lean five-field entries built
+    from the winning alternative's corridor candidate list plus the
+    orchestrator's opis_id-keyed coordinate map -- no `name`, no
+    `address`. Reuses `_quantize_money`/`_quantize_miles`."""
+
+    def _minimal_instance(self):
+        route = Route(
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
+        )
+        plan = FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+        return {"route": route, "plan": plan, "map_url": None}
+
+    def test_exact_key_set_no_name_no_address(self):
+        candidates = [
+            Candidate(
+                name="Cheap Gas",
+                opis_id=42,
+                price_per_gallon=Decimal("3.129"),
+                distance_from_start_mi=Decimal("100.6"),
+            )
+        ]
+        candidate_coords = {
+            42: {"latitude": Decimal("39.0"), "longitude": Decimal("-88.0")}
+        }
+
+        data = RouteResponseSerializer(
+            self._minimal_instance(),
+            context={"candidates": candidates, "candidate_coords": candidate_coords},
+        ).data
+
+        self.assertEqual(len(data["candidate_stations"]), 1)
+        entry = data["candidate_stations"][0]
+        self.assertEqual(
+            set(entry.keys()),
+            {"station_id", "lat", "lng", "price_per_gallon", "distance_from_start_mi"},
+        )
+        self.assertEqual(entry["station_id"], 42)
+        self.assertEqual(entry["lat"], 39.0)
+        self.assertEqual(entry["lng"], -88.0)
+        self.assertEqual(entry["price_per_gallon"], "3.13")
+        self.assertEqual(entry["distance_from_start_mi"], "101")
+
+    def test_null_opis_id_candidate_is_excluded(self):
+        candidates = [
+            Candidate(
+                name="No DB Row",
+                opis_id=None,
+                price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal("50"),
+            )
+        ]
+
+        data = RouteResponseSerializer(
+            self._minimal_instance(),
+            context={"candidates": candidates, "candidate_coords": {}},
+        ).data
+
+        self.assertEqual(data["candidate_stations"], [])
+
+    def test_candidate_with_no_matching_coords_is_excluded(self):
+        candidates = [
+            Candidate(
+                name="Unresolved",
+                opis_id=99,
+                price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal("50"),
+            )
+        ]
+
+        data = RouteResponseSerializer(
+            self._minimal_instance(),
+            context={"candidates": candidates, "candidate_coords": {}},
+        ).data
+
+        self.assertEqual(data["candidate_stations"], [])
+
+    def test_absent_context_renders_empty_list(self):
+        data = RouteResponseSerializer(self._minimal_instance(), context={}).data
+
+        self.assertEqual(data["candidate_stations"], [])
+
+
 class FuelStopDistanceFromStartTests(SimpleTestCase):
     """Each fuel_stops[] entry carries distance_from_start_mi, quantized
     identically to total_route_mi (ROUND_HALF_UP to the nearest whole
@@ -874,6 +957,18 @@ class ResponseContractTests(SimpleTestCase):
         self.assertEqual(stop["gallons"], "30.00")
         self.assertEqual(stop["cost"], "93.87")
         self.assertEqual(stop["distance_from_start_mi"], "101")
+
+    def test_v1_shaped_context_still_returns_candidate_stations_key(self):
+        """A {start, finish}-only request (no candidates/candidate_coords
+        in context) still returns every pre-existing top-level key,
+        additively alongside the new candidate_stations[] key (D-09)."""
+        instance, context = self._v1_shaped_instance_and_context()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        self.assertIn("candidate_stations", data)
+        self.assertEqual(data["candidate_stations"], [])
+        self.assertTrue(self.V1_TOP_LEVEL_KEYS.issubset(data.keys()))
 
     def test_naive_plan_infeasible_savings_note_leaves_payload_valid(self):
         instance, context = self._v1_shaped_instance_and_context()

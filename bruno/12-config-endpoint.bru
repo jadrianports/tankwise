@@ -1,0 +1,22 @@
+meta {
+  name: 12. Config endpoint (public token)
+  type: http
+  seq: 12
+}
+
+get {
+  url: {{base_url}}/api/config
+  body: none
+  auth: none
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("serves the public Mapbox token and price freshness fields", function() {
+    expect(res.body.mapbox_public_token).to.be.a('string').that.match(/^pk\./);
+    expect(res.body).to.have.property('price_as_of');
+    expect(res.body).to.have.property('price_data_note');
+  });
+}

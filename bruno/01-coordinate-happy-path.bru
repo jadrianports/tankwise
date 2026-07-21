@@ -26,4 +26,12 @@ tests {
     expect(res.body).to.have.property('total_cost');
     expect(res.body).to.have.property('map_url');
   });
+  test("has candidate_stations with the five locked fields per entry", function() {
+    expect(res.body.candidate_stations).to.be.an('array');
+    res.body.candidate_stations.forEach(function (station) {
+      expect(station).to.have.all.keys(
+        'station_id', 'lat', 'lng', 'price_per_gallon', 'distance_from_start_mi'
+      );
+    });
+  });
 }

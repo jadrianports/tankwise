@@ -170,6 +170,41 @@ def _alternatives_repr(alternatives) -> list:
     ]
 
 
+def _candidate_stations_repr(candidates, candidate_coords) -> list:
+    """Render the corridor's `candidate_stations[]` array (D-09/D-10): a
+    lean five-field entry per in-corridor candidate station -- no
+    `name`, no `address`. Reuses `_quantize_money`/`_quantize_miles`; no
+    new formatter is introduced.
+
+    A candidate whose `opis_id` is `None`, or one with no resolvable
+    row in `candidate_coords`, has no coordinates and cannot be placed
+    on the map -- it is filtered out entirely here. This is a
+    deliberate divergence from `fuel_stops[]`, which keeps
+    null-`station_id` stops since they still render in the stop list
+    by index."""
+    result = []
+    for candidate in candidates:
+        coords = (
+            candidate_coords.get(candidate.opis_id)
+            if candidate.opis_id is not None
+            else None
+        )
+        if coords is None:
+            continue
+        result.append(
+            {
+                "station_id": candidate.opis_id,
+                "lat": float(coords["latitude"]),
+                "lng": float(coords["longitude"]),
+                "price_per_gallon": _quantize_money(candidate.price_per_gallon),
+                "distance_from_start_mi": _quantize_miles(
+                    candidate.distance_from_start_mi
+                ),
+            }
+        )
+    return result
+
+
 def _location_repr(coords):
     """Render a {"latitude": ..., "longitude": ...} coordinate dict as
     Decimal-as-string values. Returns None when no coords were
@@ -389,6 +424,13 @@ class RouteResponseSerializer(serializers.Serializer):
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
     `{"latitude", "longitude"}` dict), all injected by the orchestrator.
+    It may also carry `"candidates"` (the winning alternative's
+    corridor-filtered `Candidate` list) and `"candidate_coords"` (an
+    opis_id-keyed `{"latitude", "longitude"}` map, same shape as
+    `stop_coords`) -- both render the additive `candidate_stations[]`
+    array (D-09/D-10: an amendment to Phase 7 D-11's "no station lists"
+    stance, scoped to corridor candidates for map rendering, not the
+    alternatives array). Absent context renders `candidate_stations: []`.
 
     Every new key is read from `instance` with a `.get()` default, so an
     instance shaped with only the v1.0 keys (`"route"`, `"plan"`,
@@ -413,6 +455,8 @@ class RouteResponseSerializer(serializers.Serializer):
         legs = instance.get("legs") or []
         savings = instance.get("savings")
         alternatives = instance.get("alternatives") or []
+        candidates = self.context.get("candidates") or []
+        candidate_coords = self.context.get("candidate_coords") or {}
         freshness = price_freshness()
 
         return {
@@ -432,6 +476,9 @@ class RouteResponseSerializer(serializers.Serializer):
             "savings_note": instance.get("savings_note"),
             "alternatives_considered": len(alternatives),
             "alternatives": _alternatives_repr(alternatives),
+            "candidate_stations": _candidate_stations_repr(
+                candidates, candidate_coords
+            ),
             "price_as_of": freshness["price_as_of"],
             "price_data_note": freshness["price_data_note"],
         }

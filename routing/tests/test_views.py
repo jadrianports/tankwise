@@ -198,6 +198,15 @@ class RouteViewCallBudgetTests(APITestCase):
         self.assertIn("map_url", body)
         self.assertIsNotNone(body["map_url"])
 
+        # candidate_stations[] (D-09/D-10): the one in-corridor station
+        # (also the chosen fuel stop) resolves via the single indexed
+        # coordinate lookup, with exactly the five locked fields.
+        self.assertTrue(body["candidate_stations"])
+        self.assertEqual(
+            set(body["candidate_stations"][0].keys()),
+            {"station_id", "lat", "lng", "price_per_gallon", "distance_from_start_mi"},
+        )
+
     def test_dense_route_geometry_is_simplified_in_response(self):
         """`route_geometry` in the live response is far smaller than the
         route's raw geometry, with the exact start/finish endpoints
@@ -792,7 +801,7 @@ class RouteViewV1ContractAndVehicleValidationTests(APITestCase):
         for key in (
             "vehicle", "legs", "total_duration_s", "fuel_stop_count",
             "savings", "savings_note", "alternatives_considered",
-            "alternatives", "price_as_of", "price_data_note",
+            "alternatives", "candidate_stations", "price_as_of", "price_data_note",
         ):
             self.assertIn(key, body)
 
