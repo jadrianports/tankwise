@@ -10,13 +10,25 @@ import RecentTripsSection from '../features/recent-trips/RecentTripsSection';
 // shared solve state from useRoutePlanContext() -- this file never
 // inlines a section's internals, so downstream plans replace each
 // section's own file without ever touching Sidebar.tsx or App.tsx.
+//
+// The `print-hide` marker (09-08's print.css) is the only hook a print
+// stylesheet has for telling "form/vehicle/recent-trips chrome" apart from
+// "the driver route sheet content" (SummaryCard/StopList/LegBreakdown
+// inside ResultsSection, which prints as-is) without print.css reaching
+// into any section's own internals -- a plain className, no logic change.
 function Sidebar() {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-      <PlannerFormSection />
-      <VehicleSection />
+      <Box className="print-hide">
+        <PlannerFormSection />
+      </Box>
+      <Box className="print-hide">
+        <VehicleSection />
+      </Box>
       <ResultsSection />
-      <RecentTripsSection />
+      <Box className="print-hide">
+        <RecentTripsSection />
+      </Box>
     </Box>
   );
 }

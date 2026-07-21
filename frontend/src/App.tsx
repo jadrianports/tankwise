@@ -4,6 +4,9 @@ import Box from '@mui/material/Box';
 import AppShell from './components/AppShell';
 import Sidebar from './components/Sidebar';
 import MapView from './features/map/MapView';
+import ShareExportBar from './features/share-export/ShareExportBar';
+import { useShareUrl } from './features/share-export/useShareUrl';
+import './features/share-export/print.css';
 import { fetchConfig } from './api/configClient';
 import { useRoutePlan } from './hooks/useRoutePlan';
 import { RoutePlanContext } from './context/RoutePlanContext';
@@ -24,6 +27,12 @@ type ConfigState =
 function App() {
   const { status, data, error, submit, retry, resolveVehicle } = useRoutePlan();
   const [config, setConfig] = useState<ConfigState>({ status: 'loading' });
+
+  // Shareable trip URLs (UX-04, D-27/D-28): decodes window.location.search
+  // on mount and auto-solves with the encoded vehicle profile if present;
+  // shareUrl is the current plan's own shareable link, null until a plan
+  // has been solved.
+  const { shareUrl } = useShareUrl(submit, data);
 
   // Bridges a StopList row click (features/results, inside Sidebar) to
   // MapView's own camera fly-to/popup-open logic (features/map, 09-04's
@@ -59,6 +68,10 @@ function App() {
       <AppShell />
 
       <RoutePlanContext.Provider value={{ status, data, error, solve: submit, retry, focusStop, resolveVehicle }}>
+        <Box className="print-hide">
+          <ShareExportBar data={data} shareUrl={shareUrl} />
+        </Box>
+
         <Box
           sx={{
             display: 'flex',
@@ -86,6 +99,7 @@ function App() {
 
           <Box
             component="main"
+            className="print-hide"
             sx={{ flexGrow: 1, height: { xs: 400, md: 'auto' }, minHeight: { xs: 400, md: 'auto' } }}
           >
             <MapView

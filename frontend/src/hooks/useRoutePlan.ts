@@ -26,7 +26,13 @@ export interface UseRoutePlanResult {
   status: RoutePlanStatus;
   data: RouteResponse | null;
   error: RoutePlanError | null;
-  submit: (start: string, finish: string) => Promise<void>;
+  // `vehicle` is an optional one-shot override for the very first submit of
+  // a session -- e.g. a share-URL auto-solve (D-27/D-28), which must send
+  // the ENCODED vehicle profile on its one and only request rather than the
+  // hero default `vehicleRef` starts with. Every other caller (the planner
+  // form, demo chips, recent trips) omits it and gets the currently
+  // selected vehicle, unchanged.
+  submit: (start: string, finish: string, vehicle?: VehicleProfileRequest) => Promise<void>;
   retry: () => void;
   // Updates the vehicle profile used by every future submit/retry, and --
   // if a route has already been solved at least once -- immediately
@@ -71,7 +77,8 @@ export function useRoutePlan(): UseRoutePlanResult {
   // slider/chip UI state independently.
   const vehicleRef = useRef<VehicleProfileRequest>(HERO_VEHICLE);
 
-  const submit = useCallback(async (start: string, finish: string) => {
+  const submit = useCallback(async (start: string, finish: string, vehicle?: VehicleProfileRequest) => {
+    if (vehicle) vehicleRef.current = vehicle;
     lastArgsRef.current = { start, finish };
     controllerRef.current?.abort();
     const controller = new AbortController();

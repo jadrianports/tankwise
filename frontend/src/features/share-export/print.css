@@ -1,0 +1,76 @@
+/* Driver route sheet (UX-15, D-30): `@media print` over the existing
+ * single page -- the share link and the printable sheet are the SAME URL,
+ * no second route, no duplicated markup (D-03/D-30). Hides the map, the
+ * app bar, and every interactive control; leaves the stop itinerary, the
+ * per-leg table, the totals, and the price-as-of disclaimer (all already
+ * rendered by SummaryCard/StopList/LegBreakdown inside ResultsSection) as
+ * plain content.
+ *
+ * MUI applies a stable global class name to every component's root element
+ * (`MuiButton-root`, `MuiAppBar-root`, etc.) specifically so external CSS
+ * can target it -- this stylesheet uses only those, so it needs zero
+ * changes to any component outside this plan's own files. The three
+ * non-results sidebar sections (planner form, vehicle controls, recent
+ * trips) are wrapped in a `.print-hide` marker Box by Sidebar.tsx; results
+ * (cost/savings/stop-list/leg-breakdown/tank-chart/disclaimer) render as-is
+ * for paper.
+ */
+@media print {
+  .MuiAppBar-root,
+  .print-hide {
+    display: none !important;
+  }
+
+  /* Interactive-only controls: forms, buttons, sliders, chips -- nothing a
+   * driver reads off paper. Does not touch `.MuiListItemButton-root`
+   * (StopList's rows, which carry real itinerary content) or
+   * `.MuiButtonBase-root` generally -- only the specific interactive
+   * component classes below. */
+  .MuiButton-root,
+  .MuiIconButton-root,
+  .MuiTextField-root,
+  .MuiAutocomplete-root,
+  .MuiSlider-root,
+  .MuiChip-root,
+  .MuiLinearProgress-root {
+    display: none !important;
+  }
+
+  /* Collapsible sections (per-leg breakdown, tank chart, D-20) always
+   * render their content in the DOM even when visually collapsed on
+   * screen (MUI's Accordion mounts AccordionDetails by default) -- reveal
+   * it in full for print regardless of the on-screen expand state, and
+   * hide only the clickable toggle summary row. */
+  .MuiAccordionSummary-root {
+    display: none !important;
+  }
+  .MuiAccordionDetails-root,
+  .MuiCollapse-root {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    display: block !important;
+    visibility: visible !important;
+  }
+  .MuiAccordion-root {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+  }
+
+  body,
+  #root {
+    background: #fff !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  main,
+  aside {
+    display: block !important;
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+    width: 100% !important;
+  }
+}
