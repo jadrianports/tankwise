@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mapErrorToMessage, planRoute } from './routeClient.js';
+import { mapErrorToMessage, planRoute } from './routeClient.ts';
 
 test('invalid_input with populated detail flattens the specific field message', () => {
   const message = mapErrorToMessage({
@@ -63,6 +63,22 @@ test('unknown/missing code falls back to the generic message', () => {
   assert.equal(mapErrorToMessage(null), 'Something went wrong. Please try again.');
 });
 
+test('rate_limited frames the 429 as catching-up, with the countdown seconds', () => {
+  const message = mapErrorToMessage({
+    code: 'rate_limited',
+    message: 'Too many requests.',
+    detail: { retry_after_s: 5 },
+  });
+  assert.match(message, /Catching up/);
+  assert.match(message, /5s/);
+});
+
+test('config_error returns the map-pane copy without touching the rest of the app', () => {
+  const message = mapErrorToMessage({ code: 'config_error', message: 'n/a', detail: {} });
+  assert.match(message, /Map unavailable/);
+  assert.match(message, /route planner below still works/);
+});
+
 test('planRoute POSTs to the relative /api/route path and resolves success', async () => {
   const originalFetch = global.fetch;
   let capturedUrl;
@@ -110,6 +126,37 @@ test('planRoute falls back to the generic network message when fetch rejects', a
     assert.equal(result.ok, false);
     assert.equal(result.code, 'network_error');
     assert.equal(result.message, 'Something went wrong. Please try again.');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('planRoute passes the AbortSignal straight through to fetch', async () => {
+  const originalFetch = global.fetch;
+  let capturedOptions;
+  global.fetch = async (_url, options) => {
+    capturedOptions = options;
+    return { ok: true, json: async () => ({}) };
+  };
+  const controller = new AbortController();
+  try {
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', controller.signal);
+    assert.equal(capturedOptions.signal, controller.signal);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('planRoute rethrows AbortError distinctly, never as a network_error result', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => {
+    throw new DOMException('The operation was aborted.', 'AbortError');
+  };
+  try {
+    await assert.rejects(
+      () => planRoute('39.7392,-104.9903', '39.0997,-94.5786'),
+      (err) => err instanceof DOMException && err.name === 'AbortError'
+    );
   } finally {
     global.fetch = originalFetch;
   }
