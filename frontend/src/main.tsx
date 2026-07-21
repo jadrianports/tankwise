@@ -5,7 +5,7 @@ import CssBaseline from '@mui/material/CssBaseline'
 import InitColorSchemeScript from '@mui/material/InitColorSchemeScript'
 import './fonts'
 import theme from './theme'
-import App from './App.jsx'
+import App from './App'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

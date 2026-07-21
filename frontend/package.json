@@ -19,11 +19,9 @@
     "@mui/icons-material": "7.3.11",
     "@mui/material": "7.3.11",
     "@mui/x-charts": "^9.10.0",
-    "leaflet": "1.9.4",
     "mapbox-gl": "^3.26.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-leaflet": "5.0.0",
     "react-map-gl": "^8.1.1"
   },
   "devDependencies": {
