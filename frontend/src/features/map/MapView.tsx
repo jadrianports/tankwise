@@ -9,6 +9,7 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import type { CandidateStation, FuelStop, RouteResponse } from '../../types/routeContract';
+import type { FocusStopRequest } from '../../context/RoutePlanContext';
 import { useMapStyle } from './useMapStyle';
 import { useTerrain, getConditionalPitch } from './useTerrain';
 import StyleSwitcher from './StyleSwitcher';
@@ -52,12 +53,15 @@ export interface MapViewProps {
   data: RouteResponse | null;
   token: string | null;
   tokenStatus: 'loading' | 'ready' | 'error';
+  // A sidebar StopList row's click (features/results), bridged through
+  // App.tsx's shared RoutePlanContext -- see focusStop below.
+  focusStopRequest?: FocusStopRequest | null;
 }
 
 // react-map-gl's <Map> owns the mapboxgl.Map create/destroy lifecycle
 // itself (StrictMode-safe mount/cleanup, MAP-01) -- no hand-rolled
 // useEffect(() => new mapboxgl.Map(...)) anywhere in this file.
-function MapView({ data, token, tokenStatus }: MapViewProps) {
+function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const { mode } = useColorScheme();
   const isDark = mode === 'dark';
 
@@ -222,6 +226,26 @@ function MapView({ data, token, tokenStatus }: MapViewProps) {
       { padding: 64, duration: 800 }
     );
   }, [startLat, startLng, finishLat, finishLng]);
+
+  // A StopList row (features/results, inside the sidebar) requests focus
+  // via App.tsx's shared context -- resolve the request's key against
+  // THIS solve's fuel_stops (station_id ?? index, the same null-safe
+  // convention used everywhere else) and reuse the exact same
+  // flyTo/popup-open path a marker's own click already uses. Depends on
+  // `data`, not the `fuelStops` array literal below, so an unrelated
+  // re-render (e.g. a style toggle) never re-fires this.
+  useEffect(() => {
+    if (!focusStopRequest) return;
+    const stops = data?.fuel_stops ?? [];
+    const entry = stops
+      .map((stop, index) => ({ stop, index, key: stop.station_id ?? index }))
+      .find((candidate) => candidate.key === focusStopRequest.key);
+    if (!entry) return;
+    const lat = toNumber(entry.stop.location?.latitude);
+    const lng = toNumber(entry.stop.location?.longitude);
+    if (lat === null || lng === null) return;
+    focusStop(entry.key, lng, lat);
+  }, [focusStopRequest, data, focusStop]);
 
   // D-08: a missing/misconfigured pk. token shows a config-error only in
   // this map pane -- the sidebar planner keeps working regardless.

@@ -15,6 +15,7 @@ export interface UseRoutePlanResult {
   data: RouteResponse | null;
   error: RoutePlanError | null;
   submit: (start: string, finish: string) => Promise<void>;
+  retry: () => void;
 }
 
 function isAbortError(err: unknown): boolean {
@@ -39,8 +40,14 @@ export function useRoutePlan(): UseRoutePlanResult {
 
   const sequenceRef = useRef(0);
   const controllerRef = useRef<AbortController | null>(null);
+  // Last-submitted (start, finish) pair -- lets an `upstream_error` state
+  // offer a real Retry button (UX-07) that resubmits the same request,
+  // without ResultsSection needing to know the last-entered coordinates
+  // itself.
+  const lastArgsRef = useRef<{ start: string; finish: string } | null>(null);
 
   const submit = useCallback(async (start: string, finish: string) => {
+    lastArgsRef.current = { start, finish };
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
@@ -79,5 +86,11 @@ export function useRoutePlan(): UseRoutePlanResult {
     }
   }, []);
 
-  return { status, data, error, submit };
+  const retry = useCallback(() => {
+    const last = lastArgsRef.current;
+    if (!last) return;
+    void submit(last.start, last.finish);
+  }, [submit]);
+
+  return { status, data, error, submit, retry };
 }

@@ -2,25 +2,23 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
+import SummaryCard from './SummaryCard';
+import StopList from './StopList';
 
-// Placeholder slot -- the results plan replaces this with the savings
-// card, per-leg breakdown, tank chart, stop list and price disclaimer
-// (UX-03/11/13/14). This plan proves the shared solve-state wiring
-// (status/data/error) reaches here without App.tsx or Sidebar.tsx needing
-// any further edits (09-03-PLAN.md Task 1) -- it deliberately does not
-// build the real results UI.
+// Composes the results panel's static story (UX-03/11/13/14) from
+// already-returned response fields: hero cost + savings + fleet math +
+// alternatives badge + price disclaimer (SummaryCard), and the stop list.
+// The collapsible per-leg breakdown, tank chart, and loading/error/cold
+// start narration (D-20/UX-07/UX-10) land in this same file in the next
+// task of this plan.
 function ResultsSection() {
   const { status, data, error } = useRoutePlanContext();
 
   if (status === 'success' && data) {
     return (
-      <Box>
-        <Typography variant="body2" color="text.secondary">
-          Total fuel cost
-        </Typography>
-        <Typography variant="h5" component="p" sx={{ color: 'fuel.main' }}>
-          ${data.total_cost}
-        </Typography>
+      <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+        <SummaryCard data={data} />
+        <StopList stops={data.fuel_stops} />
       </Box>
     );
   }
@@ -35,8 +33,7 @@ function ResultsSection() {
 
   return (
     <Typography variant="body2" color="text.secondary">
-      Savings card, leg breakdown, tank chart and stop list land here in a
-      later plan.
+      Enter a start and finish, or try a demo route, to see the cheapest fueling plan.
     </Typography>
   );
 }
