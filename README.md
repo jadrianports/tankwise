@@ -1,8 +1,19 @@
-# Fuel Route Optimizer
+# TankWise
 
-A Django REST API that takes a start and finish location in the continental US and returns the driving route, the cheapest set of fuel stops along it, and the total fuel cost for the trip. It assumes a vehicle with a 500-mile range and 10 miles per gallon, and it picks stops from a fixed dataset of about 8,150 US truck-stop fuel prices to keep the total spend as low as possible. A React and Material UI single-page app draws the route and its stops on an interactive map, and the whole thing (API, cache, SPA) starts with one `docker compose up`.
+[![CI](https://github.com/jadrianports/tankwise/actions/workflows/ci.yml/badge.svg)](https://github.com/jadrianports/tankwise/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/jadrianports/tankwise/graph/badge.svg)](https://codecov.io/gh/jadrianports/tankwise)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Live demo: coming soon](https://img.shields.io/badge/live%20demo-coming%20soon-lightgrey.svg)](#free-tier-deployment)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
+[![Django 6.0](https://img.shields.io/badge/django-6.0-092e20.svg)](https://www.djangoproject.com/)
+[![Node 20](https://img.shields.io/badge/node-20-339933.svg)](https://nodejs.org/)
+[![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev/)
 
-> Built as a take-home assessment for a full-stack engineering role.
+TankWise is a route and cost-optimal fuel-stop planner built for truckers and small-fleet dispatchers: give it a start and finish location anywhere in the continental US and it returns the driving route, the cheapest feasible sequence of fuel stops along it, and the total fuel cost for the trip — chosen from 6,290 routable truck-stop stations (8,151 raw price rows, 6,738 successfully geocoded). A React, MUI, and Mapbox GL JS single-page app renders the route, the stops, and the savings story on an interactive map, and the whole stack (API, cache, SPA) starts with one `docker compose up`.
+
+> It began as a take-home assessment for a full-stack engineering role and has since been grown into a rebranded, launch-ready portfolio product.
+
+The `POST /api/route` contract itself is unchanged from the assessment: the API's default vehicle is still 10 mpg with a 500-mile range. The map UI, however, defaults to the "Semi-loaded" vehicle preset, so a screenshot or demo click-through shows different numbers than a bare `curl` against the API's own default — both are correct, they're just two different starting points over the same solver.
 
 ## Quickstart
 
@@ -18,7 +29,7 @@ Open `.env` and set two [Mapbox](https://www.mapbox.com/) tokens: a secret token
 docker compose up --build
 ```
 
-Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all ~6,738 geocoded stations, which takes a few seconds; `web` itself waits for `redis` to report healthy before it starts, so you won't hit a broken cache the moment it comes up. If port 80 is already taken on your machine, change the host side of `web.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
+Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all 6,738 geocoded stations (6,290 of them routable), which takes a few seconds; `web` itself waits for `redis` to report healthy before it starts, so you won't hit a broken cache the moment it comes up. If port 80 is already taken on your machine, change the host side of `web.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
 
 Even without Mapbox tokens the stack boots and the map page loads. A route request just returns a clear 502 `upstream_error` until both `MAPBOX_TOKEN` and `MAPBOX_PUBLIC_TOKEN` are set.
 
@@ -47,20 +58,22 @@ Both show the same plan: the summary card with total cost, gallons, route miles,
 
 ```mermaid
 flowchart LR
-    Browser["Browser<br/>(React + MUI SPA)"]
-    Gunicorn["gunicorn workers<br/>WhiteNoise (SPA + static)<br/>+ Django/DRF (/api/*)"]
-    Mapbox["Mapbox<br/>Directions API<br/>(1 call)"]
-    Corridor["Indexed bbox prefilter<br/>+ perpendicular<br/>corridor filter"]
+    Browser["Browser<br/>(React 19 + MUI + Mapbox GL JS SPA)"]
+    Gunicorn["gunicorn workers<br/>WhiteNoise (SPA + static)<br/>+ DRF (/api/*)<br/>+ drf-spectacular (/api/docs)"]
+    Search["Mapbox Search JS<br/>(address autocomplete)"]
+    Directions["Mapbox<br/>Directions API<br/>(1 call)"]
+    Corridor["STRtree corridor prefilter<br/>+ perpendicular<br/>geometry test"]
     Solver["Greedy cost-optimal<br/>fuel-stop solver"]
-    Redis[("Redis<br/>response cache")]
-    SQLite[("SQLite<br/>~6,738 stations")]
+    Cache[("Redis<br/>response cache")]
+    DB[("Postgres (prod)<br/>SQLite (local dev)<br/>6,738 stations")]
 
+    Browser -- "address autocomplete" --> Search
     Browser -- "GET /, static assets" --> Gunicorn
     Browser -- "POST /api/route" --> Gunicorn
-    Gunicorn -- "cache get/set" --> Redis
-    Gunicorn -- "route geometry + distance" --> Mapbox
+    Gunicorn -- "cache get/set" --> Cache
+    Gunicorn -- "route geometry + distance" --> Directions
     Gunicorn --> Corridor
-    Corridor -- "candidate stations" --> SQLite
+    Corridor -- "candidate stations" --> DB
     Corridor --> Solver
     Solver -- "fuel plan + total cost" --> Gunicorn
 ```
@@ -69,10 +82,10 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    RawCSV["fuel-prices-for-be-assessment.csv<br/>~8,150 rows, no coordinates"]
+    RawCSV["fuel-prices-for-be-assessment.csv<br/>8,151 rows, no coordinates"]
     Import["import_stations<br/>(management command)"]
     Census["geocode_stations<br/>US Census Bulk Geocoder<br/>(one-time, offline)"]
-    Committed["data/stations_geocoded.csv<br/>committed to git,<br/>~6,738 routable rows"]
+    Committed["data/stations_geocoded.csv<br/>committed to git,<br/>6,738 geocoded rows<br/>(6,290 routable)"]
     Seed["entrypoint.sh:<br/>seed_stations<br/>(only if table empty)"]
     Volume[("Named Docker volume<br/>db.sqlite3")]
 
@@ -227,7 +240,7 @@ Four explicit assumptions are baked into the model:
 ## Design decisions
 
 - **Just one Mapbox Directions call.** A single call (`geometries=geojson`, full route overview) returns both the geometry and the total distance, which is everything downstream needs. Address inputs add up to two Mapbox Geocoding calls, still inside the "2-3 acceptable" budget. The client-side `map_url` fetch never counts against that budget, because the server never makes it.
-- **Offline US Census geocoding for the station dataset.** Mapbox's free geocoding tier doesn't allow permanently storing its results under the terms of service, so using it to backfill a persisted `lat`/`lng` column would be a violation. The US Census Bulk Geocoder has no such restriction and takes the whole dataset in one batch file, so the one-time `geocode_stations` backfill uses it and resolves about 6,738 of the CSV's rows to routable coordinates.
+- **Offline US Census geocoding for the station dataset.** Mapbox's free geocoding tier doesn't allow permanently storing its results under the terms of service, so using it to backfill a persisted `lat`/`lng` column would be a violation. The US Census Bulk Geocoder has no such restriction and takes the whole dataset in one batch file, so the one-time `geocode_stations` backfill uses it and resolves 6,738 of the CSV's 8,151 rows to coordinates, of which 6,290 are routable stations the solver can actually use (526 rooftop-geocoded, 5,764 city-centroid).
 - **A greedy solver that's provably optimal for this problem.** At each point along the route the algorithm buys just enough fuel to reach the nearest strictly-cheaper reachable station, or fills the tank and jumps to the cheapest reachable station when nothing cheaper is in range. That rule is optimal here (buy cheap fuel as early as you can, and never pay more than you have to just to reach it), and it runs in a single pass with no backtracking. It optimizes for total cost rather than stop count or distance, so the number of stops tracks the price landscape along a corridor, not trip length alone. A 1,329-mile Dallas → DC route needs 10 stops while the longer 1,437-mile Dallas → LA route needs only 5, and both are correct outputs for their respective prices. Every leg still stays at or under 500 miles; total trip length is otherwise unbounded.
 - **A lazily-built STRtree prefilter plus a corridor-distance test, no PostGIS.** A process-level shapely `STRtree` built once from the routable station set replaces the original per-request DB bbox query, so the request path issues zero database queries after the first use. The route geometry is buffered by the wider of the corridor's two axis pads (never the narrower one, so the buffer only ever over-includes) and queried against the tree; survivors then get the same precise perpendicular-distance test as before, projected to a local equirectangular plane first (a degree of longitude isn't the same distance as a degree of latitude). That precise test is what's accurate over the endpoint-distance shortcut, which includes or drops stations wrongly depending on the route's shape; the STRtree swap on top of it is a pure performance change with an identical result set — see "Corridor benchmark" below for measured numbers. Still no PostGIS/GDAL system dependency for a dataset this small.
 - **Redis, because it actually matters here.** The Docker stack runs multiple gunicorn workers (`WEB_CONCURRENCY`, 2 by default). Django's process-local `LocMemCache` would give each worker its own copy, so a repeat request could quietly miss depending on which worker handled it, which would make a cache-hit demo dishonest. Redis is shared across the workers, so a repeat is genuinely served from cache no matter who answers it. A cold request runs the full pipeline (~0.3-1s, mostly the Mapbox round trip); a cache hit comes back in about 10ms.
@@ -246,7 +259,7 @@ These are locally reproducible numbers from a single development machine, not a 
 | Seattle → Miami | 625.45ms | 329.95ms | 22.28ms | 1.90x | 14.81x |
 | **Median across routes** | **199.28ms** | **99.01ms** | **22.28ms** | **2.01x** | **4.44x** |
 
-The Seattle → Miami route shows the largest STRtree win because its bounding box spans nearly the full continental US diagonally — the legacy rectangular bbox query pulls in a much larger candidate set than a route-shaped buffer does for the same trip. A fuller solver/corridor writeup is planned for a future `docs/ALGORITHM.md`.
+The Seattle → Miami route shows the largest STRtree win because its bounding box spans nearly the full continental US diagonally — the legacy rectangular bbox query pulls in a much larger candidate set than a route-shaped buffer does for the same trip. See [`docs/ALGORITHM.md`](docs/ALGORITHM.md) for the fuller solver/corridor writeup.
 
 ## Testing
 
