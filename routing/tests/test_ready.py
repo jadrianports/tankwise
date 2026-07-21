@@ -1,5 +1,5 @@
 """Tests for `GET /api/ready` -- the dependency-aware readiness probe
-Render gates traffic routing on (D-16..D-19).
+Render gates traffic routing on.
 
 Mirrors `test_health.py`'s `APITestCase` shape. `MAPBOX_TOKEN`/
 `MAPBOX_PUBLIC_TOKEN` are overridden per-test class/method so each
@@ -59,7 +59,7 @@ class ReadyDbFailureTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE)
         self.assertFalse(response.data["checks"]["db"])
         self.assertIsNone(response.data["station_count"])
-        # Other checks still report their own real state, per D-16.
+        # Other checks still report their own real state.
         self.assertTrue(response.data["checks"]["cache"])
         self.assertTrue(response.data["checks"]["tokens"])
 

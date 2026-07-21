@@ -96,8 +96,8 @@ def _make_station(
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingCacheMissTests(APITestCase):
-    """D-07: a cache-miss 200 response carries route/corridor/solver/total,
-    and the timing data never rides in the JSON body (D-09)."""
+    """A cache-miss 200 response carries route/corridor/solver/total,
+    and the timing data never rides in the JSON body."""
 
     def setUp(self):
         cache.clear()
@@ -127,7 +127,7 @@ class ServerTimingCacheMissTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingCacheHitTests(APITestCase):
-    """D-08: a cache-hit response carries ONLY a cache metric."""
+    """A cache-hit response carries ONLY a cache metric."""
 
     def setUp(self):
         cache.clear()
@@ -155,8 +155,8 @@ class ServerTimingCacheHitTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingGeocodeTests(APITestCase):
-    """D-07: geocode appears at most once even when both endpoints are
-    addresses (Pitfall 6)."""
+    """Geocode appears at most once even when both endpoints are
+    addresses."""
 
     def setUp(self):
         cache.clear()
@@ -188,7 +188,7 @@ class ServerTimingGeocodeTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingErrorTests(APITestCase):
-    """D-10: an error response carries timings for the stages that ran
+    """An error response carries timings for the stages that ran
     before the failure."""
 
     def setUp(self):

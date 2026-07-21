@@ -480,7 +480,7 @@ class RouteResponseSerializerSummaryFieldsTests(SimpleTestCase):
 
 class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
     """vehicle/legs/savings/alternatives/price_as_of top-level fields --
-    the D-04/D-11/D-16/D-27 response contract."""
+    the additive response contract."""
 
     def _minimal_instance(self):
         route = Route(
@@ -641,7 +641,7 @@ class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
 
 
 class CandidateStationsTests(SimpleTestCase):
-    """candidate_stations[] (D-09/D-10): lean five-field entries built
+    """candidate_stations[]: lean five-field entries built
     from the winning alternative's corridor candidate list plus the
     orchestrator's opis_id-keyed coordinate map -- no `name`, no
     `address`. Reuses `_quantize_money`/`_quantize_miles`."""
@@ -961,7 +961,7 @@ class ResponseContractTests(SimpleTestCase):
     def test_v1_shaped_context_still_returns_candidate_stations_key(self):
         """A {start, finish}-only request (no candidates/candidate_coords
         in context) still returns every pre-existing top-level key,
-        additively alongside the new candidate_stations[] key (D-09)."""
+        additively alongside the new candidate_stations[] key."""
         instance, context = self._v1_shaped_instance_and_context()
 
         data = RouteResponseSerializer(instance, context=context).data

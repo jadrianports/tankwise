@@ -51,7 +51,7 @@ def custom_exception_handler(exc, context):
     single tail-attach point can carry partial Server-Timing data
     (`context["view"]._timing`, per `routing.timing.ServerTiming`) onto
     whatever error response is built -- the stages that completed before
-    the failure, per D-10. The tail Server-Timing attach is a no-op for
+    the failure. The tail Server-Timing attach is a no-op for
     a 429 because the throttle rejects before the pipeline runs, so
     `view._timing` was never created.
     """

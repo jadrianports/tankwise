@@ -11,8 +11,7 @@
 #
 # No preDeployCommand: that field is only available on paid web/private
 # services and background workers, not the free plan (confirmed against
-# Render's own docs -- see 08-RESEARCH.md, "Contradictions with
-# CONTEXT.md"). Migrate and conditional seeding instead run inside
+# Render's own docs). Migrate and conditional seeding instead run inside
 # entrypoint.sh's container start sequence, which is correct here rather
 # than a workaround: the free plan runs a single instance only, so there
 # is no second container that could race a concurrent migrate/seed.
@@ -81,8 +80,7 @@ services:
       - key: ROUTE_THROTTLE_SUSTAINED_RATE
         value: 200/day
       # Measurement-backed against Render free's 512 MB limit -- see
-      # entrypoint.sh's own comment and 08-RESEARCH.md's "gunicorn
-      # Worker Sizing" section.
+      # entrypoint.sh's own comment on gunicorn worker sizing.
       - key: WEB_CONCURRENCY
         value: "2"
       - key: GUNICORN_TIMEOUT

@@ -12,7 +12,7 @@ urlpatterns = [
     path("health", HealthView.as_view(), name="health"),
     path("ready", ReadyView.as_view(), name="ready"),
     path("config", ConfigView.as_view(), name="config"),
-    # Interactive API docs (QUA-04). None of the three declares
+    # Interactive API docs. None of the three declares
     # throttle_classes, so -- exactly like HealthView/ReadyView/ConfigView
     # above -- they are exempt from throttling by construction.
     path("schema", SpectacularAPIView.as_view(), name="schema"),

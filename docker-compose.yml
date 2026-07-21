@@ -23,13 +23,13 @@ services:
         condition: service_healthy
     # Host port 80 -> http://localhost. Remap the left-hand side (e.g.
     # "8080:80") if port 80 is already in use on the host. Carried over
-    # from the retired nginx service now that D-07 unifies serving onto
+    # from the retired nginx service now that serving is unified onto
     # this one container -- WhiteNoise serves the SPA + API together.
     ports:
       - "80:8000"
     # Stays on /api/health, not /api/ready -- this compose healthcheck
     # keeps its dependency-free v1.0 target; only the hosting platform's
-    # own check uses /api/ready (D-19).
+    # own check uses /api/ready.
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/health', timeout=2).status == 200 else 1)"]
       interval: 10s

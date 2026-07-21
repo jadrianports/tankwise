@@ -30,7 +30,7 @@ COPY entrypoint.sh .
 RUN chmod +x entrypoint.sh
 
 # The frontend is built in this same Dockerfile, in stage 1 above, rather
-# than a separate frontend/Dockerfile -- D-07 drops the nginx sidecar
+# than a separate frontend/Dockerfile -- this drops the nginx sidecar
 # entirely, so WhiteNoise inside this one gunicorn process now serves what
 # nginx used to, leaving only one deployable image. Render's Blueprint
 # model also expects exactly one Dockerfile per declared web service.

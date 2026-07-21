@@ -86,7 +86,7 @@ have very different corridors).
 
 ## STRtree Spatial Index
 
-Before Phase 7, every request issued a DB bounding-box query (`latitude__range`/
+Previously, every request issued a DB bounding-box query (`latitude__range`/
 `longitude__range`) against the `Station` table to shrink the candidate set
 before running the perpendicular test. That query is what the STRtree replaces:
 a process-level [shapely `STRtree`](https://shapely.readthedocs.io/) built once,

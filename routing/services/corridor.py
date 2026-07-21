@@ -127,7 +127,7 @@ def _build_index():
 
 def _get_index():
     """Double-checked-locking lazy accessor. Construction is deliberately
-    lazy on first use (D-31) -- never eager in AppConfig.ready(), where
+    lazy on first use -- never eager in AppConfig.ready(), where
     every management command, migration, and test run would pay the DB
     read, and DB access in ready() runs before migrations are applied."""
     global _INDEX
@@ -140,7 +140,7 @@ def _get_index():
 
 
 def reset_index():
-    """The sole invalidation hook (D-29): clears the process-level index so
+    """The sole invalidation hook: clears the process-level index so
     the next `candidates()` call rebuilds it from the current Station
     table. Called from `seed_stations` after a reseed commits, and from an
     autouse test fixture -- never from `candidates()` itself, which would

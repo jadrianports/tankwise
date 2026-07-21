@@ -21,7 +21,7 @@ MAX_ADDRESS_LENGTH = 256
 
 # Vehicle profile defaults -- declared once here so the nested
 # VehicleSerializer's per-field defaults and RouteRequestSerializer's
-# absent-vehicle fill-in both read these same three names (D-01).
+# absent-vehicle fill-in both read these same three names.
 DEFAULT_MPG = Decimal("10")
 DEFAULT_TANK_RANGE_MI = Decimal("500")
 DEFAULT_STARTING_FUEL = Decimal("1")
@@ -102,7 +102,7 @@ def _duration_repr(value):
 
 def _vehicle_repr(vehicle) -> dict:
     """Echo the resolved vehicle profile plus a derived `starting_fuel_mi`
-    (D-04) -- what makes the free-full-tank assumption visible instead of
+    -- what makes the free-full-tank assumption visible instead of
     looking like a bug on a short trip."""
     mpg = vehicle["mpg"]
     tank_range_mi = vehicle["tank_range_mi"]
@@ -134,10 +134,10 @@ def _legs_repr(legs) -> list:
 
 
 def _savings_repr(savings):
-    """Render a `routing.services.naive_baseline.Savings` into the D-16
-    shape, or `None` when `savings` itself is `None` (the naive baseline
-    never solved -- see `savings_note`, a sibling top-level key, not
-    nested here)."""
+    """Render a `routing.services.naive_baseline.Savings` into the savings
+    response shape, or `None` when `savings` itself is `None` (the naive
+    baseline never solved -- see `savings_note`, a sibling top-level key,
+    not nested here)."""
     if savings is None:
         return None
     return {
@@ -150,7 +150,7 @@ def _savings_repr(savings):
 
 
 def _alternatives_repr(alternatives) -> list:
-    """Render the compact D-11 alternatives comparison array -- five
+    """Render the compact alternatives comparison array -- five
     scalar keys per entry, no geometry, no stop list. `total_cost` is
     `None` for an infeasible alternative rather than the entry being
     omitted."""
@@ -171,7 +171,7 @@ def _alternatives_repr(alternatives) -> list:
 
 
 def _candidate_stations_repr(candidates, candidate_coords) -> list:
-    """Render the corridor's `candidate_stations[]` array (D-09/D-10): a
+    """Render the corridor's `candidate_stations[]` array: a
     lean five-field entry per in-corridor candidate station -- no
     `name`, no `address`. Reuses `_quantize_money`/`_quantize_miles`; no
     new formatter is introduced.
@@ -279,8 +279,8 @@ class VehicleSerializer(serializers.Serializer):
     solver: 0 mpg is a division by zero, a negative or absurd
     tank_range_mi blows up the reachable-set loop, and a starting_fuel
     outside [0, 1] has no physical meaning. These DRF bounds are the
-    primary input gate; the solver's own `_validate` backstop (plan
-    07-01) is a second, independent line of defense, not the first.
+    primary input gate; the solver's own `_validate` backstop
+    is a second, independent line of defense, not the first.
     """
 
     mpg = serializers.DecimalField(
@@ -345,7 +345,7 @@ class RouteRequestSerializer(serializers.Serializer):
 
 def price_freshness() -> dict:
     """Return the configured fuel-price dataset vintage and its paired
-    limitation note (VEH-08 / D-25 / D-26).
+    limitation note.
 
     Validated at point of use, not import time -- mirrors
     `routing.services.corridor._corridor_widths`'s pattern of raising
@@ -401,7 +401,7 @@ class RouteResponseSerializer(serializers.Serializer):
     builder (`routing.services.legs`), or the naive baseline
     (`routing.services.naive_baseline`); this class re-derives nothing.
 
-    Instance-dict contract (what plan 07-08's orchestrator must
+    Instance-dict contract (what the view's orchestration step must
     populate):
 
     - `"route"` (required): the winning `routing.services.mapbox.Route`.
@@ -428,8 +428,8 @@ class RouteResponseSerializer(serializers.Serializer):
     corridor-filtered `Candidate` list) and `"candidate_coords"` (an
     opis_id-keyed `{"latitude", "longitude"}` map, same shape as
     `stop_coords`) -- both render the additive `candidate_stations[]`
-    array (D-09/D-10: an amendment to Phase 7 D-11's "no station lists"
-    stance, scoped to corridor candidates for map rendering, not the
+    array (an amendment to the original "no station lists" stance,
+    scoped to corridor candidates for map rendering, not the
     alternatives array). Absent context renders `candidate_stations: []`.
 
     Every new key is read from `instance` with a `.get()` default, so an

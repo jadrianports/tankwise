@@ -58,11 +58,10 @@ FINISH_COORD = "38.6270,-90.1994"
 START_ADDRESS = "233 S Wacker Dr, Chicago, IL"
 FINISH_ADDRESS = "1 Busch Stadium Plaza, St Louis, MO"
 # Regina, Saskatchewan -- outside the continental-US bbox even though
-# Montreal/Toronto/Vancouver fall inside bbox.py's generous LAT_MAX
-# (04-02 precedent).
+# Montreal/Toronto/Vancouver fall inside bbox.py's generous LAT_MAX.
 NON_US_COORD = "50.4452,-104.6189"
 
-# Distinct fake tokens for the D-14 full-response leak-regression test --
+# Distinct fake tokens for the full-response leak-regression test --
 # using two different values (rather than reusing "test-token") makes it
 # obvious which token, if either, actually appears in the response.
 FAKE_SECRET = "sk.fake-secret-never-leak"
@@ -198,7 +197,7 @@ class RouteViewCallBudgetTests(APITestCase):
         self.assertIn("map_url", body)
         self.assertIsNotNone(body["map_url"])
 
-        # candidate_stations[] (D-09/D-10): the one in-corridor station
+        # candidate_stations[]: the one in-corridor station
         # (also the chosen fuel stop) resolves via the single indexed
         # coordinate lookup, with exactly the five locked fields.
         self.assertTrue(body["candidate_stations"])
@@ -403,7 +402,7 @@ class RouteViewDomainErrorTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN=FAKE_SECRET, MAPBOX_PUBLIC_TOKEN=FAKE_PUBLIC)
 class TokenLeakRegressionTests(APITestCase):
-    """D-14: the secret MAPBOX_TOKEN must never appear anywhere in a full
+    """The secret MAPBOX_TOKEN must never appear anywhere in a full
     /api/route response, while map_url must carry the public token."""
 
     def setUp(self):

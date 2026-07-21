@@ -1,5 +1,5 @@
 """Tests for `POST /api/route` rate limiting (stacked burst + sustained
-throttling, D-12..D-15).
+throttling).
 
 DRF stores throttle history in the default cache, so `setUp` clears it
 each test to prevent bucket state leaking across tests/prior requests.

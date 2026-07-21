@@ -9,14 +9,13 @@ component its own namespace so a coordinate token, an address token, and
 the vehicle token can never collide (mitigates cross-domain cache-key
 collisions).
 
-The key is versioned `route:v2:` because every Phase 7 response field
+The key is versioned `route:v2:` because every v2 response field
 (vehicle echo, savings, alternatives, per-leg breakdown, rationale)
 changes the cached payload shape -- an entry keyed under the previous
 prefix is not merely stale but structurally wrong for a v2 consumer.
 Bumping the prefix makes those entries unreachable rather than
-mis-served, which is the actual requirement behind VEH-02 (it also
-means a misconfigured deploy can never silently return an old-shaped
-payload through the new code path).
+mis-served (it also means a misconfigured deploy can never silently
+return an old-shaped payload through the new code path).
 """
 from decimal import Decimal
 
@@ -49,7 +48,7 @@ def _endpoint_token(endpoint) -> str:
 def _vehicle_token(vehicle) -> str:
     # Imported locally (not at module scope) purely to keep the two
     # modules' import order irrelevant -- routing.serializers is the
-    # sole declaration site for the three defaults (D-01), reused here
+    # sole declaration site for the three defaults, reused here
     # rather than redeclared, so `build_cache_key` stays total over
     # any validated-data dict, including ones existing tests construct
     # by hand without a "vehicle" key.

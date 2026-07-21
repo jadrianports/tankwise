@@ -21,7 +21,7 @@ class CorridorTestCase(TestCase):
     test so no test can inherit a stale tree built from a previous test's
     (rolled-back) Station rows -- the module global survives Django's
     per-test transaction rollback, so this is the only correct place to
-    invalidate it (D-29)."""
+    invalidate it."""
 
     def setUp(self):
         super().setUp()
@@ -325,7 +325,7 @@ class StrtreeIndexTests(CorridorTestCase):
         longitude-axis pad is meaningfully larger than the latitude-axis
         pad; buffering by anything smaller than the larger pad would
         under-include and silently drop this station before the precise
-        perpendicular test ever runs (Pitfall 2)."""
+        perpendicular test ever runs."""
         route = Route(
             total_route_mi=Decimal("276"),
             geometry=LineString([(-97.00, 45.00), (-97.00, 49.00)]),

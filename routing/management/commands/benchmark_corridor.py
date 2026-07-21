@@ -9,7 +9,7 @@ wiggle) between hardcoded continental-US endpoint pairs and densifying to
 whatever Station rows are already seeded in the configured database.
 
 Must NOT run in CI: timing numbers are informational, not a pass/fail
-gate (D-30) -- see routing/tests/test_corridor.py for the correctness
+gate -- see routing/tests/test_corridor.py for the correctness
 coverage this command deliberately does not duplicate.
 """
 import math
@@ -59,15 +59,15 @@ def _synthetic_route(start, finish, points):
 
 
 def _legacy_candidates(route, *, hoist_mean_lat):
-    """Benchmark-only historical reference of the pre-Phase-7 corridor
+    """Benchmark-only historical reference of the legacy corridor
     path: a per-request DB bbox query followed by the precise perpendicular
     test. The production `candidates()` in routing.services.corridor no
     longer contains this code path -- it now queries the STRtree instead.
 
     `hoist_mean_lat` toggles whether mean_lat_rad(coords) is computed once
-    and threaded through (the Task 2 fix) or re-derived on every
-    project_point()/build_planar_route() call (the pre-fix behavior) --
-    this isolates the hoisting win from the STRtree win.
+    and threaded through (the mean-latitude hoisting fix) or re-derived on
+    every project_point()/build_planar_route() call (the pre-fix behavior)
+    -- this isolates the hoisting win from the STRtree win.
     """
     rooftop_mi, city_mi = corridor._corridor_widths()
     coords = route.raw_coordinates

@@ -4,7 +4,7 @@ from routing.views import SpaFallbackView
 
 urlpatterns = [
     path("api/", include("routing.urls")),
-    # D-08 URL layout: the SPA owns the root, the backend stays namespaced
+    # URL layout: the SPA owns the root, the backend stays namespaced
     # under /api/, and collectstatic output is served at /static/. This
     # catch-all must stay last so it can never shadow the api/ include, and
     # the negative lookahead excludes both the api/ and static/ prefixes so

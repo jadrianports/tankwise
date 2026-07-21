@@ -66,7 +66,7 @@ from routing.throttles import RouteBurstThrottle, RouteSustainedThrottle
 from routing.timing import ServerTiming
 
 # Sentinel substituted for a `None` route duration in `_select_winner`'s
-# tie-break key (D-10) -- keeps the four-level comparison total even if a
+# tie-break key -- keeps the four-level comparison total even if a
 # route ever carries no duration, without ever preferring it over a route
 # with a real one.
 _NULL_DURATION_SENTINEL = Decimal("Infinity")
@@ -157,7 +157,7 @@ class ReadyView(APIView):
 class ConfigView(APIView):
     """`GET /api/config` -- serves the browser-facing `pk.` public token so
     the SPA can initialize Mapbox GL JS at runtime, plus the fuel-price
-    dataset vintage so the frontend needs no second request for it (D-05).
+    dataset vintage so the frontend needs no second request for it.
 
     Declares no `throttle_classes` attribute, exactly like `HealthView`/
     `ReadyView` -- this stays unthrottled by construction since it gates
@@ -196,7 +196,7 @@ class ConfigView(APIView):
 class SpaFallbackView(View):
     """`GET <any path not under api/ or static/>` -- serves the built SPA's
     `index.html` so client-side routes (e.g. `/trip/abc123`) render the app
-    instead of a Django 404 (D-09).
+    instead of a Django 404.
 
     WhiteNoise's middleware already serves real files -- the SPA's hashed
     assets and `index.html` for exact directory requests, via
@@ -232,11 +232,11 @@ class SpaFallbackView(View):
         return FileResponse(index_path.open("rb"), content_type="text/html")
 
 
-# OpenAPI response documentation for RouteView.post (QUA-04 / D-16).
+# OpenAPI response documentation for RouteView.post.
 # RouteResponseSerializer.to_representation (routing/serializers.py) builds
 # its dict by hand rather than declaring fields, so drf-spectacular's
 # auto-introspection sees nothing to walk and would otherwise document the
-# response as an empty/opaque object (Pitfall 5). This tree mirrors that
+# response as an empty/opaque object. This tree mirrors that
 # method's real top-level keys, and every nested helper's real keys, exactly
 # -- it only documents the response, it never participates in producing it.
 _FUEL_STOP_RATIONALE_SCHEMA = inline_serializer(

@@ -34,7 +34,7 @@ ALLOWED_HOSTS = [h.strip() for h in DJANGO_ALLOWED_HOSTS.split(",") if h.strip()
 INSTALLED_APPS = [
     # Must precede the contrib apps so local `runserver` exercises the same
     # WhiteNoise code path as production instead of Django's own static
-    # handler (D-07 -- WhiteNoise everywhere, no nginx sidecar).
+    # handler (WhiteNoise everywhere, no nginx sidecar).
     "whitenoise.runserver_nostatic",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -42,9 +42,9 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
-    # OpenAPI 3 schema generation for /api/schema, /api/docs, /api/redoc
-    # (QUA-04) -- its Swagger/ReDoc UI assets are CDN-hosted by default, so
-    # this app never touches collectstatic/WhiteNoise.
+    # OpenAPI 3 schema generation for /api/schema, /api/docs, /api/redoc --
+    # its Swagger/ReDoc UI assets are CDN-hosted by default, so this app
+    # never touches collectstatic/WhiteNoise.
     "drf_spectacular",
     "routing",
 ]
@@ -178,9 +178,10 @@ else:
 
 # Django REST Framework
 # Throttle rates are deliberately generous defaults -- a recruiter clicking
-# demo chips and Phase 9's debounced what-if sliders must never trip them,
-# while a script cannot drain the Mapbox token budget. Both are env-tunable
-# so they can be retuned from the Render dashboard without a redeploy.
+# demo chips and the frontend's debounced what-if sliders must never trip
+# them, while a script cannot drain the Mapbox token budget. Both are
+# env-tunable so they can be retuned from the Render dashboard without a
+# redeploy.
 # NUM_PROXIES=1 trusts exactly one hop, matching Render's single edge proxy.
 REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "routing.exceptions.custom_exception_handler",
@@ -189,12 +190,12 @@ REST_FRAMEWORK = {
         "route_sustained": _env("ROUTE_THROTTLE_SUSTAINED_RATE", "200/day"),
     },
     "NUM_PROXIES": int(_env("NUM_PROXIES", "1")),
-    # Lets drf-spectacular introspect every view for /api/schema (QUA-04)
+    # Lets drf-spectacular introspect every view for /api/schema
     # instead of DRF's default CoreAPI-based schema generator.
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
 }
 
-# drf-spectacular (QUA-04) -- Swagger UI at /api/docs, ReDoc at /api/redoc,
+# drf-spectacular -- Swagger UI at /api/docs, ReDoc at /api/redoc,
 # raw schema at /api/schema. SERVE_INCLUDE_SCHEMA is False so /api/schema
 # doesn't recursively document itself. SWAGGER_UI_DIST/REDOC_DIST are left
 # unset (CDN defaults) on purpose -- self-hosting them would pull their
@@ -226,7 +227,7 @@ USE_TZ = True
 STATIC_URL = "static/"
 STATIC_ROOT = BASE_DIR / "staticfiles"
 
-# The built SPA's directory (D-08: SPA owns the root, backend stays under
+# The built SPA's directory (the SPA owns the root, backend stays under
 # /api/, collectstatic output serves at /static/). WhiteNoise's own docs
 # caution WHITENOISE_ROOT against bulk static files because it applies no
 # cache versioning -- but Vite content-hashes every emitted asset filename
