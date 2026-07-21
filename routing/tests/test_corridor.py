@@ -5,6 +5,7 @@ Mapbox call is ever made. All tests touch the DB (seeded `Station`
 rows), so they use `django.test.TestCase`.
 """
 from decimal import Decimal
+from unittest import skipUnless
 
 from django.db import connection
 from django.test import TestCase, override_settings
@@ -252,6 +253,12 @@ class CorridorIndexUsageTest(CorridorTestCase):
     bbox prefilter hits the (latitude, longitude) composite index
     rather than a full table scan."""
 
+    @skipUnless(
+        connection.vendor == "sqlite",
+        "EXPLAIN QUERY PLAN and its SEARCH/SCAN vocabulary are SQLite-only; "
+        "Postgres reports an entirely different plan format and would pick a "
+        "sequential scan on a table this small regardless of the index.",
+    )
     def test_bbox_prefilter_uses_index_not_full_scan(self):
         qs = Station.objects.routable().filter(
             latitude__range=(Decimal("30"), Decimal("40")),
