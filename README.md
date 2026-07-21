@@ -50,7 +50,9 @@ A routed multi-stop trip (Dallas → Los Angeles), light and dark:
 |---|---|
 | ![Light mode: routed trip with fuel stops](docs/screenshots/light.png) | ![Dark mode: routed trip with fuel stops](docs/screenshots/dark.png) |
 
-Both show the same plan: the summary card with total cost, gallons, route miles, and stop count; the ordered itinerary listing each station's name, price per gallon, gallons, and cost; and the Leaflet map with the route polyline, numbered fuel-stop markers, and start/finish pins.
+Both show the same plan: the summary card with total cost, gallons, route miles, and stop count; the ordered itinerary listing each station's name, price per gallon, gallons, and cost; and the map with the route polyline, numbered fuel-stop markers, and start/finish pins.
+
+> These two captures predate the move to Mapbox GL JS and still show the earlier map renderer. The plan panel and itinerary are current; the map surface is not.
 
 ## Architecture
 
@@ -124,7 +126,7 @@ flowchart LR
 | `FUEL_PRICE_AS_OF` | `2025-01-01` | Display-only metadata qualifying every price/cost figure the API returns. See "Free-tier deployment" below for how this date was derived. |
 | `FUEL_PRICE_DATA_NOTE` | see `config/settings/base.py` | The full data-vintage caveat shipped in the JSON payload itself. |
 
-On secrets: `.env` is gitignored and never committed, and `.env.example` (committed) carries only placeholders. The Mapbox token is a runtime-only environment variable on the `web` container. The SPA holds no token of its own, since map tiles come from OpenStreetMap through Leaflet rather than Mapbox. The `render.yaml` Blueprint that declares the live deployment's service follows the same rule at the infrastructure level: every credential (the Django secret key, the Postgres and Redis connection details, both Mapbox tokens) is declared in the Blueprint's non-synced form, so the hosting dashboard prompts for it rather than it ever being written into a committed file — `render.yaml` itself carries only non-secret configuration (throttle rates, gunicorn tuning, the settings module path, and so on).
+On secrets: `.env` is gitignored and never committed, and `.env.example` (committed) carries only placeholders. The tokens are runtime-only environment variables on the `web` container, and they are split by trust level. The secret `sk.` token (`MAPBOX_TOKEN`) stays server-side and is never sent to the browser — it signs the Directions calls and the static map image URL. The SPA receives only the browser-scoped `pk.` token (`MAPBOX_PUBLIC_TOKEN`), fetched at runtime from `GET /api/config`, which validates the value and refuses to serve anything that does not begin with `pk.` so a misconfigured secret token cannot reach the client. The `render.yaml` Blueprint that declares the live deployment's service follows the same rule at the infrastructure level: every credential (the Django secret key, the Postgres and Redis connection details, both Mapbox tokens) is declared in the Blueprint's non-synced form, so the hosting dashboard prompts for it rather than it ever being written into a committed file — `render.yaml` itself carries only non-secret configuration (throttle rates, gunicorn tuning, the settings module path, and so on).
 
 ## Free-tier deployment
 
