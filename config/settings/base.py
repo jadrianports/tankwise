@@ -42,6 +42,10 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "rest_framework",
+    # OpenAPI 3 schema generation for /api/schema, /api/docs, /api/redoc
+    # (QUA-04) -- its Swagger/ReDoc UI assets are CDN-hosted by default, so
+    # this app never touches collectstatic/WhiteNoise.
+    "drf_spectacular",
     "routing",
 ]
 
@@ -185,6 +189,23 @@ REST_FRAMEWORK = {
         "route_sustained": _env("ROUTE_THROTTLE_SUSTAINED_RATE", "200/day"),
     },
     "NUM_PROXIES": int(_env("NUM_PROXIES", "1")),
+    # Lets drf-spectacular introspect every view for /api/schema (QUA-04)
+    # instead of DRF's default CoreAPI-based schema generator.
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+}
+
+# drf-spectacular (QUA-04) -- Swagger UI at /api/docs, ReDoc at /api/redoc,
+# raw schema at /api/schema. SERVE_INCLUDE_SCHEMA is False so /api/schema
+# doesn't recursively document itself. SWAGGER_UI_DIST/REDOC_DIST are left
+# unset (CDN defaults) on purpose -- self-hosting them would pull their
+# static assets through collectstatic/WhiteNoise's CompressedManifestStorage
+# for zero benefit on a public $0 demo.
+SPECTACULAR_SETTINGS = {
+    "TITLE": "TankWise API",
+    "DESCRIPTION": "Cost-optimal fuel-stop routing for the continental US.",
+    "VERSION": "2.0.0",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SWAGGER_UI_SETTINGS": {"deepLinking": True},
 }
 
 # Password validation

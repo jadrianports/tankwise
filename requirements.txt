@@ -9,3 +9,5 @@ gunicorn==26.0.0
 hypothesis==6.157.0
 psycopg[binary]==3.3.4
 whitenoise==6.12.0
+drf-spectacular==0.30.0
+coverage==7.15.2
