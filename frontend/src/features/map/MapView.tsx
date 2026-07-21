@@ -18,12 +18,22 @@ import PriceLegend from './PriceLegend';
 import ChosenStopMarker from './ChosenStopMarker';
 import { applyCandidateLayer } from './layers/candidateLayer';
 import JustificationPopup from '../results/JustificationPopup';
+import { useChaseCam } from '../playback/useChaseCam';
+import PlayButton from '../playback/PlayButton';
+import PlaybackHUD from '../playback/PlaybackHUD';
+import SavingsModal from '../playback/SavingsModal';
 
 const ROUTE_SOURCE_ID = 'route-line';
 
 // Route polyline hex (light/dark) -- primary green, never fuel amber
 // (09-UI-SPEC.md: "route line color = primary/neutral not fuel amber").
 const ROUTE_COLOR = { light: '#0F6D4F', dark: '#34C796' };
+
+// D-13's reserved destructive red (theme.js's `error` palette, light/dark)
+// for the playback's individual skipped-station flash -- literal hex
+// here, matching this file's existing ROUTE_COLOR pattern, and NEVER the
+// candidateLayer.ts YlOrBr price ramp.
+const SKIPPED_FLASH_COLOR = { light: '#D32F2F', dark: '#EF5350' };
 
 // Continental-US default center/zoom shown before the first solve (D-39) --
 // carried over from the retired Leaflet RouteMap.jsx.
@@ -148,6 +158,12 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   // satellite/streets reload's style.load, and both run on the first load.
   const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyMapLayers);
   useTerrain(mapInstance);
+
+  // Trip playback (MAP-04, cuttable): composed entirely from the
+  // already-fetched `data` prop -- no new fetch (D-23..26). `mapInstance`
+  // (the raw mapboxgl.Map, not the react-map-gl MapRef wrapper) is what
+  // the chase cam scripts flyTo/jumpTo/fitBounds against.
+  const chaseCam = useChaseCam(mapInstance, data);
 
   const handleLoad = useCallback(() => {
     setMapInstance(mapRef.current?.getMap() ?? null);
@@ -276,7 +292,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
     <Box sx={{ position: 'relative', height: '100%', width: '100%' }}>
       <Map
         {...viewState}
-        pitch={getConditionalPitch(viewState.zoom)}
+        pitch={getConditionalPitch(viewState.zoom, chaseCam.status === 'playing')}
         ref={mapRef}
         mapboxAccessToken={token}
         mapStyle={styleUrl}
@@ -341,6 +357,47 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
             />
           );
         })}
+        {chaseCam.currentBeat?.skippedCandidates.map((candidate) => (
+          <Marker key={candidate.station_id} longitude={candidate.lng} latitude={candidate.lat} anchor="bottom">
+            <Box
+              aria-hidden
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 0.25,
+                '@keyframes chase-cam-skip-pulse': {
+                  '0%': { transform: 'scale(0.85)', opacity: 0.55 },
+                  '50%': { transform: 'scale(1.3)', opacity: 1 },
+                  '100%': { transform: 'scale(0.85)', opacity: 0.55 },
+                },
+              }}
+            >
+              <Box
+                sx={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: '50%',
+                  bgcolor: isDark ? SKIPPED_FLASH_COLOR.dark : SKIPPED_FLASH_COLOR.light,
+                  animation: 'chase-cam-skip-pulse 900ms ease-in-out infinite',
+                }}
+              />
+              <Typography
+                variant="body2"
+                sx={{
+                  fontSize: '0.7rem',
+                  fontWeight: 600,
+                  color: isDark ? SKIPPED_FLASH_COLOR.dark : SKIPPED_FLASH_COLOR.light,
+                  bgcolor: 'background.paper',
+                  px: 0.5,
+                  borderRadius: 0.5,
+                }}
+              >
+                ${candidate.price_per_gallon}
+              </Typography>
+            </Box>
+          </Marker>
+        ))}
       </Map>
       <StyleSwitcher isSatellite={isSatellite} onToggle={toggleSatellite} />
       <CandidateToggle visible={candidatesVisible} onToggle={toggleCandidates} />
@@ -354,6 +411,17 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
           open
           onClose={() => setOpenStopKey(null)}
         />
+      )}
+      <PlayButton onClick={chaseCam.play} disabled={!chaseCam.canPlay || chaseCam.status !== 'idle'} />
+      {chaseCam.status === 'playing' && (
+        <PlaybackHUD
+          currentBeat={chaseCam.currentBeat}
+          tankFraction={chaseCam.tankFraction}
+          onSkip={chaseCam.skip}
+        />
+      )}
+      {chaseCam.status === 'finished' && data && (
+        <SavingsModal data={data} onClose={chaseCam.dismiss} />
       )}
     </Box>
   );
