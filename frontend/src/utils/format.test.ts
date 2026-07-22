@@ -34,3 +34,15 @@ test('formatPercent renders one decimal place with a percent sign', () => {
 test('formatCurrency adds a dollar sign and thousands separator', () => {
   expect(formatCurrency('1234.5')).toBe('$1,234.50');
 });
+
+test('formatDuration degrades gracefully on non-numeric input', () => {
+  expect(formatDuration('n/a')).toBe('n/a');
+});
+
+test('formatPercent degrades gracefully on non-numeric input', () => {
+  expect(formatPercent('n/a')).toBe('n/a%');
+});
+
+test('formatCurrency degrades gracefully on non-numeric input', () => {
+  expect(formatCurrency('n/a')).toBe('$n/a');
+});
