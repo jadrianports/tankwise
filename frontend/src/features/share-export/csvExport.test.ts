@@ -1,6 +1,6 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 
-import { buildStopsCsv } from './csvExport';
+import { buildStopsCsv, downloadStopsCsv } from './csvExport';
 import type { RouteResponse } from '../../types/routeContract';
 
 // Only `fuel_stops` is exercised by buildStopsCsv -- the fixture is cast
@@ -61,4 +61,35 @@ test('buildStopsCsv quotes a station name containing a comma', () => {
   } as unknown as RouteResponse);
   const rows = csv.split('\r\n');
   expect(rows[1]).toBe('1,"Loves, Exit 42",ST-2,100,3.5,10,35');
+});
+
+test('downloadStopsCsv triggers exactly one anchor click without throwing', () => {
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  expect(() => downloadStopsCsv(FIXTURE)).not.toThrow();
+  expect(clickSpy).toHaveBeenCalledOnce();
+  clickSpy.mockRestore();
+});
+
+test('downloadStopsCsv sets the default filename on the triggered anchor', () => {
+  let capturedFilename = '';
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      capturedFilename = this.download;
+    });
+  downloadStopsCsv(FIXTURE);
+  expect(capturedFilename).toBe('fuel-stops.csv');
+  clickSpy.mockRestore();
+});
+
+test('downloadStopsCsv honours a caller-supplied filename', () => {
+  let capturedFilename = '';
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      capturedFilename = this.download;
+    });
+  downloadStopsCsv(FIXTURE, 'custom-stops.csv');
+  expect(capturedFilename).toBe('custom-stops.csv');
+  clickSpy.mockRestore();
 });

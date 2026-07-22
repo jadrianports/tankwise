@@ -1,7 +1,7 @@
-import { expect, test } from 'vitest';
+import { expect, test, vi } from 'vitest';
 import type { Feature, LineString, Point } from 'geojson';
 
-import { buildTripGeoJson } from './geoJsonExport';
+import { buildTripGeoJson, downloadTripGeoJson } from './geoJsonExport';
 import type { RouteResponse } from '../../types/routeContract';
 
 // Only `route_geometry`/`fuel_stops` are exercised by buildTripGeoJson -- the
@@ -59,4 +59,35 @@ test('buildTripGeoJson skips a stop with no resolvable location rather than emit
     fuel_stops: [{ ...FIXTURE.fuel_stops[0], location: null }],
   });
   expect(geojson.features.length).toBe(1); // route only
+});
+
+test('downloadTripGeoJson triggers exactly one anchor click without throwing', () => {
+  const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+  expect(() => downloadTripGeoJson(FIXTURE)).not.toThrow();
+  expect(clickSpy).toHaveBeenCalledOnce();
+  clickSpy.mockRestore();
+});
+
+test('downloadTripGeoJson sets the default filename on the triggered anchor', () => {
+  let capturedFilename = '';
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      capturedFilename = this.download;
+    });
+  downloadTripGeoJson(FIXTURE);
+  expect(capturedFilename).toBe('trip-route.geojson');
+  clickSpy.mockRestore();
+});
+
+test('downloadTripGeoJson honours a caller-supplied filename', () => {
+  let capturedFilename = '';
+  const clickSpy = vi
+    .spyOn(HTMLAnchorElement.prototype, 'click')
+    .mockImplementation(function (this: HTMLAnchorElement) {
+      capturedFilename = this.download;
+    });
+  downloadTripGeoJson(FIXTURE, 'custom-route.geojson');
+  expect(capturedFilename).toBe('custom-route.geojson');
+  clickSpy.mockRestore();
 });
