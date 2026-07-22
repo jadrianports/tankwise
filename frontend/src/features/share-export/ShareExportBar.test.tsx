@@ -104,9 +104,15 @@ test('a rejecting clipboard write renders the manual-copy field carrying the sha
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy share link' }));
 
-    await waitFor(() => {
-      expect(screen.getByLabelText('Copy this link manually')).toHaveValue(SHARE_URL);
+    const manualField = await waitFor(() => {
+      const field = screen.getByLabelText('Copy this link manually');
+      expect(field).toHaveValue(SHARE_URL);
+      return field;
     });
+
+    // Focusing the read-only manual field auto-selects its contents so a
+    // user can copy it in one motion -- exercise that handler too.
+    fireEvent.focus(manualField);
   } finally {
     Object.defineProperty(navigator, 'clipboard', {
       value: originalClipboard,
