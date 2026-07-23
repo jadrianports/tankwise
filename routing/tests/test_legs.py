@@ -4,6 +4,7 @@ from decimal import Decimal
 from django.test import SimpleTestCase
 
 from routing.services import FuelPlan, FuelStop, Leg, build_legs
+from routing.services.legs import build_waypoint_markers
 
 
 @dataclass(frozen=True)
@@ -191,6 +192,59 @@ class EmptyAnnotationTests(SimpleTestCase):
         legs = build_legs(route, plan)
 
         self.assertTrue(all(leg.duration_s is None for leg in legs))
+
+
+class WaypointMarkerTests(SimpleTestCase):
+    """WAY-06/WAY-08: build_waypoint_markers() computes one marker per
+    USER stop (letter-labeled), independent of legs[]/fuel_stops[]."""
+
+    def test_three_stop_route_yields_markers_labeled_a_b_c(self):
+        ordered_stop_coords = [
+            (Decimal("41.8781"), Decimal("-87.6298")),
+            (Decimal("39.7392"), Decimal("-104.9903")),
+            (Decimal("34.0522"), Decimal("-118.2437")),
+        ]
+        leg_boundaries_mi = [Decimal("0"), Decimal("450")]
+
+        markers = build_waypoint_markers(ROUTE_900, ordered_stop_coords, leg_boundaries_mi)
+
+        self.assertEqual([m.label for m in markers], ["A", "B", "C"])
+        self.assertEqual(markers[1].distance_from_start_mi, leg_boundaries_mi[1])
+        self.assertEqual(markers[1].lat, float(ordered_stop_coords[1][0]))
+        self.assertEqual(markers[1].lng, float(ordered_stop_coords[1][1]))
+        # mile 450 sits halfway through the second 300-mile/1200-second
+        # annotation segment (miles 300-600, seconds 1200-2400).
+        self.assertEqual(markers[1].duration_s, Decimal("1800"))
+
+    def test_marker_durations_are_monotonic_non_decreasing(self):
+        ordered_stop_coords = [
+            (Decimal("41.8781"), Decimal("-87.6298")),
+            (Decimal("39.7392"), Decimal("-104.9903")),
+            (Decimal("34.0522"), Decimal("-118.2437")),
+        ]
+        leg_boundaries_mi = [Decimal("0"), Decimal("450")]
+
+        markers = build_waypoint_markers(ROUTE_900, ordered_stop_coords, leg_boundaries_mi)
+
+        durations = [m.duration_s for m in markers]
+        self.assertEqual(durations, sorted(durations))
+
+    def test_two_point_route_yields_only_a_and_b(self):
+        ordered_stop_coords = [
+            (Decimal("41.8781"), Decimal("-87.6298")),
+            (Decimal("38.6270"), Decimal("-90.1994")),
+        ]
+        leg_boundaries_mi = [Decimal("0")]
+
+        markers = build_waypoint_markers(ROUTE_900, ordered_stop_coords, leg_boundaries_mi)
+
+        self.assertEqual([m.label for m in markers], ["A", "B"])
+        self.assertEqual(markers[0].name, "START")
+        self.assertEqual(markers[0].distance_from_start_mi, Decimal("0"))
+        self.assertEqual(markers[0].duration_s, Decimal("0"))
+        self.assertEqual(markers[1].name, "FINISH")
+        self.assertEqual(markers[1].distance_from_start_mi, Decimal("900"))
+        self.assertEqual(markers[1].duration_s, Decimal("3600"))
 
 
 class LegDataclassTests(SimpleTestCase):

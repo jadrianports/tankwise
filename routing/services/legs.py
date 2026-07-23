@@ -33,6 +33,24 @@ class Leg:
     cost: Decimal
 
 
+@dataclass(frozen=True)
+class WaypointMarker:
+    """One USER stop's marker (START, an intermediate waypoint, or
+    FINISH) -- keyed independently of `Leg`/`FuelStop`, since a user
+    stop is not always a fuel-stop boundary. `lat`/`lng` are plain
+    `float` (the GL map layer needs numerics, mirroring
+    `candidate_stations[]`); `distance_from_start_mi`/`duration_s` stay
+    full-precision `Decimal` until the serializer boundary quantizes
+    them, same as every other value this module produces."""
+
+    label: str
+    name: str
+    lat: float
+    lng: float
+    distance_from_start_mi: Decimal
+    duration_s: Decimal | None
+
+
 def _cumulative_axes(route):
     """Build parallel cumulative-miles and cumulative-seconds arrays from
     ``route``'s per-segment annotation arrays.
@@ -149,3 +167,64 @@ def build_legs(route, plan) -> list:
         )
 
     return legs
+
+
+def build_waypoint_markers(route, ordered_stop_coords, leg_boundaries_mi) -> list:
+    """Build the additive per-USER-stop marker array (WAY-06/WAY-08):
+    one `WaypointMarker` for every entry in ``ordered_stop_coords``
+    (``[start, *waypoints, finish]``), letter-labeled A..(A+N-1).
+
+    ``leg_boundaries_mi``: the flattened cumulative-miles-before-each-leg
+    scale (`routing.services.multi_leg.flatten_route(route)
+    .leg_boundaries_mi`) -- index *i* is where user stop *i* sits,
+    since Mapbox breaks one leg per user stop-to-stop hop. START (index
+    0) is always mile 0; FINISH (the last index) is always
+    ``route.total_route_mi``; every stop in between reads
+    ``leg_boundaries_mi[i]`` directly rather than re-deriving it.
+
+    Each marker's `duration_s` is the CUMULATIVE driving time from
+    start (D-06) -- the same interpolated-seconds-at-mile lookup
+    `build_legs` already uses (`_duration_at_mile` over
+    `_cumulative_axes(route)`), never a fabricated pro-rata split.
+
+    Always returns at least a START and FINISH marker (a 2-stop trip
+    with no waypoints yields exactly `[A, B]`) -- the frontend decides
+    whether to render endpoint markers.
+    """
+    cumulative_miles, cumulative_seconds = _cumulative_axes(route)
+    stop_count = len(ordered_stop_coords)
+
+    markers = []
+    for i in range(stop_count):
+        label = chr(ord("A") + i)
+        lat, lng = ordered_stop_coords[i]
+
+        if i == 0:
+            name = "START"
+            distance_from_start_mi = Decimal(0)
+        elif i == stop_count - 1:
+            name = "FINISH"
+            distance_from_start_mi = route.total_route_mi
+        else:
+            name = f"Stop {label}"
+            distance_from_start_mi = leg_boundaries_mi[i]
+
+        duration_s = _duration_at_mile(
+            distance_from_start_mi,
+            cumulative_miles,
+            cumulative_seconds,
+            route.total_route_mi,
+        )
+
+        markers.append(
+            WaypointMarker(
+                label=label,
+                name=name,
+                lat=float(lat),
+                lng=float(lng),
+                distance_from_start_mi=distance_from_start_mi,
+                duration_s=duration_s,
+            )
+        )
+
+    return markers
