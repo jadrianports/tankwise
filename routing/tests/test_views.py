@@ -270,6 +270,70 @@ class RouteViewCallBudgetTests(APITestCase):
 
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class RouteViewWaypointOrchestrationTests(APITestCase):
+    """WAY-04: the view resolves every `waypoints[]` entry through the
+    same `_resolve_endpoint` used for `start`/`finish` and hands
+    `get_routes` ONE ordered coordinate list -- still a single
+    Directions call regardless of stop count."""
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+
+    def test_three_stop_request_calls_get_routes_once_with_three_coords(self):
+        with mock.patch(
+            "routing.views.get_routes", return_value=[_unit_route(0, "400")]
+        ) as mock_get_routes, mock.patch(
+            "routing.views.corridor.candidates", return_value=[]
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {
+                    "start": START_COORD,
+                    "waypoints": ["39.7392,-104.9903"],
+                    "finish": FINISH_COORD,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get_routes.assert_called_once()
+        ordered_coords = mock_get_routes.call_args[0][0]
+        self.assertEqual(len(ordered_coords), 3)
+        self.assertEqual(ordered_coords[0], (Decimal("41.8781"), Decimal("-87.6298")))
+        self.assertEqual(
+            ordered_coords[1], (Decimal("39.7392"), Decimal("-104.9903"))
+        )
+        self.assertEqual(ordered_coords[2], (Decimal("38.6270"), Decimal("-90.1994")))
+
+    def test_two_point_request_still_calls_get_routes_once_with_two_coords(self):
+        """Existing {start, finish}-only requests are unaffected -- the
+        request path degenerates back to the pre-waypoints 2-coordinate
+        list."""
+        with mock.patch(
+            "routing.views.get_routes", return_value=[_unit_route(0, "400")]
+        ) as mock_get_routes, mock.patch(
+            "routing.views.corridor.candidates", return_value=[]
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get_routes.assert_called_once()
+        ordered_coords = mock_get_routes.call_args[0][0]
+        self.assertEqual(
+            ordered_coords,
+            [
+                (Decimal("41.8781"), Decimal("-87.6298")),
+                (Decimal("38.6270"), Decimal("-90.1994")),
+            ],
+        )
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
 class RouteViewCacheTests(APITestCase):
     """An identical repeat is served from cache with zero
     additional Mapbox calls."""

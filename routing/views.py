@@ -1,11 +1,16 @@
 """RouteView: the `POST /api/route` orchestrator.
 
 A composition of already-tested seams -- validate, cache-aside, resolve
-endpoints (coordinate pass-through or geocode + bounds re-check),
-`get_routes` (one Mapbox Directions call returning up to three route
-alternatives), a corridor pass and solve per alternative, deterministic
-winner selection, a baseline pass on the winner, leg assembly,
-build_map_url, serialize, cache.set.
+endpoints (coordinate pass-through or geocode + bounds re-check) for
+`start`, `finish`, and every intermediate `waypoints[]` entry in visit
+order, `get_routes` (one Mapbox Directions call over the whole ordered
+stop list, returning up to three route alternatives), a corridor pass
+and solve per alternative, deterministic winner selection, a baseline
+pass on the winner, leg assembly, build_map_url, serialize, cache.set.
+An all-address multi-stop request resolves each waypoint through its
+own `geocode()` call (bounded by the serializer's `waypoints`
+`max_length`), still only ever one Directions call regardless of stop
+count.
 
 `post()` itself is never wrapped in try/except: domain exceptions
 (`RouteNotFoundError`, `MapboxRequestError`, `InfeasibleRouteError`,
@@ -574,14 +579,21 @@ class RouteView(APIView):
             vehicle = validated["vehicle"]
             start_coords = self._resolve_endpoint(validated["start"])
             finish_coords = self._resolve_endpoint(validated["finish"])
+            waypoint_coords = [
+                self._resolve_endpoint(waypoint)
+                for waypoint in validated["waypoints"]
+            ]
 
             with self._timing.stage("route"):
-                routes = get_routes(
-                    [
-                        (start_coords["latitude"], start_coords["longitude"]),
-                        (finish_coords["latitude"], finish_coords["longitude"]),
-                    ]
-                )
+                ordered_coords = [
+                    (start_coords["latitude"], start_coords["longitude"]),
+                    *(
+                        (w["latitude"], w["longitude"])
+                        for w in waypoint_coords
+                    ),
+                    (finish_coords["latitude"], finish_coords["longitude"]),
+                ]
+                routes = get_routes(ordered_coords)
 
             factor_for = eia.make_factor_lookup(factor_table)
             results = self._solve_all_alternatives(routes, vehicle, factor_for)
