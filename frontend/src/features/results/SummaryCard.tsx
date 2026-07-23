@@ -5,9 +5,34 @@ import Typography from '@mui/material/Typography';
 import Box from '@mui/material/Box';
 import TextField from '@mui/material/TextField';
 import Divider from '@mui/material/Divider';
+import Chip from '@mui/material/Chip';
+import Tooltip from '@mui/material/Tooltip';
 
 import type { RouteResponse } from '../../types/routeContract';
 import { formatCurrency, formatMiles } from '../../utils/format';
+
+const TREND_TOOLTIP_TITLE =
+  'Week-over-week change in the U.S. EIA on-highway diesel average for this region.';
+
+interface TrendChipContent {
+  label: string;
+  color: string;
+}
+
+// Chip content derived from the route-dominant region's week-over-week
+// delta (D-08/D-09). A flat week (< 1 cent of movement) is "steady" --
+// neutral color, no arrow. Direction is always encoded with BOTH the
+// glyph and the color, never color alone.
+function trendChipContent(region: string, deltaCents: number): TrendChipContent {
+  const magnitude = Math.abs(deltaCents);
+  if (magnitude < 1) {
+    return { label: 'diesel steady this week', color: 'text.secondary' };
+  }
+  if (deltaCents > 0) {
+    return { label: `${region} diesel ▲ ${magnitude}¢ this week`, color: 'error.main' };
+  }
+  return { label: `${region} diesel ▼ ${magnitude}¢ this week`, color: 'primary.main' };
+}
 
 const DEFAULT_HAULS_PER_WEEK = 5;
 const WEEKS_PER_YEAR = 52;
@@ -43,6 +68,26 @@ function SummaryCard({ data }: SummaryCardProps) {
   const savingsAmount = savings ? Number(savings.amount) : NaN;
   const fleetAnnual =
     savings && Number.isFinite(savingsAmount) ? savingsAmount * haulsPerWeek * WEEKS_PER_YEAR : null;
+
+  // Undefined/missing status (a pre-phase fixture or legacy cached
+  // payload) falls to the frozen branch, same as `'frozen'` itself --
+  // this keeps the original "Prices as of ..." sentence rendering
+  // unchanged for any payload that predates this phase (D-16).
+  const isIndexed = data.price_index_status === 'current' || data.price_index_status === 'stale';
+  const disclaimerText = isIndexed
+    ? data.price_data_note
+    : `Prices as of ${data.price_as_of}. ${data.price_data_note}`;
+
+  // The chip is a currency claim -- it only renders on a genuinely
+  // current week with a resolved region and delta (D-10); stale/frozen
+  // fallback hides it entirely.
+  const showTrendChip =
+    data.price_index_status === 'current' &&
+    data.trend_region != null &&
+    data.trend_delta_cents != null;
+  const trendChip = showTrendChip
+    ? trendChipContent(data.trend_region as string, data.trend_delta_cents as number)
+    : null;
 
   return (
     <Card variant="outlined">
@@ -100,9 +145,22 @@ function SummaryCard({ data }: SummaryCardProps) {
           {alternativesBadgeText(data.alternatives_considered)}
         </Typography>
 
-        <Typography variant="body2" color="text.secondary">
-          Prices as of {data.price_as_of}. {data.price_data_note}
-        </Typography>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+          <Typography variant="body2" color="text.secondary">
+            {disclaimerText}
+          </Typography>
+          {trendChip && (
+            <Tooltip title={TREND_TOOLTIP_TITLE}>
+              <Chip
+                size="small"
+                variant="outlined"
+                label={trendChip.label}
+                tabIndex={0}
+                sx={{ color: trendChip.color, borderColor: trendChip.color, fontWeight: 600 }}
+              />
+            </Tooltip>
+          )}
+        </Box>
       </CardContent>
     </Card>
   );
