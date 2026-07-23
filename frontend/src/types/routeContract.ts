@@ -98,6 +98,11 @@ export interface Alternative {
   feasible: boolean;
 }
 
+// `price_index_status` values: "current" (this week's EIA factors),
+// "stale" (last-known factors, EIA temporarily unreachable), or "frozen"
+// (no factors ever fetched -- the original 2024 snapshot, unindexed).
+export type PriceIndexStatus = 'current' | 'stale' | 'frozen';
+
 // The full `RouteResponseSerializer.to_representation` return shape.
 export interface RouteResponse {
   start: LatLngString | null;
@@ -119,6 +124,15 @@ export interface RouteResponse {
   candidate_stations: CandidateStation[];
   price_as_of: string;
   price_data_note: string;
+  // Additive EIA indexing fields (Phase 12). `trend_delta_cents` is a
+  // signed integer -- positive means the region's diesel average rose
+  // week-over-week, negative means it fell. All four default safely
+  // (status "frozen", the rest `null`) for a v1/v2-shaped or legacy
+  // cached payload that predates this phase.
+  price_index_status: PriceIndexStatus;
+  eia_week: string | null;
+  trend_region: string | null;
+  trend_delta_cents: number | null;
 }
 
 // The request-side nested vehicle profile POSTed to /api/route --
