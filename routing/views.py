@@ -577,8 +577,10 @@ class RouteView(APIView):
 
             with self._timing.stage("route"):
                 routes = get_routes(
-                    (start_coords["latitude"], start_coords["longitude"]),
-                    (finish_coords["latitude"], finish_coords["longitude"]),
+                    [
+                        (start_coords["latitude"], start_coords["longitude"]),
+                        (finish_coords["latitude"], finish_coords["longitude"]),
+                    ]
                 )
 
             factor_for = eia.make_factor_lookup(factor_table)

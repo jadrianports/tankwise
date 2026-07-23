@@ -17,7 +17,7 @@ from shapely.geometry import LineString
 from urllib3.util.retry import Retry
 
 # Mapbox convention: longitude first in the path segment.
-DIRECTIONS_URL = "https://api.mapbox.com/directions/v5/mapbox/driving/{lon1},{lat1};{lon2},{lat2}"
+DIRECTIONS_BASE_URL = "https://api.mapbox.com/directions/v5/mapbox/driving"
 
 GEOCODING_URL = "https://api.mapbox.com/search/geocode/v6/forward"
 
@@ -75,15 +75,21 @@ class Route:
     annotation_durations: list = field(default_factory=list)
     annotation_distances: list = field(default_factory=list)
     alternative_index: int = 0
+    leg_distances_mi: list = field(default_factory=list)
+    leg_annotation_lengths: list = field(default_factory=list)
 
 
-def get_routes(start, finish) -> list:
-    """Fetch every driving route alternative Mapbox offers between `start`
-    and `finish` in exactly one Mapbox Directions call.
+def get_routes(ordered_coords) -> list:
+    """Fetch every driving route alternative Mapbox offers across the
+    ordered stops in `ordered_coords`, in exactly one Mapbox Directions
+    call.
 
-    `start`/`finish` are `(latitude, longitude)` Decimal pairs -- note this
-    is the opposite order from the Mapbox path segment, which is built as
-    lon,lat below.
+    `ordered_coords`: an ordered sequence of at least 2 `(latitude,
+    longitude)` Decimal pairs -- start, any intermediate waypoints in
+    visit order, then finish. Note this is the opposite order from the
+    Mapbox path segment, which is built as lon,lat below. A 2-element
+    sequence reproduces the original start/finish-only request
+    byte-for-byte.
 
     Raises `ImproperlyConfigured` if `settings.MAPBOX_TOKEN` is unset,
     before any HTTP call is attempted. Raises `MapboxRequestError`
@@ -96,11 +102,8 @@ def get_routes(start, finish) -> list:
             "MAPBOX_TOKEN is not set -- cannot call the Mapbox Directions API"
         )
 
-    start_lat, start_lng = start
-    finish_lat, finish_lng = finish
-    url = DIRECTIONS_URL.format(
-        lon1=start_lng, lat1=start_lat, lon2=finish_lng, lat2=finish_lat
-    )
+    coords_path = ";".join(f"{lng},{lat}" for lat, lng in ordered_coords)
+    url = f"{DIRECTIONS_BASE_URL}/{coords_path}"
 
     try:
         response = _SESSION.get(
@@ -196,19 +199,41 @@ def _parse_directions_response(data) -> list:
 def _parse_single_route(route_data, alternative_index) -> Route:
     """Parse one element of `data["routes"]` into a `Route`. Annotation
     arrays are read defensively -- a missing `legs`, `annotation`, or key
-    degrades to an empty list rather than raising."""
+    degrades to an empty list rather than raising.
+
+    Multi-stop routes carry N-1 Mapbox `legs` for N coordinates, each
+    with its own `annotation` arrays -- these are concatenated across
+    EVERY leg, in Mapbox's own visit order, never truncated to `legs[0]`
+    (WAY-04). `leg_distances_mi`/`leg_annotation_lengths` carry each
+    leg's own scalar distance and segment count so a later flattening
+    step can slice `raw_coordinates` back into per-leg geometry (see
+    `routing.services.multi_leg`)."""
     coords = route_data["geometry"]["coordinates"]
     total_route_mi = Decimal(str(route_data["distance"])) / Decimal("1609.344")
     duration_s = Decimal(str(route_data["duration"]))
 
     legs = route_data.get("legs") or []
-    annotation = legs[0].get("annotation", {}) if legs else {}
-    raw_durations = annotation.get("duration") or []
-    raw_distances_m = annotation.get("distance") or []
+    raw_durations = [
+        value
+        for leg in legs
+        for value in (leg.get("annotation", {}).get("duration") or [])
+    ]
+    raw_distances_m = [
+        value
+        for leg in legs
+        for value in (leg.get("annotation", {}).get("distance") or [])
+    ]
 
     annotation_durations = [Decimal(str(value)) for value in raw_durations]
     annotation_distances = [
         Decimal(str(value)) / Decimal("1609.344") for value in raw_distances_m
+    ]
+
+    leg_distances_mi = [
+        Decimal(str(leg.get("distance", 0))) / Decimal("1609.344") for leg in legs
+    ]
+    leg_annotation_lengths = [
+        len(leg.get("annotation", {}).get("distance") or []) for leg in legs
     ]
 
     return Route(
@@ -219,4 +244,6 @@ def _parse_single_route(route_data, alternative_index) -> Route:
         annotation_durations=annotation_durations,
         annotation_distances=annotation_distances,
         alternative_index=alternative_index,
+        leg_distances_mi=leg_distances_mi,
+        leg_annotation_lengths=leg_annotation_lengths,
     )

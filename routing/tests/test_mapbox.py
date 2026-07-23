@@ -51,9 +51,20 @@ GEOCODING_FIXTURE_PATH = (
 with open(GEOCODING_FIXTURE_PATH, encoding="utf-8") as f:
     GEOCODING_FIXTURE = json.load(f)
 
+MULTI_WAYPOINT_FIXTURE_PATH = (
+    Path(__file__).resolve().parent / "fixtures" / "mapbox_multi_waypoint.json"
+)
+with open(MULTI_WAYPOINT_FIXTURE_PATH, encoding="utf-8") as f:
+    MULTI_WAYPOINT_FIXTURE = json.load(f)
+
 START = (Decimal("41.8781"), Decimal("-87.6298"))
 FINISH = (Decimal("38.6270"), Decimal("-90.1994"))
 ADDRESS = "401 N Michigan Ave, Chicago, IL"
+
+# D-09 demo-chip coordinates: LA -> Denver -> Chicago (3 stops, 2 legs).
+LOS_ANGELES = (Decimal("34.0522"), Decimal("-118.2437"))
+DENVER = (Decimal("39.7392"), Decimal("-104.9903"))
+CHICAGO = (Decimal("41.8781"), Decimal("-87.6298"))
 
 
 class _StubResponse:
@@ -75,7 +86,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            route = get_routes(START, FINISH)[0]
+            route = get_routes([START, FINISH])[0]
 
         mock_get.assert_called_once()
         self.assertIsInstance(route, Route)
@@ -84,7 +95,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_routes(START, FINISH)[0]
+            route = get_routes([START, FINISH])[0]
 
         expected = Decimal(str(FIXTURE["routes"][0]["distance"])) / Decimal(
             "1609.344"
@@ -96,7 +107,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_routes(START, FINISH)[0]
+            route = get_routes([START, FINISH])[0]
 
         fixture_coords = FIXTURE["routes"][0]["geometry"]["coordinates"]
         self.assertIsInstance(route.geometry, LineString)
@@ -106,7 +117,7 @@ class GetRouteHappyPathTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ):
-            route = get_routes(START, FINISH)[0]
+            route = get_routes([START, FINISH])[0]
 
         fixture_coords = FIXTURE["routes"][0]["geometry"]["coordinates"]
         self.assertEqual(route.raw_coordinates, fixture_coords)
@@ -122,7 +133,7 @@ class DirectionsRequestParamsTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_routes(START, FINISH)[0]
+            get_routes([START, FINISH])[0]
 
         _, kwargs = mock_get.call_args
         params = kwargs["params"]
@@ -135,7 +146,7 @@ class DirectionsRequestParamsTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_routes(START, FINISH)[0]
+            get_routes([START, FINISH])[0]
 
         mock_get.assert_called_once()
 
@@ -150,7 +161,7 @@ class GetRoutesMultiAlternativeTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         self.assertEqual(len(routes), 3)
         for route in routes:
@@ -161,7 +172,7 @@ class GetRoutesMultiAlternativeTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         self.assertEqual([r.alternative_index for r in routes], [0, 1, 2])
 
@@ -170,7 +181,7 @@ class GetRoutesMultiAlternativeTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         for route, fixture_route in zip(routes, MULTI_ROUTE_FIXTURE["routes"]):
             expected = Decimal(str(fixture_route["duration"]))
@@ -182,7 +193,7 @@ class GetRoutesMultiAlternativeTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         for route in routes:
             expected_len = len(route.raw_coordinates) - 1
@@ -194,7 +205,7 @@ class GetRoutesMultiAlternativeTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=MULTI_ROUTE_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         for route in routes:
             summed = sum(route.annotation_distances)
@@ -213,11 +224,111 @@ class NoAnnotationFallbackTests(SimpleTestCase):
             "routing.services.mapbox._SESSION.get",
             return_value=_StubResponse(payload=NO_ANNOTATION_FIXTURE),
         ):
-            routes = get_routes(START, FINISH)
+            routes = get_routes([START, FINISH])
 
         self.assertEqual(len(routes), 1)
         self.assertEqual(routes[0].annotation_durations, [])
         self.assertEqual(routes[0].annotation_distances, [])
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class OrderedCoordsUrlTests(SimpleTestCase):
+    """`get_routes()` builds an N-coordinate semicolon-joined path over
+    every element of `ordered_coords`, in order; a 2-element list
+    reproduces the original start/finish-only URL byte-for-byte."""
+
+    def test_two_element_list_matches_legacy_two_arg_url(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
+        ) as mock_get:
+            get_routes([START, FINISH])[0]
+
+        args, _ = mock_get.call_args
+        start_lat, start_lng = START
+        finish_lat, finish_lng = FINISH
+        expected_url = (
+            "https://api.mapbox.com/directions/v5/mapbox/driving/"
+            f"{start_lng},{start_lat};{finish_lng},{finish_lat}"
+        )
+        self.assertEqual(args[0], expected_url)
+
+    def test_three_element_list_joins_every_coordinate_in_order(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_WAYPOINT_FIXTURE),
+        ) as mock_get:
+            get_routes([LOS_ANGELES, DENVER, CHICAGO])[0]
+
+        args, _ = mock_get.call_args
+        la_lat, la_lng = LOS_ANGELES
+        den_lat, den_lng = DENVER
+        chi_lat, chi_lng = CHICAGO
+        expected_url = (
+            "https://api.mapbox.com/directions/v5/mapbox/driving/"
+            f"{la_lng},{la_lat};{den_lng},{den_lat};{chi_lng},{chi_lat}"
+        )
+        self.assertEqual(args[0], expected_url)
+
+
+@override_settings(MAPBOX_TOKEN="test-token")
+class MultiLegConcatenationTests(SimpleTestCase):
+    """`_parse_single_route` concatenates annotation arrays across every
+    leg (WAY-04), and carries per-leg boundary metadata needed for the
+    flattening step (see `routing.services.multi_leg`)."""
+
+    def test_annotation_distances_length_equals_sum_of_leg_annotation_lengths(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_WAYPOINT_FIXTURE),
+        ):
+            route = get_routes([LOS_ANGELES, DENVER, CHICAGO])[0]
+
+        fixture_legs = MULTI_WAYPOINT_FIXTURE["routes"][0]["legs"]
+        expected_length = sum(
+            len(leg["annotation"]["distance"]) for leg in fixture_legs
+        )
+        self.assertEqual(len(route.annotation_distances), expected_length)
+        self.assertEqual(len(route.annotation_durations), expected_length)
+
+    def test_leg_distances_mi_has_one_entry_per_leg(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_WAYPOINT_FIXTURE),
+        ):
+            route = get_routes([LOS_ANGELES, DENVER, CHICAGO])[0]
+
+        self.assertEqual(len(route.leg_distances_mi), 2)
+        for value in route.leg_distances_mi:
+            self.assertIsInstance(value, Decimal)
+
+        fixture_legs = MULTI_WAYPOINT_FIXTURE["routes"][0]["legs"]
+        expected = [
+            Decimal(str(leg["distance"])) / Decimal("1609.344") for leg in fixture_legs
+        ]
+        self.assertEqual(route.leg_distances_mi, expected)
+
+    def test_leg_annotation_lengths_matches_fixture(self):
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get",
+            return_value=_StubResponse(payload=MULTI_WAYPOINT_FIXTURE),
+        ):
+            route = get_routes([LOS_ANGELES, DENVER, CHICAGO])[0]
+
+        fixture_legs = MULTI_WAYPOINT_FIXTURE["routes"][0]["legs"]
+        expected = [len(leg["annotation"]["distance"]) for leg in fixture_legs]
+        self.assertEqual(route.leg_annotation_lengths, expected)
+
+    def test_single_leg_route_still_has_one_element_leg_lists(self):
+        """A plain 2-coordinate request still carries the new fields as
+        1-element lists -- existing single-leg behavior is additive,
+        never truncated."""
+        with mock.patch(
+            "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
+        ):
+            route = get_routes([START, FINISH])[0]
+
+        self.assertEqual(len(route.leg_distances_mi), 1)
+        self.assertEqual(len(route.leg_annotation_lengths), 1)
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
@@ -228,7 +339,7 @@ class TokenHandlingTests(SimpleTestCase):
         with mock.patch(
             "routing.services.mapbox._SESSION.get", return_value=_StubResponse()
         ) as mock_get:
-            get_routes(START, FINISH)[0]
+            get_routes([START, FINISH])[0]
 
         args, kwargs = mock_get.call_args
         self.assertEqual(kwargs["params"]["access_token"], "test-token")
@@ -251,7 +362,7 @@ class RouteNotFoundTests(SimpleTestCase):
             return_value=_StubResponse(payload=no_route_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
-                get_routes(START, FINISH)[0]
+                get_routes([START, FINISH])[0]
 
     def test_ok_code_with_empty_routes_raises_route_not_found(self):
         empty_routes_payload = dict(FIXTURE)
@@ -261,7 +372,7 @@ class RouteNotFoundTests(SimpleTestCase):
             return_value=_StubResponse(payload=empty_routes_payload),
         ):
             with self.assertRaises(RouteNotFoundError):
-                get_routes(START, FINISH)[0]
+                get_routes([START, FINISH])[0]
 
 
 @override_settings(MAPBOX_TOKEN="test-token")
@@ -275,7 +386,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
             return_value=_StubResponse(status_code=500),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
-                get_routes(START, FINISH)[0]
+                get_routes([START, FINISH])[0]
 
         self.assertNotIn("test-token", str(ctx.exception))
 
@@ -285,7 +396,7 @@ class MapboxRequestErrorTests(SimpleTestCase):
             side_effect=requests.RequestException("boom"),
         ):
             with self.assertRaises(MapboxRequestError) as ctx:
-                get_routes(START, FINISH)[0]
+                get_routes([START, FINISH])[0]
 
         self.assertNotIn("test-token", str(ctx.exception))
 
@@ -298,7 +409,7 @@ class MissingTokenTests(SimpleTestCase):
     def test_missing_token_raises_before_any_http_call(self):
         with mock.patch("routing.services.mapbox._SESSION.get") as mock_get:
             with self.assertRaises(ImproperlyConfigured):
-                get_routes(START, FINISH)[0]
+                get_routes([START, FINISH])[0]
 
         mock_get.assert_not_called()
 
