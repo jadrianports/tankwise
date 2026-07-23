@@ -84,6 +84,39 @@ shortcut, both of which include or drop stations incorrectly depending on the
 route's shape (a long looping route and a straight one with the same endpoints
 have very different corridors).
 
+## EIA Regional Price Indexing
+
+The station dataset's prices are a frozen late-2024/early-2025 snapshot
+(`Station.retail_price`), so every price the solver sees is scaled at
+request time by a per-region factor before it ever reaches the corridor
+candidate list: `factor = current-week EIA regional diesel average /
+a committed baseline-week denominator`, where the denominator is the
+same region's EIA value at the week nearest the snapshot's own vintage
+(2025-01-01). Regions are sub-PADD (PADD 1A/1B/1C, 2, 3, 4, California
+carved out of PADD 5, and the rest of PADD 5), since California's
+diesel price runs well above the rest of the West Coast and a single
+PADD-5 average would wash that out. A factor outside a 0.5-2.0x sanity
+band is treated as corrupt data and discarded, falling back the same
+way an unreachable EIA feed does.
+
+The multiplier is applied at exactly one point, `routing/services/
+corridor.py`'s `Candidate` construction, outside the pure solver --
+`Station.retail_price` itself is never mutated, and because every
+candidate in a given request is scaled by the same handful of regional
+factors, the solver's price ordering (which station is cheaper than
+which) is preserved exactly as if it were reading raw prices.
+
+The current week's factor table is fetched from `api.eia.gov` at most
+once, lazily, and cached in Redis for 24 hours (EIA publishes weekly)
+using a two-key scheme: a TTL'd "current" entry and a persistent
+last-known copy with no expiry. A request never blocks on a live EIA
+call beyond the first one after the cache expires; if EIA is
+unreachable, the last-known factors keep serving with an honest
+"(latest available)" disclaimer, and if no factors have ever been
+fetched (or `EIA_API_KEY` is unset), the app runs in a frozen-snapshot
+mode -- factor 1.0, the original 2025-01-01 disclaimer -- rather than
+ever erroring or silently overstating freshness.
+
 ## STRtree Spatial Index
 
 Previously, every request issued a DB bounding-box query (`latitude__range`/
