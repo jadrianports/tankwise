@@ -308,15 +308,19 @@ class PriceFreshnessDynamicStatusTests(SimpleTestCase):
         result = price_freshness("current", "2026-07-20")
 
         self.assertEqual(result["price_as_of"], "Jul 20, 2026")
-        self.assertIn("EIA on-highway diesel", result["price_data_note"])
-        self.assertIn("Jul 20, 2026", result["price_data_note"])
-        self.assertNotIn("(latest available)", result["price_data_note"])
+        self.assertEqual(
+            result["price_data_note"],
+            "Station prices indexed to the EIA week of Jul 20, 2026.",
+        )
 
     def test_stale_status_appends_latest_available_suffix(self):
         result = price_freshness("stale", "2026-07-08")
 
         self.assertEqual(result["price_as_of"], "Jul 8, 2026")
-        self.assertTrue(result["price_data_note"].endswith("(latest available)"))
+        self.assertEqual(
+            result["price_data_note"],
+            "Station prices indexed to the EIA week of Jul 8, 2026 (latest available).",
+        )
 
     def test_frozen_status_matches_unmodified_settings_values(self):
         default_result = price_freshness()
@@ -561,7 +565,10 @@ class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
         self.assertEqual(data["trend_region"], "Gulf Coast")
         self.assertEqual(data["trend_delta_cents"], 4)
         self.assertEqual(data["price_as_of"], "Jul 20, 2026")
-        self.assertIn("EIA on-highway diesel", data["price_data_note"])
+        self.assertEqual(
+            data["price_data_note"],
+            "Station prices indexed to the EIA week of Jul 20, 2026.",
+        )
 
     def test_vehicle_echo_includes_derived_starting_fuel_mi(self):
         instance = self._minimal_instance()

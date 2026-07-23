@@ -361,9 +361,10 @@ def price_freshness(price_index_status=None, eia_week=None) -> dict:
 
     - `"current"`/`"stale"` (with a resolvable `eia_week`): `price_as_of`
       is the EIA week formatted as a friendly date; `price_data_note`
-      names it explicitly ("indexed to the EIA ... week of {date}"),
-      with a `" (latest available)"` suffix appended for `"stale"`
-      (D-16/D-17, EIA-02/EIA-03).
+      is the verbatim requirement sentence ("Station prices indexed to
+      the EIA week of {date}."), with a `" (latest available)"`
+      parenthetical before the period for `"stale"` (D-16/D-17,
+      EIA-02/EIA-03).
     - Anything else (`None`/`"frozen"`, or a `"current"`/`"stale"`
       status with no `eia_week` to render): the original, byte-identical
       2024-snapshot sentence from `settings.FUEL_PRICE_AS_OF`/
@@ -379,12 +380,8 @@ def price_freshness(price_index_status=None, eia_week=None) -> dict:
     """
     if price_index_status in ("current", "stale") and eia_week:
         friendly = _friendly_eia_week(eia_week)
-        note = (
-            "Station prices are indexed to the EIA on-highway diesel "
-            f"average for the week of {friendly}."
-        )
-        if price_index_status == "stale":
-            note += " (latest available)"
+        note = f"Station prices indexed to the EIA week of {friendly}"
+        note += " (latest available)." if price_index_status == "stale" else "."
         return {"price_as_of": friendly, "price_data_note": note}
 
     as_of = settings.FUEL_PRICE_AS_OF
