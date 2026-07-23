@@ -126,6 +126,12 @@ MAPBOX_TOKEN = _env("MAPBOX_TOKEN")
 # The public (pk.*) token used only to build map_url -- never the secret
 # above. Same no-default treatment so an unset value stays falsy None.
 MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
+
+# EIA regional diesel price index. No default -- the OPPOSITE contract of
+# MAPBOX_TOKEN: an unset EIA_API_KEY stays falsy None and the app runs
+# permanently in frozen-snapshot mode with a startup warning (D-20), never
+# a hard failure. Register a free key at https://www.eia.gov/opendata/.
+EIA_API_KEY = _env("EIA_API_KEY")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
