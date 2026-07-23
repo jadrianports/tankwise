@@ -118,6 +118,7 @@ class ServerTimingCacheMissTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertIn("Server-Timing", response)
         header = response["Server-Timing"]
+        self.assertIn("eia;dur=", header)
         self.assertIn("route;dur=", header)
         self.assertIn("corridor;dur=", header)
         self.assertIn("solver;dur=", header)
@@ -127,7 +128,10 @@ class ServerTimingCacheMissTests(APITestCase):
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingCacheHitTests(APITestCase):
-    """A cache-hit response carries ONLY a cache metric."""
+    """A cache-hit response carries only the eia + cache metrics -- the
+    EIA factor table is resolved (and timed) before every cache lookup,
+    even on a hit, so the vintage token is known before the key is
+    built (EIA-01)."""
 
     def setUp(self):
         cache.clear()
@@ -146,6 +150,7 @@ class ServerTimingCacheHitTests(APITestCase):
         self.assertEqual(mock_get.call_count, 1)
         self.assertEqual(second.status_code, status.HTTP_200_OK)
         header = second["Server-Timing"]
+        self.assertIn("eia;dur=", header)
         self.assertIn("cache;dur=", header)
         self.assertNotIn("route", header)
         self.assertNotIn("corridor", header)
@@ -211,5 +216,6 @@ class ServerTimingErrorTests(APITestCase):
         self.assertEqual(response.data["error"]["code"], "infeasible_route")
         self.assertIn("Server-Timing", response)
         header = response["Server-Timing"]
+        self.assertIn("eia", header)
         self.assertIn("route", header)
         self.assertIn("corridor", header)

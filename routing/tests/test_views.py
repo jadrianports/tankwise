@@ -524,7 +524,7 @@ class RouteViewOrchestrationUnitTests(SimpleTestCase):
             "routing.views.corridor.candidates",
             side_effect=[[pricey], [cheap], [pricey]],
         ):
-            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE, None)
             winner = view._select_winner(results)
 
         self.assertTrue(all(r.feasible for r in results))
@@ -543,7 +543,7 @@ class RouteViewOrchestrationUnitTests(SimpleTestCase):
             "routing.views.corridor.candidates",
             side_effect=[[], [reachable], []],
         ):
-            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+            results = view._solve_all_alternatives(routes, _UNIT_VEHICLE, None)
             winner = view._select_winner(results)
 
         self.assertEqual([r.feasible for r in results], [False, True, False])
@@ -555,7 +555,7 @@ class RouteViewOrchestrationUnitTests(SimpleTestCase):
 
         with mock.patch("routing.views.corridor.candidates", return_value=[]):
             with self.assertRaises(InfeasibleRouteError) as ctx:
-                view._solve_all_alternatives(routes, _UNIT_VEHICLE)
+                view._solve_all_alternatives(routes, _UNIT_VEHICLE, None)
 
         self.assertEqual(ctx.exception.gap_mi, Decimal("700"))
 

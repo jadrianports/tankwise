@@ -21,11 +21,16 @@ only the smallest-gap failure once every alternative has failed;
 request that already has a valid optimized answer.
 
 Per-stage durations are collected via `routing.timing.ServerTiming`
-context managers, attached to `self._timing` on a cache miss so DRF's
-exception-handler context (`context["view"]`) can read partial timings
-after a domain exception propagates. `_Stage.__exit__` records even on
-exception and never suppresses it, so this instrumentation preserves the
-pipeline's no-try/except shape. A stage entered more than once (e.g.
+context managers, attached to `self._timing` at the top of `post()` --
+one instance covers the whole request, from the `eia` factor-table
+resolution through the cache lookup to the full solve, so both a
+cache-hit response (`eia`, `cache`) and a cache-miss response (`eia`,
+`cache`, `route`, `corridor`, `solver`, `baseline`, `total`) report the
+`eia` stage. This also means DRF's exception-handler context
+(`context["view"]`) can read partial timings after a domain exception
+propagates. `_Stage.__exit__` records even on exception and never
+suppresses it, so this instrumentation preserves the pipeline's
+no-try/except shape. A stage entered more than once (e.g.
 "corridor"/"solver" once per route alternative) accumulates into one
 running total rather than overwriting.
 
@@ -58,7 +63,7 @@ from routing.serializers import (
     RouteResponseSerializer,
     price_freshness,
 )
-from routing.services import corridor, naive_baseline, solver
+from routing.services import corridor, eia, naive_baseline, regions, solver
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.legs import build_legs
 from routing.services.mapbox import Route, geocode, get_routes
@@ -375,6 +380,10 @@ _ROUTE_RESPONSE_SCHEMA = inline_serializer(
         "candidate_stations": _CANDIDATE_STATION_SCHEMA,
         "price_as_of": serializers.CharField(),
         "price_data_note": serializers.CharField(),
+        "price_index_status": serializers.CharField(),
+        "eia_week": serializers.CharField(allow_null=True),
+        "trend_region": serializers.CharField(allow_null=True),
+        "trend_delta_cents": serializers.IntegerField(allow_null=True),
     },
 )
 
@@ -510,6 +519,10 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
             "per-row timestamp. Price levels are consistent with U.S. retail "
             "diesel of late 2024-early 2025."
         ),
+        "price_index_status": "frozen",
+        "eia_week": None,
+        "trend_region": None,
+        "trend_delta_cents": None,
     },
     request_only=False,
     response_only=True,
@@ -542,16 +555,21 @@ class RouteView(APIView):
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
 
-        cache_key = build_cache_key(validated)
-        cache_timing = ServerTiming()
-        with cache_timing.stage("cache"):
+        self._timing = ServerTiming()
+        with self._timing.stage("eia"):
+            factor_table, price_index_status = eia.get_factor_table()
+        eia_vintage = (
+            factor_table["week"] if price_index_status != "frozen" else "frozen"
+        )
+
+        cache_key = build_cache_key(validated, eia_vintage=eia_vintage)
+        with self._timing.stage("cache"):
             cached = cache.get(cache_key)
         if cached is not None:
             response = Response(cached)
-            response["Server-Timing"] = cache_timing.header_value()
+            response["Server-Timing"] = self._timing.header_value()
             return response
 
-        self._timing = ServerTiming()
         with self._timing.stage("total"):
             vehicle = validated["vehicle"]
             start_coords = self._resolve_endpoint(validated["start"])
@@ -563,7 +581,8 @@ class RouteView(APIView):
                     (finish_coords["latitude"], finish_coords["longitude"]),
                 )
 
-            results = self._solve_all_alternatives(routes, vehicle)
+            factor_for = eia.make_factor_lookup(factor_table)
+            results = self._solve_all_alternatives(routes, vehicle, factor_for)
             winner = self._select_winner(results)
 
             stop_coords = self._stop_coords(winner.plan)
@@ -577,6 +596,10 @@ class RouteView(APIView):
                 c.opis_id for c in winner.candidates if c.opis_id is not None
             ]
             candidate_coords = self._coords_for_opis_ids(candidate_opis_ids)
+            region = self._route_dominant_region(winner, candidate_coords)
+            trend_region, trend_delta_cents = self._region_trend(
+                factor_table, price_index_status, region
+            )
 
             map_url = build_map_url(
                 winner.route,
@@ -608,6 +631,10 @@ class RouteView(APIView):
                     "savings": savings,
                     "savings_note": savings_note,
                     "alternatives": alternatives,
+                    "price_index_status": price_index_status,
+                    "eia_week": factor_table["week"],
+                    "trend_region": trend_region,
+                    "trend_delta_cents": trend_delta_cents,
                 },
                 context={
                     "start_coords": start_coords,
@@ -625,12 +652,17 @@ class RouteView(APIView):
         response["Server-Timing"] = self._timing.header_value()
         return response
 
-    def _solve_all_alternatives(self, routes, vehicle):
+    def _solve_all_alternatives(self, routes, vehicle, factor_for):
         """Solve every route alternative Mapbox returned, catching only
         `InfeasibleRouteError` per alternative -- the project's one
         sanctioned deviation from the no-try/except pipeline shape,
         contained here rather than smeared through `post()`. Any other
         exception type propagates uncaught.
+
+        `factor_for`: the `state -> Decimal` EIA-index closure (see
+        `routing.services.eia.make_factor_lookup`), threaded into every
+        alternative's corridor pass so each candidate's price is
+        indexed identically regardless of which alternative wins.
 
         Returns a list of `_AlternativeResult`, one per route, in Mapbox
         order. When every alternative is infeasible, re-raises the
@@ -642,7 +674,7 @@ class RouteView(APIView):
         smallest_gap_exc = None
         for index, route in enumerate(routes):
             with self._timing.stage("corridor"):
-                cands = corridor.candidates(route)
+                cands = corridor.candidates(route, factor_for=factor_for)
             try:
                 with self._timing.stage("solver"):
                     plan = solver.solve(
@@ -749,7 +781,10 @@ class RouteView(APIView):
         `opis_id`s -- same one indexed `filter(opis_id__in=...)` query
         shape, reused for the corridor's (potentially hundreds-long)
         `candidate_stations[]` lookup so that pass never runs a
-        per-candidate query either."""
+        per-candidate query either. Also carries `state` (additive) --
+        `_route_dominant_region` maps it to an EIA region for the trend
+        chip; existing `latitude`/`longitude` consumers are unaffected.
+        """
         if not opis_ids:
             return {}
         stations = Station.objects.filter(opis_id__in=opis_ids)
@@ -757,6 +792,50 @@ class RouteView(APIView):
             station.opis_id: {
                 "latitude": station.latitude,
                 "longitude": station.longitude,
+                "state": station.state,
             }
             for station in stations
         }
+
+    def _route_dominant_region(self, winner, candidate_coords):
+        """Route-dominant EIA region (D-06): the plurality region among
+        the winning plan's chosen-stop states (in stop order), falling
+        back to the state of the closest-to-start candidate when the
+        plan has zero stops, and to `None` when there are no candidates
+        at all. A stop/candidate whose state maps to no known region
+        (D-03) is excluded from the plurality vote rather than counted
+        as its own "unknown" region.
+        """
+        stop_region_codes = [
+            region
+            for region in (
+                regions.region_for_state(candidate_coords[s.opis_id]["state"])
+                for s in winner.plan.stops
+                if s.opis_id is not None and s.opis_id in candidate_coords
+            )
+            if region is not None
+        ]
+        if stop_region_codes:
+            return regions.dominant_region(stop_region_codes)
+
+        if not winner.candidates:
+            return None
+        closest = min(winner.candidates, key=lambda c: c.distance_from_start_mi)
+        coords = candidate_coords.get(closest.opis_id)
+        if coords is None:
+            return None
+        return regions.region_for_state(coords["state"])
+
+    def _region_trend(self, factor_table, price_index_status, region):
+        """Trend chip data (D-07/D-08) for the route-dominant `region`.
+        A trend value is a currency claim (D-10), so both values stay
+        `None` unless the factor table is genuinely `"current"` AND
+        that region has an observed week-over-week delta -- a stale or
+        frozen response, or a region with no delta, hides the chip
+        entirely rather than showing a stale/neutral number."""
+        if price_index_status != "current" or region is None:
+            return None, None
+        delta_cents = factor_table["deltas_cents"].get(region)
+        if delta_cents is None:
+            return None, None
+        return regions.REGION_LABELS.get(region), delta_cents
