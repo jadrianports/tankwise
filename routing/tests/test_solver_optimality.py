@@ -209,3 +209,83 @@ class SolverOptimalityTests(SimpleTestCase):
             # so it cannot mask a real optimality bug -- only Decimal
             # rounding noise from summation order.
             self.assertLessEqual(abs(solver_cost - oracle_cost), Decimal("0.0001"))
+
+
+class MultiLegFlattenedOptimalityTests(SimpleTestCase):
+    """The solver's optimum holds when its input is a candidate list
+    assembled the way `routing.services.corridor`'s multi-leg path
+    assembles one -- per-leg station groups placed on ONE continuous
+    distance scale via offset-sum (Pitfall 10) -- rather than solved
+    leg-by-leg. This is the actual net-new test surface for multi-stop:
+    `solve()` itself is leg-agnostic and already covered above; what's
+    new is proving a flattened MULTI-LEG-SHAPED input still matches the
+    brute-force oracle, i.e. that offset-summing legs together and
+    solving once never produces a worse-than-optimal plan than solving
+    each leg in isolation would."""
+
+    @given(
+        leg_station_groups=st.lists(
+            st.lists(
+                st.tuples(
+                    st.decimals(min_value="1.00", max_value="6.00", places=2),
+                    st.decimals(min_value="1", max_value="300", places=0),
+                ),
+                min_size=0,
+                max_size=2,
+            ),
+            min_size=2,
+            max_size=3,
+        ),
+        leg_length_mi=st.decimals(min_value="50", max_value="300", places=0),
+        tank_range_mi=st.decimals(min_value="20", max_value="800", places=0),
+        mpg=st.decimals(min_value="1", max_value="50", places=0),
+        starting_fuel=st.decimals(min_value="0.00", max_value="1.00", places=2),
+    )
+    @settings(deadline=None, max_examples=200)
+    def test_flattened_multi_leg_candidates_match_brute_force_optimum(
+        self, leg_station_groups, leg_length_mi, tank_range_mi, mpg, starting_fuel
+    ):
+        # Build a flattened candidate list the same way corridor.py's
+        # multi-leg path does: each leg contributes stations positioned
+        # by LOCAL distance-within-leg (clamped to that leg's own
+        # length), offset by the cumulative length of every PRIOR leg
+        # (offset-sum) -- never re-projected onto one merged line, and
+        # never solved leg-by-leg.
+        total_route_mi = leg_length_mi * len(leg_station_groups)
+        candidates = []
+        opis_id = 0
+        for leg_index, station_group in enumerate(leg_station_groups):
+            offset_mi = leg_length_mi * leg_index
+            for price, local_dist in station_group:
+                if local_dist > leg_length_mi:
+                    continue
+                candidates.append(
+                    Candidate(
+                        name=f"S{opis_id}",
+                        opis_id=opis_id,
+                        price_per_gallon=price,
+                        distance_from_start_mi=offset_mi + local_dist,
+                    )
+                )
+                opis_id += 1
+
+        try:
+            plan = solve(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+        except InfeasibleRouteError:
+            solver_feasible, solver_cost = False, None
+        else:
+            solver_feasible, solver_cost = True, plan.total_cost
+
+        oracle_cost = _brute_force_optimum(
+            candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
+        )
+
+        self.assertEqual(solver_feasible, oracle_cost is not None)
+        if solver_feasible:
+            self.assertLessEqual(abs(solver_cost - oracle_cost), Decimal("0.0001"))

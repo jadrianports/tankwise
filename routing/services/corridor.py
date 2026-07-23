@@ -191,9 +191,27 @@ def candidates(route, factor_for=None) -> list[Candidate]:
     regional index multiplies `station.retail_price`. Defaults to a
     neutral 1.0 no-op so every existing caller that only passes `route`
     keeps its exact prior behavior.
+
+    When `route.leg_distances_mi` carries more than one entry (a
+    multi-stop route), delegates to the multi-leg-aware build (Pitfall
+    10 & 12): stations are queried and projected per-leg, then placed on
+    one flattened distance-from-start scale via offset-sum -- never by
+    projecting onto a single merged multi-leg line. A single-leg route
+    (today's plain A->B trips, or a `Route` predating these fields)
+    keeps this exact byte-identical single-corridor path.
     """
     if factor_for is None:
         factor_for = _no_op_factor
+
+    if len(route.leg_distances_mi) > 1:
+        return _candidates_multi_leg(route, factor_for)
+
+    return _candidates_single_leg(route, factor_for)
+
+
+def _candidates_single_leg(route, factor_for) -> list[Candidate]:
+    """The original whole-route single-corridor build -- unchanged
+    behavior, extracted verbatim so `candidates()` can dispatch to it."""
     rooftop_mi, city_mi = _corridor_widths()
 
     coords = route.raw_coordinates
@@ -253,3 +271,79 @@ def candidates(route, factor_for=None) -> list[Candidate]:
         )
 
     return result
+
+
+def _candidates_multi_leg(route, factor_for) -> list[Candidate]:
+    """Multi-leg-aware candidate build (Pitfall 10 & 12): queries
+    stations per Mapbox leg (STRtree scoped to that leg's own
+    bbox+buffer), projects each candidate against its OWN leg's planar
+    line, and places it on the single flattened distance-from-start
+    scale via offset-sum -- never by projecting onto one merged
+    multi-leg line (a self-overlapping/backtracking route can resolve a
+    candidate to the wrong occurrence on a merged line).
+
+    A station within corridor width of two adjacent legs (typically one
+    that sits close to the shared boundary waypoint) is deduplicated to
+    the single occurrence with the smaller perpendicular distance --
+    the local import of `multi_leg` here (rather than at module level)
+    breaks the corridor.py <-> multi_leg.py import cycle (multi_leg.py
+    imports this module's `build_planar_route`/`mean_lat_rad` helpers).
+    """
+    from routing.services.multi_leg import flatten_route
+
+    rooftop_mi, city_mi = _corridor_widths()
+    flattened = flatten_route(route)
+    tree, indexed_stations = _get_index()
+
+    best_by_opis_id = {}
+    for leg_index, leg_coords in enumerate(flattened.leg_coord_slices):
+        mean_lat = flattened.leg_mean_lats[leg_index]
+        planar_leg = flattened.leg_lines[leg_index]
+        leg_planar_length_mi = flattened.leg_planar_lengths_mi[leg_index]
+        leg_real_mi = route.leg_distances_mi[leg_index]
+        offset_mi = flattened.leg_boundaries_mi[leg_index]
+
+        if leg_planar_length_mi == 0:
+            continue
+
+        buffer_deg = _corridor_buffer_degrees(leg_coords, city_mi, mean_lat=mean_lat)
+        raw_leg = LineString(leg_coords)
+        query_region = raw_leg.buffer(buffer_deg)
+        survivor_idx = tree.query(query_region, predicate="intersects")
+        stations = [indexed_stations[i] for i in survivor_idx]
+
+        for station in stations:
+            planar_point = project_point(
+                float(station.longitude),
+                float(station.latitude),
+                leg_coords,
+                mean_lat=mean_lat,
+            )
+
+            half_width = (
+                rooftop_mi
+                if station.geocode_precision == GeocodePrecision.ROOFTOP
+                else city_mi
+            )
+
+            perpendicular_mi = _as_decimal(planar_leg.distance(planar_point))
+            if perpendicular_mi > half_width:
+                continue
+
+            fraction = _as_decimal(planar_leg.project(planar_point)) / leg_planar_length_mi
+            local_mi = fraction * leg_real_mi
+            local_mi = max(Decimal(0), min(local_mi, leg_real_mi))
+            distance_from_start_mi = offset_mi + local_mi
+
+            candidate = Candidate(
+                name=station.name,
+                opis_id=station.opis_id,
+                price_per_gallon=station.retail_price * factor_for(station.state),
+                distance_from_start_mi=distance_from_start_mi,
+            )
+
+            existing = best_by_opis_id.get(station.opis_id)
+            if existing is None or perpendicular_mi < existing[0]:
+                best_by_opis_id[station.opis_id] = (perpendicular_mi, candidate)
+
+    return [candidate for _, candidate in best_by_opis_id.values()]
