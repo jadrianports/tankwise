@@ -347,6 +347,19 @@ _CANDIDATE_STATION_SCHEMA = inline_serializer(
     many=True,
 )
 
+_WAYPOINT_SCHEMA = inline_serializer(
+    name="Waypoint",
+    fields={
+        "label": serializers.CharField(),
+        "name": serializers.CharField(),
+        "lat": serializers.FloatField(),
+        "lng": serializers.FloatField(),
+        "distance_from_start_mi": serializers.CharField(),
+        "duration_s": serializers.IntegerField(allow_null=True),
+    },
+    many=True,
+)
+
 _ROUTE_RESPONSE_SCHEMA = inline_serializer(
     name="RouteResponse",
     fields={
@@ -383,6 +396,7 @@ _ROUTE_RESPONSE_SCHEMA = inline_serializer(
         "alternatives_considered": serializers.IntegerField(),
         "alternatives": _ALTERNATIVE_SCHEMA,
         "candidate_stations": _CANDIDATE_STATION_SCHEMA,
+        "waypoints": _WAYPOINT_SCHEMA,
         "price_as_of": serializers.CharField(),
         "price_data_note": serializers.CharField(),
         "price_index_status": serializers.CharField(),
@@ -516,6 +530,24 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
                 "lng": -100.532231,
                 "price_per_gallon": "2.76",
                 "distance_from_start_mi": "218",
+            },
+        ],
+        "waypoints": [
+            {
+                "label": "A",
+                "name": "START",
+                "lat": 32.7767,
+                "lng": -96.7970,
+                "distance_from_start_mi": "0",
+                "duration_s": 0,
+            },
+            {
+                "label": "B",
+                "name": "FINISH",
+                "lat": 34.0522,
+                "lng": -118.2437,
+                "distance_from_start_mi": "1437",
+                "duration_s": 86400,
             },
         ],
         "price_as_of": "2025-01-01",

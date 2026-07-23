@@ -171,6 +171,28 @@ def _alternatives_repr(alternatives) -> list:
     ]
 
 
+def _waypoints_repr(waypoint_markers) -> list:
+    """Render the additive `waypoints[]` response array (WAY-06/WAY-08):
+    a `routing.services.legs.WaypointMarker` list into
+    `{label, name, lat, lng, distance_from_start_mi, duration_s}`
+    entries, keyed independently of `legs[]`/`fuel_stops[]` since a
+    user waypoint is not always a fuel-stop boundary. `lat`/`lng` are
+    already `float` on `WaypointMarker` (GL layer, mirroring
+    `_candidate_stations_repr`); reuses `_quantize_miles`/
+    `_duration_repr` -- no new formatter is introduced."""
+    return [
+        {
+            "label": w.label,
+            "name": w.name,
+            "lat": w.lat,
+            "lng": w.lng,
+            "distance_from_start_mi": _quantize_miles(w.distance_from_start_mi),
+            "duration_s": _duration_repr(w.duration_s),
+        }
+        for w in waypoint_markers
+    ]
+
+
 def _candidate_stations_repr(candidates, candidate_coords) -> list:
     """Render the corridor's `candidate_stations[]` array: a
     lean five-field entry per in-corridor candidate station -- no
@@ -474,6 +496,10 @@ class RouteResponseSerializer(serializers.Serializer):
       route-dominant region's display label and week-over-week cents
       delta -- both `None` unless status is `"current"` and a delta
       exists for that region (D-10).
+    - `"waypoints"` (optional): a list of
+      `routing.services.legs.WaypointMarker` -- one per USER stop
+      (start, each intermediate waypoint, finish), letter-labeled --
+      absent renders `waypoints: []` (WAY-06/WAY-08).
 
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
@@ -515,6 +541,7 @@ class RouteResponseSerializer(serializers.Serializer):
         eia_week = instance.get("eia_week")
         trend_region = instance.get("trend_region")
         trend_delta_cents = instance.get("trend_delta_cents")
+        waypoints = instance.get("waypoints") or []
         freshness = price_freshness(price_index_status, eia_week)
 
         return {
@@ -537,6 +564,7 @@ class RouteResponseSerializer(serializers.Serializer):
             "candidate_stations": _candidate_stations_repr(
                 candidates, candidate_coords
             ),
+            "waypoints": _waypoints_repr(waypoints),
             "price_as_of": freshness["price_as_of"],
             "price_data_note": freshness["price_data_note"],
             "price_index_status": price_index_status,

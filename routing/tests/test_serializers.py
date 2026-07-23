@@ -20,7 +20,7 @@ from routing.serializers import (
     RouteResponseSerializer,
     price_freshness,
 )
-from routing.services.legs import Leg
+from routing.services.legs import Leg, WaypointMarker
 from routing.services.mapbox import Route
 from routing.services.naive_baseline import Savings
 from routing.services.solver import Candidate, FuelPlan, FuelStop, PurchaseReason
@@ -855,6 +855,75 @@ class CandidateStationsTests(SimpleTestCase):
         data = RouteResponseSerializer(self._minimal_instance(), context={}).data
 
         self.assertEqual(data["candidate_stations"], [])
+
+
+class WaypointsResponseTests(SimpleTestCase):
+    """waypoints[]: the additive per-USER-stop marker array (WAY-06/
+    WAY-08) -- lat/lng as floats (GL layer), miles/duration quantized
+    via the existing formatters, keyed independently of legs[]/
+    fuel_stops[]. Absent `waypoints` on the instance renders `[]`
+    (backward compatibility with a v1.0/pre-multi-stop instance)."""
+
+    def _minimal_instance(self):
+        route = Route(
+            total_route_mi=Decimal("500"), geometry=LineString(), raw_coordinates=[]
+        )
+        plan = FuelPlan(stops=[], total_cost=Decimal("0"), total_gallons=Decimal("0"))
+        return {"route": route, "plan": plan, "map_url": None}
+
+    def test_markers_render_with_float_lat_lng_and_quantized_fields(self):
+        instance = self._minimal_instance()
+        instance["waypoints"] = [
+            WaypointMarker(
+                label="A",
+                name="START",
+                lat=41.8781,
+                lng=-87.6298,
+                distance_from_start_mi=Decimal("0"),
+                duration_s=Decimal("0"),
+            ),
+            WaypointMarker(
+                label="B",
+                name="Stop B",
+                lat=39.7392,
+                lng=-104.9903,
+                distance_from_start_mi=Decimal("450.4"),
+                duration_s=Decimal("18000"),
+            ),
+            WaypointMarker(
+                label="C",
+                name="FINISH",
+                lat=34.0522,
+                lng=-118.2437,
+                distance_from_start_mi=Decimal("900"),
+                duration_s=None,
+            ),
+        ]
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(len(data["waypoints"]), 3)
+        b = data["waypoints"][1]
+        self.assertEqual(
+            set(b.keys()),
+            {"label", "name", "lat", "lng", "distance_from_start_mi", "duration_s"},
+        )
+        self.assertEqual(b["label"], "B")
+        self.assertEqual(b["name"], "Stop B")
+        self.assertIsInstance(b["lat"], float)
+        self.assertIsInstance(b["lng"], float)
+        self.assertEqual(b["lat"], 39.7392)
+        self.assertEqual(b["lng"], -104.9903)
+        self.assertEqual(b["distance_from_start_mi"], "450")
+        self.assertEqual(b["duration_s"], 18000)
+        # None duration_s (an empty-annotation route) renders as null,
+        # never fabricated.
+        self.assertIsNone(data["waypoints"][2]["duration_s"])
+
+    def test_absent_waypoints_key_renders_empty_list(self):
+        data = RouteResponseSerializer(self._minimal_instance(), context={}).data
+
+        self.assertEqual(data["waypoints"], [])
 
 
 class FuelStopDistanceFromStartTests(SimpleTestCase):
