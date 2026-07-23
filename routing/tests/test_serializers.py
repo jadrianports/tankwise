@@ -273,6 +273,73 @@ class VehicleRequestTests(SimpleTestCase):
             self.assertIn("vehicle", serializer.errors)
 
 
+class WaypointsRequestTests(SimpleTestCase):
+    """`waypoints[]`: additive, optional, defaults to `[]`, each element
+    bbox-validated identically to `start`/`finish`, bounded by
+    `max_length=8` (WAY-03)."""
+
+    def test_absent_waypoints_resolves_to_empty_list(self):
+        serializer = RouteRequestSerializer(
+            data={"start": "40.0,-74.0", "finish": "41.0,-75.0"}
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["waypoints"], [])
+
+    def test_three_stop_waypoints_validate_through_location_field(self):
+        serializer = RouteRequestSerializer(
+            data={
+                "start": "34.0522,-118.2437",
+                "waypoints": ["39.7392,-104.9903", "St Louis, MO"],
+                "finish": "41.8781,-87.6298",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        waypoints = serializer.validated_data["waypoints"]
+        self.assertEqual(len(waypoints), 2)
+        self.assertEqual(waypoints[0]["kind"], "coordinate")
+        self.assertEqual(waypoints[0]["lat"], Decimal("39.7392"))
+        self.assertEqual(waypoints[1]["kind"], "address")
+        self.assertEqual(waypoints[1]["value"], "St Louis, MO")
+
+    def test_nine_waypoints_exceeds_max_length(self):
+        serializer = RouteRequestSerializer(
+            data={
+                "start": "40.0,-74.0",
+                "waypoints": [f"{40 + i}.0,-74.0" for i in range(9)],
+                "finish": "41.0,-75.0",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("waypoints", serializer.errors)
+
+    def test_eight_waypoints_is_accepted(self):
+        serializer = RouteRequestSerializer(
+            data={
+                "start": "40.0,-74.0",
+                "waypoints": [f"{40 + i}.0,-74.0" for i in range(8)],
+                "finish": "41.0,-75.0",
+            }
+        )
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(len(serializer.validated_data["waypoints"]), 8)
+
+    def test_waypoint_outside_continental_us_is_rejected(self):
+        serializer = RouteRequestSerializer(
+            data={
+                "start": "40.0,-74.0",
+                "waypoints": ["50.4452,-104.6189"],  # Regina, Saskatchewan
+                "finish": "41.0,-75.0",
+            }
+        )
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("waypoints", serializer.errors)
+
+
 class PriceFreshnessTests(SimpleTestCase):
     """price_freshness() surfaces the configured dataset vintage and its
     paired caveat, validated at point of use."""

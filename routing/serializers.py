@@ -311,7 +311,8 @@ class VehicleSerializer(serializers.Serializer):
 
 
 class RouteRequestSerializer(serializers.Serializer):
-    """`{"start": <loc>, "finish": <loc>, "vehicle": <optional>}`.
+    """`{"start": <loc>, "finish": <loc>, "vehicle": <optional>,
+    "waypoints": <optional>}`.
 
     `start`/`finish` are both polymorphic coordinate-or-address fields.
     `vehicle` is an optional nested object -- `{"mpg", "tank_range_mi",
@@ -321,11 +322,24 @@ class RouteRequestSerializer(serializers.Serializer):
     `vehicle` entirely preserves the exact v1.0 request contract: a
     body of just `{"start", "finish"}` still validates and resolves to
     the same defaulted profile.
+
+    `waypoints` is an optional, additive list of intermediate stops
+    between `start` and `finish`, in visit order. Each element reuses
+    the SAME `LocationField` as `start`/`finish`, so every waypoint
+    gets identical coordinate-or-address validation and continental-US
+    bbox re-check. `max_length=8` is a defensive server-side backstop
+    (10 total stops - start - finish), independent of the client-side
+    10-stop UI cap a direct API caller can bypass. Omitting `waypoints`
+    entirely resolves to `[]`, preserving the exact pre-phase request
+    contract.
     """
 
     start = LocationField()
     finish = LocationField()
     vehicle = VehicleSerializer(required=False)
+    waypoints = serializers.ListField(
+        child=LocationField(), required=False, default=list, max_length=8
+    )
 
     def validate(self, attrs):
         # VehicleSerializer(required=False) with no `default=` is
