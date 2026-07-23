@@ -1,0 +1,66 @@
+{
+  "code": "Ok",
+  "routes": [
+    {
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [-118.2437, 34.0522],
+          [-116.5, 34.8],
+          [-114.0, 35.5],
+          [-111.5, 36.5],
+          [-108.0, 37.5],
+          [-104.9903, 39.7392],
+          [-100.0, 40.5],
+          [-95.0, 41.0],
+          [-90.5, 41.5],
+          [-87.6298, 41.8781]
+        ]
+      },
+      "distance": 3140000.0,
+      "duration": 98400.0,
+      "legs": [
+        {
+          "distance": 1600000.0,
+          "duration": 50400.0,
+          "summary": "I-15 N, I-70 E",
+          "steps": [],
+          "annotation": {
+            "distance": [320000.0, 320000.0, 320000.0, 320000.0, 320000.0],
+            "duration": [10080.0, 10080.0, 10080.0, 10080.0, 10080.0]
+          }
+        },
+        {
+          "distance": 1540000.0,
+          "duration": 48000.0,
+          "summary": "I-76 E, I-80 E",
+          "steps": [],
+          "annotation": {
+            "distance": [385000.0, 385000.0, 385000.0, 385000.0],
+            "duration": [12000.0, 12000.0, 12000.0, 12000.0]
+          }
+        }
+      ],
+      "weight": 100440.0,
+      "weight_name": "auto"
+    }
+  ],
+  "waypoints": [
+    {
+      "name": "I-10",
+      "location": [-118.2437, 34.0522],
+      "distance": 5.1
+    },
+    {
+      "name": "I-25",
+      "location": [-104.9903, 39.7392],
+      "distance": 8.3
+    },
+    {
+      "name": "N Michigan Ave",
+      "location": [-87.6298, 41.8781],
+      "distance": 4.3
+    }
+  ],
+  "uuid": "ck9c26vzz00003vtest-fixture-multi-waypoint"
+}
