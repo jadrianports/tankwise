@@ -4,18 +4,22 @@ Small, module-level pure helpers -- mirrors `routing/services/corridor.py`'s
 `_as_decimal`/helper style. Coordinates are rounded to 5 decimal places
 (~1 m) so trivial float differences still hit; addresses are casefolded
 and whitespace-collapsed so an exact-repeat address (modulo case/spacing)
-skips all outbound calls. Explicit `c:`/`a:`/`v:` prefixes give each
-component its own namespace so a coordinate token, an address token, and
-the vehicle token can never collide (mitigates cross-domain cache-key
-collisions).
+skips all outbound calls. Explicit `c:`/`a:`/`v:`/`e:` prefixes give each
+component its own namespace so a coordinate token, an address token, the
+vehicle token, and the EIA-vintage token can never collide (mitigates
+cross-domain cache-key collisions).
 
-The key is versioned `route:v2:` because every v2 response field
-(vehicle echo, savings, alternatives, per-leg breakdown, rationale)
-changes the cached payload shape -- an entry keyed under the previous
-prefix is not merely stale but structurally wrong for a v2 consumer.
-Bumping the prefix makes those entries unreachable rather than
+The key is versioned `route:v3:` because every v3 response field
+(`price_index_status`, `eia_week`, `trend_region`, `trend_delta_cents`,
+plus the fact that `fuel_stops`/`total_cost` themselves may now be
+EIA-indexed) changes the cached payload shape -- an entry keyed under
+the previous prefix is not merely stale but structurally wrong for a v3
+consumer. Bumping the prefix makes those entries unreachable rather than
 mis-served (it also means a misconfigured deploy can never silently
-return an old-shaped payload through the new code path).
+return an old-shaped payload through the new code path). The `e:` token
+additionally ties a cached payload to the EIA week it was priced under --
+a week rollover produces a new key, so no plan priced under one EIA week
+is ever served under a newer week's disclaimer (EIA-01).
 """
 from decimal import Decimal
 
@@ -82,7 +86,19 @@ def _vehicle_token(vehicle) -> str:
     )
 
 
-def build_cache_key(validated_data) -> str:
+def _eia_token(eia_vintage) -> str:
+    """Namespaced `e:` token for the EIA-week vintage a cached payload
+    was priced under. `eia_vintage` is the EIA week's raw ISO date
+    string when priced under live/stale factors, or the literal status
+    token (`"frozen"`) when priced under the permanent frozen-snapshot
+    fallback -- so a frozen-mode plan and a current-mode plan for the
+    same route/vehicle can never collide. Omitted (`None`, a legacy or
+    test caller) resolves to a fixed, stable literal rather than a
+    varying key shape."""
+    return f"e:{eia_vintage if eia_vintage is not None else 'none'}"
+
+
+def build_cache_key(validated_data, *, eia_vintage=None) -> str:
     """Build the cache key for a validated
     `{"start": ..., "finish": ..., "vehicle": ...}` payload (the
     `RouteRequestSerializer.validated_data` shape).
@@ -91,9 +107,12 @@ def build_cache_key(validated_data) -> str:
     `{"kind": "address", "value"}`. `vehicle` is optional here -- see
     `_vehicle_token` -- so callers that omit it (existing tests, a
     v1.0-shaped request that resolved to defaults) still get a stable
-    key. Composed as a simple string, not a hash -- no need to
-    hand-roll one at this scale."""
+    key. `eia_vintage` (see `_eia_token`) is likewise optional, so a
+    caller that never threads it through still gets a stable key.
+    Composed as a simple string, not a hash -- no need to hand-roll one
+    at this scale."""
     start_token = _endpoint_token(validated_data["start"])
     finish_token = _endpoint_token(validated_data["finish"])
     vehicle_token = _vehicle_token(validated_data.get("vehicle"))
-    return f"route:v2:{start_token}|{finish_token}|{vehicle_token}"
+    eia_token = _eia_token(eia_vintage)
+    return f"route:v3:{start_token}|{finish_token}|{vehicle_token}|{eia_token}"

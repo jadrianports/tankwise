@@ -111,10 +111,10 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v2: and contains exactly two
-    | separators (start|finish|vehicle)."""
+    """Every produced key starts with route:v3: and contains exactly
+    three | separators (start|finish|vehicle|eia)."""
 
-    def test_key_starts_with_prefix_and_has_two_separators(self):
+    def test_key_starts_with_prefix_and_has_three_separators(self):
         key = build_cache_key(
             {
                 "start": coord("41.8781", "-87.6298"),
@@ -122,8 +122,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v2:"))
-        self.assertEqual(key.count("|"), 2)
+        self.assertTrue(key.startswith("route:v3:"))
+        self.assertEqual(key.count("|"), 3)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -160,13 +160,13 @@ class VehicleCacheKeyTests(SimpleTestCase):
 
         self.assertEqual(key_absent, key_explicit)
 
-    def test_every_key_starts_with_v2_prefix(self):
+    def test_every_key_starts_with_v3_prefix(self):
         for payload in (
             self._payload(),
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v2:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v3:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -192,3 +192,40 @@ class VehicleCacheKeyTests(SimpleTestCase):
         keys = [build_cache_key(self._payload(profile)) for profile in profiles]
 
         self.assertEqual(len(keys), len(set(keys)))
+
+
+class EiaVintageCacheKeyTests(SimpleTestCase):
+    """The EIA-week vintage token (EIA-01) ties a cached payload to the
+    EIA week it was priced under: a week rollover produces a distinct
+    key so a stale plan is never served under a fresh disclaimer, while
+    a repeat request under the same vintage still hits the cache."""
+
+    def _payload(self):
+        return {
+            "start": coord("41.8781", "-87.6298"),
+            "finish": coord("38.6270", "-90.1994"),
+        }
+
+    def test_different_eia_vintage_produces_different_key(self):
+        key_a = build_cache_key(self._payload(), eia_vintage="2026-07-13")
+        key_b = build_cache_key(self._payload(), eia_vintage="2026-07-20")
+
+        self.assertNotEqual(key_a, key_b)
+
+    def test_identical_eia_vintage_reproduces_same_key(self):
+        key_a = build_cache_key(self._payload(), eia_vintage="2026-07-20")
+        key_b = build_cache_key(self._payload(), eia_vintage="2026-07-20")
+
+        self.assertEqual(key_a, key_b)
+
+    def test_frozen_vintage_never_collides_with_a_dated_vintage(self):
+        frozen_key = build_cache_key(self._payload(), eia_vintage="frozen")
+        current_key = build_cache_key(self._payload(), eia_vintage="2026-07-20")
+
+        self.assertNotEqual(frozen_key, current_key)
+
+    def test_omitted_eia_vintage_is_stable_across_calls(self):
+        key_a = build_cache_key(self._payload())
+        key_b = build_cache_key(self._payload())
+
+        self.assertEqual(key_a, key_b)
