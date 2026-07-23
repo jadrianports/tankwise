@@ -111,10 +111,10 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v3: and contains exactly
-    three | separators (start|finish|vehicle|eia)."""
+    """Every produced key starts with route:v4: and contains exactly
+    two | separators (stops-chain|vehicle|eia)."""
 
-    def test_key_starts_with_prefix_and_has_three_separators(self):
+    def test_key_starts_with_prefix_and_has_two_separators(self):
         key = build_cache_key(
             {
                 "start": coord("41.8781", "-87.6298"),
@@ -122,8 +122,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v3:"))
-        self.assertEqual(key.count("|"), 3)
+        self.assertTrue(key.startswith("route:v4:"))
+        self.assertEqual(key.count("|"), 2)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -160,13 +160,13 @@ class VehicleCacheKeyTests(SimpleTestCase):
 
         self.assertEqual(key_absent, key_explicit)
 
-    def test_every_key_starts_with_v3_prefix(self):
+    def test_every_key_starts_with_v4_prefix(self):
         for payload in (
             self._payload(),
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v3:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v4:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -229,3 +229,46 @@ class EiaVintageCacheKeyTests(SimpleTestCase):
         key_b = build_cache_key(self._payload())
 
         self.assertEqual(key_a, key_b)
+
+
+class WaypointOrderingCacheKeyTests(SimpleTestCase):
+    """The ordered `start -> *waypoints -> finish` token chain
+    (Pitfall 13): visit order is part of the key, so a same-stop-set
+    trip in a different order never collides with a different trip's
+    cache entry."""
+
+    def _payload(self, waypoints=None):
+        payload = {
+            "start": coord("34.0522", "-118.2437"),  # LA
+            "finish": coord("41.8781", "-87.6298"),  # Chicago
+        }
+        if waypoints is not None:
+            payload["waypoints"] = waypoints
+        return payload
+
+    def test_permuted_waypoints_produce_different_keys(self):
+        denver = coord("39.7392", "-104.9903")
+        st_louis = address("St Louis, MO")
+
+        key_denver_then_st_louis = build_cache_key(
+            self._payload([denver, st_louis])
+        )
+        key_st_louis_then_denver = build_cache_key(
+            self._payload([st_louis, denver])
+        )
+
+        self.assertNotEqual(key_denver_then_st_louis, key_st_louis_then_denver)
+
+    def test_no_waypoints_key_is_stable(self):
+        key_a = build_cache_key(self._payload())
+        key_b = build_cache_key(self._payload(waypoints=[]))
+
+        self.assertEqual(key_a, key_b)
+
+    def test_waypoints_present_differs_from_no_waypoints(self):
+        denver = coord("39.7392", "-104.9903")
+
+        key_no_waypoints = build_cache_key(self._payload())
+        key_with_waypoint = build_cache_key(self._payload([denver]))
+
+        self.assertNotEqual(key_no_waypoints, key_with_waypoint)

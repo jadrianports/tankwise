@@ -9,10 +9,10 @@ component its own namespace so a coordinate token, an address token, the
 vehicle token, and the EIA-vintage token can never collide (mitigates
 cross-domain cache-key collisions).
 
-The key is versioned `route:v3:` because every v3 response field
+The key was versioned `route:v3:` because every v3 response field
 (`price_index_status`, `eia_week`, `trend_region`, `trend_delta_cents`,
 plus the fact that `fuel_stops`/`total_cost` themselves may now be
-EIA-indexed) changes the cached payload shape -- an entry keyed under
+EIA-indexed) changed the cached payload shape -- an entry keyed under
 the previous prefix is not merely stale but structurally wrong for a v3
 consumer. Bumping the prefix makes those entries unreachable rather than
 mis-served (it also means a misconfigured deploy can never silently
@@ -20,6 +20,15 @@ return an old-shaped payload through the new code path). The `e:` token
 additionally ties a cached payload to the EIA week it was priced under --
 a week rollover produces a new key, so no plan priced under one EIA week
 is ever served under a newer week's disclaimer (EIA-01).
+
+It is now versioned `route:v4:` because the key shape itself changed:
+`start`/`finish` are joined with any intermediate `waypoints[]` into one
+ordered N-token chain (still each token from the unchanged
+`_endpoint_token()`, joined `->`, never sorted or deduped) so a
+multi-stop request's visit order is part of the key -- A->B->C and
+A->C->B must never share a cache entry (Pitfall 13). A 2-endpoint
+request produces the same token chain shape as before, just under the
+new prefix.
 """
 from decimal import Decimal
 
@@ -100,19 +109,28 @@ def _eia_token(eia_vintage) -> str:
 
 def build_cache_key(validated_data, *, eia_vintage=None) -> str:
     """Build the cache key for a validated
-    `{"start": ..., "finish": ..., "vehicle": ...}` payload (the
-    `RouteRequestSerializer.validated_data` shape).
+    `{"start": ..., "finish": ..., "vehicle": ..., "waypoints": ...}`
+    payload (the `RouteRequestSerializer.validated_data` shape).
 
-    Each of `start`/`finish` is `{"kind": "coordinate", "lat", "lng"}` or
-    `{"kind": "address", "value"}`. `vehicle` is optional here -- see
+    Each of `start`/`finish`/`waypoints[*]` is
+    `{"kind": "coordinate", "lat", "lng"}` or
+    `{"kind": "address", "value"}`. `waypoints` is optional here --
+    a caller that omits it (existing tests, a pre-waypoints-shaped
+    request) is treated as `[]`, so the ordered chain collapses to
+    the original two-endpoint shape. `vehicle` is optional here -- see
     `_vehicle_token` -- so callers that omit it (existing tests, a
     v1.0-shaped request that resolved to defaults) still get a stable
     key. `eia_vintage` (see `_eia_token`) is likewise optional, so a
     caller that never threads it through still gets a stable key.
-    Composed as a simple string, not a hash -- no need to hand-roll one
-    at this scale."""
-    start_token = _endpoint_token(validated_data["start"])
-    finish_token = _endpoint_token(validated_data["finish"])
+
+    The ordered chain is `start -> *waypoints -> finish`, each stop's
+    token built by the unchanged `_endpoint_token()` -- never sorted,
+    never deduped, so visit order is part of the key (A->B->C != A->C->B,
+    Pitfall 13). Composed as a simple string, not a hash -- no need to
+    hand-roll one at this scale."""
+    waypoints = validated_data.get("waypoints") or []
+    stops = [validated_data["start"], *waypoints, validated_data["finish"]]
+    stops_token = "->".join(_endpoint_token(stop) for stop in stops)
     vehicle_token = _vehicle_token(validated_data.get("vehicle"))
     eia_token = _eia_token(eia_vintage)
-    return f"route:v3:{start_token}|{finish_token}|{vehicle_token}|{eia_token}"
+    return f"route:v4:{stops_token}|{vehicle_token}|{eia_token}"
