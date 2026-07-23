@@ -168,7 +168,13 @@ def _corridor_buffer_degrees(coords_lnglat, city_mi, *, mean_lat=None):
     return float(max(lat_pad, lng_pad))
 
 
-def candidates(route) -> list[Candidate]:
+def _no_op_factor(_state):
+    """Default `factor_for` when the caller passes none -- neutral 1.0
+    for every state, preserving pre-EIA-indexing behavior exactly."""
+    return Decimal("1")
+
+
+def candidates(route, factor_for=None) -> list[Candidate]:
     """Return solver-ready Candidate stations within the route's
     precision-tiered perpendicular corridor.
 
@@ -178,7 +184,16 @@ def candidates(route) -> list[Candidate]:
     the endpoint/chord shortcut) against the equirectangular-scaled route
     polyline. Returns whatever the corridor contains -- no feasibility
     judgement, no re-widening on an empty result.
+
+    `factor_for`: an optional `state -> Decimal` callable (see
+    `routing.services.eia.make_factor_lookup`) applied to each station's
+    price at Candidate construction -- the single seam where the EIA
+    regional index multiplies `station.retail_price`. Defaults to a
+    neutral 1.0 no-op so every existing caller that only passes `route`
+    keeps its exact prior behavior.
     """
+    if factor_for is None:
+        factor_for = _no_op_factor
     rooftop_mi, city_mi = _corridor_widths()
 
     coords = route.raw_coordinates
@@ -227,7 +242,12 @@ def candidates(route) -> list[Candidate]:
             Candidate(
                 name=station.name,
                 opis_id=station.opis_id,
-                price_per_gallon=station.retail_price,
+                # The phase's single factor-application point (EIA-01/D-02):
+                # station.retail_price itself is never reassigned -- only
+                # this derived Candidate price is scaled. A factor that
+                # reorders which stations are cheapest is the intended
+                # outcome, not a bug (see corridor/solver tests).
+                price_per_gallon=station.retail_price * factor_for(station.state),
                 distance_from_start_mi=distance_from_start_mi,
             )
         )
