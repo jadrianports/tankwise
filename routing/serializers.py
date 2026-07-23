@@ -8,6 +8,7 @@ to exactly 2 decimal places and route distance to the nearest whole mile,
 all at this one boundary -- the solver and Mapbox client
 upstream never round.
 """
+import datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from django.conf import settings
@@ -343,9 +344,32 @@ class RouteRequestSerializer(serializers.Serializer):
         return attrs
 
 
-def price_freshness() -> dict:
-    """Return the configured fuel-price dataset vintage and its paired
-    limitation note.
+def _friendly_eia_week(iso_date: str) -> str:
+    """Format an EIA week's raw ISO date string (e.g. `"2026-07-20"`) as
+    a friendly "Mon D, YYYY" date (e.g. `"Jul 20, 2026"`) for the
+    `price_as_of` disclaimer. `%-d`/`%#d` day-of-month strftime flags
+    aren't portable across platforms, so the day number is interpolated
+    directly rather than relying on one."""
+    d = datetime.date.fromisoformat(iso_date)
+    return f"{d.strftime('%b')} {d.day}, {d.year}"
+
+
+def price_freshness(price_index_status=None, eia_week=None) -> dict:
+    """Return the price-vintage disclaimer for the given
+    `price_index_status` (`"current"` | `"stale"` | `"frozen"` | `None`)
+    and `eia_week` (the EIA week's raw ISO date string, or `None`).
+
+    - `"current"`/`"stale"` (with a resolvable `eia_week`): `price_as_of`
+      is the EIA week formatted as a friendly date; `price_data_note`
+      names it explicitly ("indexed to the EIA ... week of {date}"),
+      with a `" (latest available)"` suffix appended for `"stale"`
+      (D-16/D-17, EIA-02/EIA-03).
+    - Anything else (`None`/`"frozen"`, or a `"current"`/`"stale"`
+      status with no `eia_week` to render): the original, byte-identical
+      2024-snapshot sentence from `settings.FUEL_PRICE_AS_OF`/
+      `FUEL_PRICE_DATA_NOTE`, exactly as before this phase -- so exports/
+      print inherit the unchanged text when EIA data was never fetched
+      (D-12).
 
     Validated at point of use, not import time -- mirrors
     `routing.services.corridor._corridor_widths`'s pattern of raising
@@ -353,6 +377,16 @@ def price_freshness() -> dict:
     misconfigured deployment fails loudly at request time rather than
     silently shipping a null freshness field.
     """
+    if price_index_status in ("current", "stale") and eia_week:
+        friendly = _friendly_eia_week(eia_week)
+        note = (
+            "Station prices are indexed to the EIA on-highway diesel "
+            f"average for the week of {friendly}."
+        )
+        if price_index_status == "stale":
+            note += " (latest available)"
+        return {"price_as_of": friendly, "price_data_note": note}
+
     as_of = settings.FUEL_PRICE_AS_OF
     if not as_of:
         raise ImproperlyConfigured(
@@ -420,6 +454,15 @@ class RouteResponseSerializer(serializers.Serializer):
       `"total_route_mi"`, `"duration_s"`, `"total_cost"` (or `None` when
       infeasible), `"chosen"`, `"feasible"` -- absent renders
       `alternatives: []` and `alternatives_considered: 0`.
+    - `"price_index_status"` (optional): `"current"` | `"stale"` |
+      `"frozen"` -- absent/`None` defaults to `"frozen"`, so a v2-shaped
+      instance renders the original 2024-snapshot disclaimer unchanged.
+    - `"eia_week"` (optional): the EIA week's raw ISO date string the
+      table was priced under, or `None` in frozen mode.
+    - `"trend_region"`/`"trend_delta_cents"` (optional): the
+      route-dominant region's display label and week-over-week cents
+      delta -- both `None` unless status is `"current"` and a delta
+      exists for that region (D-10).
 
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
@@ -457,7 +500,11 @@ class RouteResponseSerializer(serializers.Serializer):
         alternatives = instance.get("alternatives") or []
         candidates = self.context.get("candidates") or []
         candidate_coords = self.context.get("candidate_coords") or {}
-        freshness = price_freshness()
+        price_index_status = instance.get("price_index_status", "frozen")
+        eia_week = instance.get("eia_week")
+        trend_region = instance.get("trend_region")
+        trend_delta_cents = instance.get("trend_delta_cents")
+        freshness = price_freshness(price_index_status, eia_week)
 
         return {
             "start": _location_repr(self.context.get("start_coords")),
@@ -481,4 +528,8 @@ class RouteResponseSerializer(serializers.Serializer):
             ),
             "price_as_of": freshness["price_as_of"],
             "price_data_note": freshness["price_data_note"],
+            "price_index_status": price_index_status,
+            "eia_week": eia_week,
+            "trend_region": trend_region,
+            "trend_delta_cents": trend_delta_cents,
         }

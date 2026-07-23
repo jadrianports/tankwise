@@ -6,6 +6,7 @@ import json
 import math
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.test import SimpleTestCase, override_settings
 from shapely.geometry import LineString
@@ -297,6 +298,45 @@ class PriceFreshnessTests(SimpleTestCase):
         datetime.date.fromisoformat(result["price_as_of"])
 
 
+class PriceFreshnessDynamicStatusTests(SimpleTestCase):
+    """The dynamic status branches (D-16/D-17, EIA-02/EIA-03): "current"
+    and "stale" render the EIA-week disclaimer; "frozen"/`None` keep the
+    original 2024-snapshot sentence byte-identical to pre-phase
+    behavior."""
+
+    def test_current_status_renders_friendly_eia_week_disclaimer(self):
+        result = price_freshness("current", "2026-07-20")
+
+        self.assertEqual(result["price_as_of"], "Jul 20, 2026")
+        self.assertIn("EIA on-highway diesel", result["price_data_note"])
+        self.assertIn("Jul 20, 2026", result["price_data_note"])
+        self.assertNotIn("(latest available)", result["price_data_note"])
+
+    def test_stale_status_appends_latest_available_suffix(self):
+        result = price_freshness("stale", "2026-07-08")
+
+        self.assertEqual(result["price_as_of"], "Jul 8, 2026")
+        self.assertTrue(result["price_data_note"].endswith("(latest available)"))
+
+    def test_frozen_status_matches_unmodified_settings_values(self):
+        default_result = price_freshness()
+        frozen_result = price_freshness("frozen", None)
+
+        self.assertEqual(frozen_result, default_result)
+        self.assertEqual(frozen_result["price_as_of"], settings.FUEL_PRICE_AS_OF)
+        self.assertEqual(
+            frozen_result["price_data_note"], settings.FUEL_PRICE_DATA_NOTE
+        )
+
+    def test_current_status_with_no_eia_week_falls_back_to_frozen_settings(self):
+        # A "current"/"stale" status with no eia_week to render (should
+        # never happen given the view's contract, but must degrade
+        # safely rather than raise or format `None`).
+        result = price_freshness("current", None)
+
+        self.assertEqual(result["price_as_of"], settings.FUEL_PRICE_AS_OF)
+
+
 class FuelStopRationaleTests(SimpleTestCase):
     """Per-stop `rationale` object: structured facts only, reusing
     `_quantize_money` for every price, no prose."""
@@ -502,6 +542,26 @@ class RouteResponseSerializerTopLevelFieldsTests(SimpleTestCase):
         self.assertEqual(data["legs"], [])
         self.assertIn("price_as_of", data)
         self.assertIn("price_data_note", data)
+        self.assertEqual(data["price_index_status"], "frozen")
+        self.assertIsNone(data["eia_week"])
+        self.assertIsNone(data["trend_region"])
+        self.assertIsNone(data["trend_delta_cents"])
+
+    def test_current_status_instance_renders_eia_fields_and_trend(self):
+        instance = self._minimal_instance()
+        instance["price_index_status"] = "current"
+        instance["eia_week"] = "2026-07-20"
+        instance["trend_region"] = "Gulf Coast"
+        instance["trend_delta_cents"] = 4
+
+        data = RouteResponseSerializer(instance, context={}).data
+
+        self.assertEqual(data["price_index_status"], "current")
+        self.assertEqual(data["eia_week"], "2026-07-20")
+        self.assertEqual(data["trend_region"], "Gulf Coast")
+        self.assertEqual(data["trend_delta_cents"], 4)
+        self.assertEqual(data["price_as_of"], "Jul 20, 2026")
+        self.assertIn("EIA on-highway diesel", data["price_data_note"])
 
     def test_vehicle_echo_includes_derived_starting_fuel_mi(self):
         instance = self._minimal_instance()
