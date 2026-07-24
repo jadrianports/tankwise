@@ -75,6 +75,11 @@ export interface DemoTrip {
   description: string;
   start: string;
   finish: string;
+  // Additive (D-09/D-10, WAY-09): order-preserving intermediate stops,
+  // same fixed "lat,lng" string shape as start/finish -- never addresses,
+  // so a repeat click always hits the same normalized cache key. Absent
+  // for the three original A->B chips, which stay byte-unchanged.
+  waypoints?: string[];
 }
 
 // Exported as `PRESET_ROUTES`; `DEMO_TRIPS` below is the alias current
@@ -97,6 +102,13 @@ export const PRESET_ROUTES: DemoTrip[] = [
     description: 'No drivable route',
     start: '33.3879,-118.4163',
     finish: '34.0522,-118.2437',
+  },
+  {
+    label: 'Los Angeles → Denver → Chicago',
+    description: 'Multi-stop · Rockies crossing · multiple fuel stops',
+    start: '34.0522,-118.2437',
+    finish: '41.8781,-87.6298',
+    waypoints: ['39.7392,-104.9903'],
   },
 ];
 
