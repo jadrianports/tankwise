@@ -44,6 +44,9 @@ with open(
 ) as f:
     MULTI_ROUTE_FIXTURE = json.load(f)
 
+with open(FIXTURES_DIR / "mapbox_multi_waypoint.json", encoding="utf-8") as f:
+    MULTI_WAYPOINT_FIXTURE = json.load(f)
+
 ROUTE_COORDS = DIRECTIONS_FIXTURE["routes"][0]["geometry"]["coordinates"]
 # The 4th route vertex, used as a station's own lat/lng so it sits
 # exactly on the route (perpendicular distance ~0) -- guaranteed inside
@@ -282,7 +285,10 @@ class RouteViewWaypointOrchestrationTests(APITestCase):
 
     def test_three_stop_request_calls_get_routes_once_with_three_coords(self):
         with mock.patch(
-            "routing.views.get_routes", return_value=[_unit_route(0, "400")]
+            "routing.views.get_routes",
+            return_value=[
+                _multi_leg_unit_route(0, "400", [Decimal("200"), Decimal("200")])
+            ],
         ) as mock_get_routes, mock.patch(
             "routing.views.corridor.candidates", return_value=[]
         ):
@@ -331,6 +337,47 @@ class RouteViewWaypointOrchestrationTests(APITestCase):
                 (Decimal("38.6270"), Decimal("-90.1994")),
             ],
         )
+
+    def test_three_stop_response_includes_waypoints_array_with_three_markers(self):
+        """End-to-end (real Mapbox response parse + corridor + solver,
+        no mocking below the HTTP transport boundary): a feasible
+        3-stop trip's response carries a top-level `waypoints[]` array
+        of exactly 3 letter-labeled markers (WAY-06/WAY-08)."""
+        payload = json.loads(json.dumps(MULTI_WAYPOINT_FIXTURE))
+        # Shrink both legs well under the 500-mi default tank range so
+        # the trip is feasible with zero stations seeded -- only the
+        # reported `distance` fields change, geometry/annotations are
+        # untouched (same technique as `_alternatives_payload`).
+        payload["routes"][0]["distance"] = 400 * 1609.344
+        payload["routes"][0]["legs"][0]["distance"] = 200 * 1609.344
+        payload["routes"][0]["legs"][1]["distance"] = 200 * 1609.344
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(payload)
+        ) as mock_get:
+            response = self.client.post(
+                ROUTE_URL,
+                {
+                    "start": "34.0522,-118.2437",
+                    "waypoints": ["39.7392,-104.9903"],
+                    "finish": "41.8781,-87.6298",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        mock_get.assert_called_once()
+
+        waypoints = response.data["waypoints"]
+        self.assertEqual([w["label"] for w in waypoints], ["A", "B", "C"])
+        self.assertEqual(waypoints[0]["name"], "START")
+        self.assertEqual(waypoints[0]["distance_from_start_mi"], "0")
+        self.assertEqual(waypoints[1]["distance_from_start_mi"], "200")
+        self.assertEqual(waypoints[2]["name"], "FINISH")
+        self.assertEqual(waypoints[2]["distance_from_start_mi"], "400")
+        for w in waypoints:
+            self.assertIsInstance(w["lat"], float)
+            self.assertIsInstance(w["lng"], float)
 
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
@@ -558,6 +605,26 @@ def _unit_route(index, total_route_mi, duration_s="100"):
     )
 
 
+def _multi_leg_unit_route(index, total_route_mi, leg_distances_mi, duration_s="100"):
+    """A minimal multi-leg `Route` for waypoint-orchestration/D-07
+    unit tests -- `raw_coordinates`/`leg_annotation_lengths` are
+    shaped to match `leg_distances_mi`'s own leg count (one segment
+    per leg), consistent with what Mapbox actually returns for an
+    N-coordinate multi-stop request, so `flatten_route` can safely
+    slice it."""
+    n_legs = len(leg_distances_mi)
+    raw_coordinates = [[i, i] for i in range(n_legs + 1)]
+    return Route(
+        total_route_mi=Decimal(str(total_route_mi)),
+        geometry=LineString(raw_coordinates),
+        raw_coordinates=raw_coordinates,
+        duration_s=Decimal(str(duration_s)),
+        alternative_index=index,
+        leg_distances_mi=leg_distances_mi,
+        leg_annotation_lengths=[1] * n_legs,
+    )
+
+
 class RouteViewOrchestrationUnitTests(SimpleTestCase):
     """Direct unit tests of `RouteView._solve_all_alternatives` and
     `_select_winner` against hand-built `Route`/`Candidate` objects --
@@ -668,6 +735,87 @@ class RouteViewOrchestrationUnitTests(SimpleTestCase):
             self._tied_result(0, "50.00", 300, "1000"),
         ]
         self.assertEqual(view._select_winner(results).index, 0)
+
+
+class RouteViewInfeasibleLegEnrichmentTests(SimpleTestCase):
+    """D-07: the smallest-gap `InfeasibleRouteError` re-raised by
+    `_solve_all_alternatives` is additively enriched with the
+    user-stop leg boundary its gap falls within -- computed here, in
+    the view layer, never inside the pure solver."""
+
+    def _view(self):
+        view = RouteView()
+        view._timing = ServerTiming()
+        return view
+
+    def test_no_ordered_stop_coords_leaves_error_unenriched(self):
+        """A caller with no multi-stop context (e.g. an existing
+        pre-multi-stop unit test) gets back the exact prior shape --
+        leg_index/leg_coords stay None."""
+        view = self._view()
+        routes = [_unit_route(0, 900)]
+
+        with mock.patch("routing.views.corridor.candidates", return_value=[]):
+            with self.assertRaises(InfeasibleRouteError) as ctx:
+                view._solve_all_alternatives(routes, _UNIT_VEHICLE, None)
+
+        self.assertIsNone(ctx.exception.leg_index)
+        self.assertIsNone(ctx.exception.leg_coords)
+
+    def test_two_point_request_leaves_error_unenriched(self):
+        """A single-leg (2-stop, no waypoints) route has exactly one
+        leg -- naming "the" leg adds no information, so it stays
+        unenriched even when ordered_stop_coords is supplied."""
+        view = self._view()
+        routes = [_unit_route(0, 900)]
+        ordered_stop_coords = [(Decimal("0"), Decimal("0")), (Decimal("1"), Decimal("1"))]
+
+        with mock.patch("routing.views.corridor.candidates", return_value=[]):
+            with self.assertRaises(InfeasibleRouteError) as ctx:
+                view._solve_all_alternatives(
+                    routes, _UNIT_VEHICLE, None, ordered_stop_coords
+                )
+
+        self.assertIsNone(ctx.exception.leg_index)
+        self.assertIsNone(ctx.exception.leg_coords)
+
+    def test_middle_leg_gap_reports_correct_leg_index_and_coords(self):
+        """A 3-stop (2-leg) trip that can reach a station 450 mi in
+        (within leg B->C, boundary at mile 200) but cannot then reach
+        FINISH at mile 1200 reports leg_index=1 -- the B->C leg, not
+        A->B."""
+        route = _multi_leg_unit_route(
+            0, "1200", [Decimal("200"), Decimal("1000")]
+        )
+        candidate = Candidate(
+            name="Mid Station",
+            opis_id=9,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("450"),
+        )
+        ordered_stop_coords = [
+            (Decimal("41.8781"), Decimal("-87.6298")),  # A / START
+            (Decimal("39.7392"), Decimal("-104.9903")),  # B / waypoint
+            (Decimal("34.0522"), Decimal("-118.2437")),  # C / FINISH
+        ]
+        view = self._view()
+
+        with mock.patch(
+            "routing.views.corridor.candidates", return_value=[candidate]
+        ):
+            with self.assertRaises(InfeasibleRouteError) as ctx:
+                view._solve_all_alternatives(
+                    [route], _UNIT_VEHICLE, None, ordered_stop_coords
+                )
+
+        self.assertEqual(ctx.exception.leg_index, 1)
+        self.assertEqual(
+            ctx.exception.leg_coords,
+            (
+                (float(ordered_stop_coords[1][0]), float(ordered_stop_coords[1][1])),
+                (float(ordered_stop_coords[2][0]), float(ordered_stop_coords[2][1])),
+            ),
+        )
 
 
 class RouteViewBaselineSavingsUnitTests(SimpleTestCase):

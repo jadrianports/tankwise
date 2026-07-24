@@ -70,8 +70,9 @@ from routing.serializers import (
 )
 from routing.services import corridor, eia, naive_baseline, regions, solver
 from routing.services.exceptions import InfeasibleRouteError
-from routing.services.legs import build_legs
+from routing.services.legs import build_legs, build_waypoint_markers
 from routing.services.mapbox import Route, geocode, get_routes
+from routing.services.multi_leg import flatten_route
 from routing.throttles import RouteBurstThrottle, RouteSustainedThrottle
 from routing.timing import ServerTiming
 
@@ -628,7 +629,9 @@ class RouteView(APIView):
                 routes = get_routes(ordered_coords)
 
             factor_for = eia.make_factor_lookup(factor_table)
-            results = self._solve_all_alternatives(routes, vehicle, factor_for)
+            results = self._solve_all_alternatives(
+                routes, vehicle, factor_for, ordered_coords
+            )
             winner = self._select_winner(results)
 
             stop_coords = self._stop_coords(winner.plan)
@@ -655,6 +658,9 @@ class RouteView(APIView):
             )
 
             legs = build_legs(winner.route, winner.plan)
+            waypoint_markers = build_waypoint_markers(
+                winner.route, ordered_coords, self._leg_boundaries_mi(winner.route)
+            )
             savings, savings_note = self._baseline_savings(winner, vehicle)
             alternatives = [
                 {
@@ -681,6 +687,7 @@ class RouteView(APIView):
                     "eia_week": factor_table["week"],
                     "trend_region": trend_region,
                     "trend_delta_cents": trend_delta_cents,
+                    "waypoints": waypoint_markers,
                 },
                 context={
                     "start_coords": start_coords,
@@ -698,7 +705,7 @@ class RouteView(APIView):
         response["Server-Timing"] = self._timing.header_value()
         return response
 
-    def _solve_all_alternatives(self, routes, vehicle, factor_for):
+    def _solve_all_alternatives(self, routes, vehicle, factor_for, ordered_stop_coords=None):
         """Solve every route alternative Mapbox returned, catching only
         `InfeasibleRouteError` per alternative -- the project's one
         sanctioned deviation from the no-try/except pipeline shape,
@@ -710,14 +717,22 @@ class RouteView(APIView):
         alternative's corridor pass so each candidate's price is
         indexed identically regardless of which alternative wins.
 
+        `ordered_stop_coords`: the resolved `[start, *waypoints, finish]`
+        coordinate list (additive, optional -- `None` for a caller with
+        no multi-stop context), passed through to `_enrich_infeasible_leg`
+        so the re-raised smallest-gap error can additively name its
+        failing leg (D-07).
+
         Returns a list of `_AlternativeResult`, one per route, in Mapbox
         order. When every alternative is infeasible, re-raises the
-        smallest-gap `InfeasibleRouteError` seen across all of them, so
-        the request reports the closest miss rather than an arbitrary
-        one.
+        smallest-gap `InfeasibleRouteError` seen across all of them
+        (enriched per `_enrich_infeasible_leg`), so the request reports
+        the closest miss rather than an arbitrary one.
         """
         results = []
         smallest_gap_exc = None
+        smallest_gap_route = None
+        smallest_gap_cands = None
         for index, route in enumerate(routes):
             with self._timing.stage("corridor"):
                 cands = corridor.candidates(route, factor_for=factor_for)
@@ -742,6 +757,8 @@ class RouteView(APIView):
                 )
                 if smallest_gap_exc is None or exc.gap_mi < smallest_gap_exc.gap_mi:
                     smallest_gap_exc = exc
+                    smallest_gap_route = route
+                    smallest_gap_cands = cands
                 continue
             results.append(
                 _AlternativeResult(
@@ -750,9 +767,92 @@ class RouteView(APIView):
             )
 
         if not any(r.feasible for r in results):
-            raise smallest_gap_exc
+            raise self._enrich_infeasible_leg(
+                smallest_gap_exc, smallest_gap_route, smallest_gap_cands, ordered_stop_coords
+            )
 
         return results
+
+    def _leg_boundaries_mi(self, route):
+        """Cumulative-miles-before-each-leg scale for `route`, mirroring
+        `corridor.candidates()`'s own single-vs-multi-leg dispatch: a
+        genuinely multi-leg route (more than one Mapbox leg) delegates
+        to `flatten_route` (13-01); a single-leg route -- a plain
+        2-stop trip, or any `Route` predating the leg fields (a common
+        shape in this test suite's hand-built doubles) -- never needs
+        the flattening machinery, since it has exactly one leg whose
+        boundary is always mile 0. Calling `flatten_route` on a
+        single-leg route is also unsafe when that route's annotation
+        arrays are empty (a legitimate "Mapbox returned no
+        per-segment detail" shape, see `EmptyAnnotationTests` in
+        `test_legs.py`): its coordinate slice would degenerate to a
+        single point, which shapely's `LineString` rejects.
+        """
+        if len(route.leg_distances_mi) > 1:
+            return flatten_route(route).leg_boundaries_mi
+        return [Decimal(0)]
+
+    def _enrich_infeasible_leg(self, exc, route, cands, ordered_stop_coords):
+        """D-07: additively enrich the smallest-gap `InfeasibleRouteError`
+        with the user-stop leg boundary its gap falls within -- computed
+        here, in the view layer, from the same flattened distance scale
+        `corridor.candidates()` used for `route` (13-01's
+        `flatten_route`). The solver itself never sees or produces this
+        data (AST purity gate, `routing/tests/test_boundaries.py`).
+
+        Resolves the gap's start position (`from_mi`) from data already
+        available at this call site: `to_mi` is `route.total_route_mi`
+        when the gap's `to_station` is the "FINISH" sentinel, otherwise
+        the nearest same-named candidate's own `distance_from_start_mi`
+        (`solver.solve` always names its next-node target by a real
+        candidate or the "FINISH" sentinel, never "START"); `from_mi` is
+        then `to_mi - exc.gap_mi`, exact by construction (`gap_mi` is
+        defined as exactly that difference in `solver.solve`).
+
+        Returns `exc` UNCHANGED (`leg_index`/`leg_coords` stay `None`)
+        when there is nothing to enrich against: a single-leg route (a
+        plain 2-stop trip has exactly one Mapbox leg -- naming "the"
+        leg adds no information), no `ordered_stop_coords` (a caller
+        with no multi-stop context, e.g. an existing direct unit test),
+        or a `to_station` that cannot be resolved to a real position.
+        """
+        if not ordered_stop_coords or len(route.leg_distances_mi) <= 1:
+            return exc
+
+        if exc.to_station == "FINISH":
+            to_mi = route.total_route_mi
+        else:
+            matches = [c.distance_from_start_mi for c in cands if c.name == exc.to_station]
+            if not matches:
+                return exc
+            to_mi = min(matches)
+
+        from_mi = to_mi - exc.gap_mi
+
+        leg_boundaries_mi = self._leg_boundaries_mi(route)
+        leg_index = 0
+        for i, boundary in enumerate(leg_boundaries_mi):
+            if from_mi >= boundary:
+                leg_index = i
+        leg_index = min(leg_index, len(ordered_stop_coords) - 2)
+
+        return InfeasibleRouteError(
+            from_station=exc.from_station,
+            to_station=exc.to_station,
+            gap_mi=exc.gap_mi,
+            max_range_mi=exc.max_range_mi,
+            leg_index=leg_index,
+            leg_coords=(
+                (
+                    float(ordered_stop_coords[leg_index][0]),
+                    float(ordered_stop_coords[leg_index][1]),
+                ),
+                (
+                    float(ordered_stop_coords[leg_index + 1][0]),
+                    float(ordered_stop_coords[leg_index + 1][1]),
+                ),
+            ),
+        )
 
     def _select_winner(self, results):
         """Return the feasible `_AlternativeResult` minimal under the

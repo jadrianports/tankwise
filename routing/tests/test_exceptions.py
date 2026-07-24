@@ -44,6 +44,43 @@ class InfeasibleRouteMappingTests(SimpleTestCase):
         self.assertEqual(detail["gap_mi"], "613")
         self.assertEqual(detail["max_range_mi"], "500")
 
+    def test_leg_index_and_leg_coords_default_to_none_when_unenriched(self):
+        """D-07: a pre-multi-stop caller that never passes leg_index/
+        leg_coords still gets a 422 with both keys present, null --
+        additive, never omitted."""
+        exc = InfeasibleRouteError(
+            from_station="START",
+            to_station="STOP1",
+            gap_mi=Decimal("612.5"),
+            max_range_mi=Decimal("500"),
+        )
+
+        response = custom_exception_handler(exc, {})
+
+        detail = response.data["error"]["detail"]
+        self.assertIsNone(detail["leg_index"])
+        self.assertIsNone(detail["leg_coords"])
+
+    def test_leg_index_and_leg_coords_surface_in_422_envelope_when_enriched(self):
+        """D-07: an enriched exception's leg diagnostics are additive
+        keys on the same infeasible_route envelope."""
+        exc = InfeasibleRouteError(
+            from_station="Stop B",
+            to_station="FINISH",
+            gap_mi=Decimal("750"),
+            max_range_mi=Decimal("500"),
+            leg_index=1,
+            leg_coords=((39.7392, -104.9903), (41.8781, -87.6298)),
+        )
+
+        response = custom_exception_handler(exc, {})
+
+        detail = response.data["error"]["detail"]
+        self.assertEqual(detail["leg_index"], 1)
+        self.assertEqual(
+            detail["leg_coords"], ((39.7392, -104.9903), (41.8781, -87.6298))
+        )
+
 
 class MapboxRequestErrorMappingTests(SimpleTestCase):
     def test_mapbox_request_error_maps_to_502(self):

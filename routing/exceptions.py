@@ -79,6 +79,11 @@ def custom_exception_handler(exc, context):
                     "to_station": exc.to_station,
                     "gap_mi": _quantize_miles(exc.gap_mi),
                     "max_range_mi": str(exc.max_range_mi),
+                    # Additive (D-07): the failing leg's index/bounding
+                    # user-stop coords on the flattened distance scale,
+                    # or None on a pre-multi-stop/single-leg trip.
+                    "leg_index": exc.leg_index,
+                    "leg_coords": exc.leg_coords,
                 },
             ),
             status=status.HTTP_422_UNPROCESSABLE_ENTITY,

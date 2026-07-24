@@ -31,13 +31,35 @@ class InfeasibleRouteError(SolverError):
         gap_mi: Decimal distance between from_station and to_station.
         max_range_mi: Decimal max range the vehicle can travel on a full
             tank.
+        leg_index: additive, optional (D-07) -- the index of the
+            USER-stop-to-stop leg (on the same flattened distance scale
+            `routing.services.multi_leg.flatten_route` builds) the gap's
+            start position falls within, or `None` when the raiser
+            (always the solver itself, this exception's only true
+            constructor call site) has no multi-stop context to supply
+            one -- the solver itself NEVER sets this; it is filled in
+            by the view layer, outside this AST-import-gated module,
+            after the fact.
+        leg_coords: additive, optional (D-07) -- the two bounding user
+            stop coordinates of `leg_index`'s leg, or `None`.
     """
 
-    def __init__(self, *, from_station, to_station, gap_mi, max_range_mi):
+    def __init__(
+        self,
+        *,
+        from_station,
+        to_station,
+        gap_mi,
+        max_range_mi,
+        leg_index=None,
+        leg_coords=None,
+    ):
         self.from_station = from_station
         self.to_station = to_station
         self.gap_mi = gap_mi
         self.max_range_mi = max_range_mi
+        self.leg_index = leg_index
+        self.leg_coords = leg_coords
         gap_mi_display = Decimal(gap_mi).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
         super().__init__(
             f"No feasible fuel plan: gap of {gap_mi_display} mi between "
