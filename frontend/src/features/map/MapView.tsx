@@ -237,6 +237,13 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const finishLat = toNumber(data?.finish?.latitude);
 
   const waypoints: WaypointMarker[] = data?.waypoints ?? [];
+  // Read inside the fitBounds effect below via a ref (same
+  // read-latest-value-without-becoming-a-dependency pattern this file
+  // already uses for `routeGeometryRef`/`candidatesRef`/`routeColorRef`),
+  // rather than depending on the `waypoints` array reference itself --
+  // see `waypointCoordsKey` immediately below for why.
+  const waypointsRef = useRef<WaypointMarker[]>([]);
+  waypointsRef.current = waypoints;
   // A stable PRIMITIVE derived from the resolved waypoint coordinates
   // (not the `waypoints` array reference, and not `data` itself) -- the
   // exact same "camera holds position on every re-solve" discipline the
@@ -256,7 +263,7 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   useEffect(() => {
     if (!mapRef.current) return;
 
-    const coords = waypoints
+    const coords = waypointsRef.current
       .map((w): [number, number] | null => (Number.isFinite(w.lng) && Number.isFinite(w.lat) ? [w.lng, w.lat] : null))
       .filter((c): c is [number, number] => c !== null);
 
