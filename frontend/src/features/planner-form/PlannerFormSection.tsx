@@ -4,11 +4,13 @@ import Button from '@mui/material/Button';
 import IconButton from '@mui/material/IconButton';
 import LinearProgress from '@mui/material/LinearProgress';
 import Typography from '@mui/material/Typography';
+import AddIcon from '@mui/icons-material/Add';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
 
 import AddressAutocomplete, { type ResolvedAddress } from './AddressAutocomplete';
 import DemoTripChips from './DemoTripChips';
+import StopRow, { type MiddleStop } from './StopRow';
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
 import { useRecentTrips } from '../recent-trips/useRecentTrips';
 import { getLoadTripRequestSnapshot, subscribeLoadTripRequest } from '../share-export/tripState';
@@ -21,6 +23,28 @@ interface FieldState {
 }
 
 const EMPTY_FIELD: FieldState = { value: '', label: '' };
+
+// Start (always "A") + every middle stop + Finish (always the last letter)
+// = 10 total stops max (D-12) -- Mapbox's own 25-coordinate cap is never
+// approached. The server-side backstop (`waypoints` ListField
+// max_length=8, 13-02) sits independently below this UI affordance.
+const MAX_STOPS = 10;
+
+let middleStopIdCounter = 0;
+function createMiddleStopId(): string {
+  middleStopIdCounter += 1;
+  return `stop-${middleStopIdCounter}`;
+}
+
+function createEmptyMiddleStop(): MiddleStop {
+  return { id: createMiddleStopId(), value: '', label: '' };
+}
+
+// Middle stops sit between anchored Start (letter A) and Finish (the last
+// letter) -- e.g. 2 middle stops -> Start=A, stops=B,C, Finish=D.
+function middleStopLetter(index: number): string {
+  return String.fromCharCode(65 + 1 + index);
+}
 
 // Demo trip labels are always "A → B" (constants/presets.ts) -- split on
 // the arrow to get per-endpoint display labels without inventing a second
@@ -42,6 +66,10 @@ function PlannerFormSection() {
 
   const [start, setStart] = useState<FieldState>(EMPTY_FIELD);
   const [finish, setFinish] = useState<FieldState>(EMPTY_FIELD);
+  // Planner opens as just anchored Start/Finish (D-03 empty state) --
+  // intermediate stops are added on demand via "+ Add stop" and are the
+  // only entries that can be added, removed, or (Task 2) reordered.
+  const [middleStops, setMiddleStops] = useState<MiddleStop[]>([]);
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
 
@@ -106,6 +134,22 @@ function PlannerFormSection() {
     setFinish(start);
   };
 
+  const totalStops = 2 + middleStops.length;
+  const isAtStopCap = totalStops >= MAX_STOPS;
+
+  const handleAddStop = () => {
+    if (isAtStopCap) return;
+    setMiddleStops((stops) => [...stops, createEmptyMiddleStop()]);
+  };
+
+  const handleStopChange = (id: string, result: ResolvedAddress) => {
+    setMiddleStops((stops) => stops.map((stop) => (stop.id === id ? { ...stop, ...result } : stop)));
+  };
+
+  const handleRemoveStop = (id: string) => {
+    setMiddleStops((stops) => stops.filter((stop) => stop.id !== id));
+  };
+
   const handleGeolocate = () => {
     if (!('geolocation' in navigator)) {
       setGeoError('Geolocation is not supported by this browser.');
@@ -164,6 +208,37 @@ function PlannerFormSection() {
               disabled={isLoading}
               onResolve={(result: ResolvedAddress) => setStart({ value: result.value, label: result.label })}
             />
+
+            {middleStops.map((stop, index) => (
+              <StopRow
+                key={stop.id}
+                stop={stop}
+                letter={middleStopLetter(index)}
+                token={tokenState.token}
+                disabled={isLoading}
+                onChange={handleStopChange}
+                onRemove={handleRemoveStop}
+              />
+            ))}
+
+            <Box>
+              <Button
+                type="button"
+                variant="outlined"
+                size="small"
+                startIcon={<AddIcon />}
+                onClick={handleAddStop}
+                disabled={isLoading || isAtStopCap}
+              >
+                Add stop
+              </Button>
+              {isAtStopCap && (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Maximum 10 stops.
+                </Typography>
+              )}
+            </Box>
+
             <AddressAutocomplete
               label="Finish"
               token={tokenState.token}
