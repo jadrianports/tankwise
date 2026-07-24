@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Map, { Marker } from 'react-map-gl/mapbox';
 import type { MapRef, ViewStateChangeEvent } from 'react-map-gl/mapbox';
 import type { Map as MapboxMap, GeoJSONSource } from 'mapbox-gl';
 import type { Feature, LineString } from 'geojson';
+import along from '@turf/along';
 import 'mapbox-gl/dist/mapbox-gl.css';
 import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
@@ -10,8 +11,10 @@ import Typography from '@mui/material/Typography';
 
 import type { CandidateStation, FuelStop, RouteResponse, WaypointMarker } from '../../types/routeContract';
 import type { FocusStopRequest } from '../../context/RoutePlanContext';
+import type { ElevationProfile } from '../../types/elevationProfile';
 import { useMapStyle } from './useMapStyle';
 import { useTerrain, getConditionalPitch } from './useTerrain';
+import { useElevationProfile } from './useElevationProfile';
 import StyleSwitcher from './StyleSwitcher';
 import CandidateToggle from './CandidateToggle';
 import PriceLegend from './PriceLegend';
@@ -81,12 +84,28 @@ export interface MapViewProps {
   // A sidebar StopList row's click (features/results), bridged through
   // App.tsx's shared RoutePlanContext -- see focusStop below.
   focusStopRequest?: FocusStopRequest | null;
+  // Publishes the client-computed elevation profile up to App.tsx, which
+  // exposes it on RoutePlanContext for the sidebar chart to read
+  // (ELEV-01). MapView never imports useRoutePlanContext itself -- this
+  // callback prop is the only way the profile leaves this component.
+  onElevationProfileChange?: (profile: ElevationProfile | null) => void;
+  // The chart-hovered distance-along-route, threaded down from App.tsx's
+  // RoutePlanContext-owned state exactly like focusStopRequest (ELEV-02).
+  // A SEPARATE channel from focusStop -- never triggers flyTo/a popup.
+  hoveredDistanceMi?: number | null;
 }
 
 // react-map-gl's <Map> owns the mapboxgl.Map create/destroy lifecycle
 // itself (StrictMode-safe mount/cleanup) -- no hand-rolled
 // useEffect(() => new mapboxgl.Map(...)) anywhere in this file.
-function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
+function MapView({
+  data,
+  token,
+  tokenStatus,
+  focusStopRequest,
+  onElevationProfileChange,
+  hoveredDistanceMi,
+}: MapViewProps) {
   const { mode } = useColorScheme();
   const isDark = mode === 'dark';
 
@@ -174,6 +193,21 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   // and both run on the first load.
   const { styleUrl, isSatellite, toggleSatellite } = useMapStyle(mapInstance, isDark, applyMapLayers);
   useTerrain(mapInstance);
+
+  // Elevation profile (ELEV-01): a plain reactive local (NOT
+  // routeGeometryRef) so the hook's own effect can depend on array
+  // identity -- a fresh array per solve is exactly the intended
+  // re-sample trigger. Memoized on `data` (not recreated every render)
+  // so it stays a stable reference between solves, same discipline as
+  // `waypointCoordsKey` below.
+  const routeGeometry = useMemo(() => data?.route_geometry ?? [], [data]);
+  const elevationProfile = useElevationProfile(mapInstance, routeGeometry);
+
+  // Publishes the profile up to App.tsx -- the only way it leaves this
+  // component (MapView never imports useRoutePlanContext itself).
+  useEffect(() => {
+    onElevationProfileChange?.(elevationProfile);
+  }, [elevationProfile, onElevationProfileChange]);
 
   // Trip playback: composed entirely from the already-fetched `data` prop
   // -- no new fetch. `mapInstance` (the raw mapboxgl.Map, not the
@@ -310,6 +344,30 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
     focusStop(entry.key, lng, lat);
   }, [focusStopRequest, data, focusStop]);
 
+  // Hover marker position (ELEV-02): resolves the hovered chart distance
+  // against the SAME data.route_geometry the elevation sampler used --
+  // never the API's total_route_mi -- via the same { units: 'miles' }
+  // domain, so the marker lands exactly where the chart says (Pitfall 7).
+  // Degrades to null (no marker) on a missing/short geometry or a thrown
+  // turf error rather than crashing the map pane (T-14-03). No camera
+  // call anywhere in this path (D-02) -- only a Marker moves.
+  const hoverPoint = useMemo(() => {
+    if (hoveredDistanceMi == null || routeGeometry.length < 2) return null;
+    try {
+      const line: Feature<LineString> = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: routeGeometry },
+      };
+      const point = along(line, hoveredDistanceMi, { units: 'miles' });
+      const [lng, lat] = point.geometry.coordinates;
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+      return point;
+    } catch {
+      return null;
+    }
+  }, [hoveredDistanceMi, routeGeometry]);
+
   // A missing/misconfigured pk. token shows a config-error only in
   // this map pane -- the sidebar planner keeps working regardless.
   if (tokenStatus !== 'ready' || !token) {
@@ -429,6 +487,25 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
             </Box>
           </Marker>
         ))}
+        {hoverPoint && (
+          <Marker
+            longitude={hoverPoint.geometry.coordinates[0]}
+            latitude={hoverPoint.geometry.coordinates[1]}
+            anchor="center"
+          >
+            <Box
+              aria-hidden
+              sx={{
+                width: 14,
+                height: 14,
+                borderRadius: '50%',
+                bgcolor: isDark ? ROUTE_COLOR.dark : ROUTE_COLOR.light,
+                border: '2px solid',
+                borderColor: 'background.paper',
+              }}
+            />
+          </Marker>
+        )}
       </Map>
       <StyleSwitcher isSatellite={isSatellite} onToggle={toggleSatellite} />
       <CandidateToggle visible={candidatesVisible} onToggle={toggleCandidates} />
