@@ -238,6 +238,41 @@ test('planRoute maps a rate_limited response and surfaces retryAfterS as a numbe
   }
 });
 
+test('planRoute passes the raw error detail through on a non-ok response (D-08 leg_index/leg_coords)', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: false,
+    json: async () => ({
+      error: {
+        code: 'infeasible_route',
+        message: 'No feasible fuel plan.',
+        detail: {
+          from_station: 'Denver',
+          to_station: 'Chicago',
+          gap_mi: '512.3',
+          max_range_mi: '500',
+          leg_index: 1,
+          leg_coords: [
+            [39.7392, -104.9903],
+            [41.8781, -87.6298],
+          ],
+        },
+      },
+    }),
+  })) as unknown as typeof fetch;
+  try {
+    const result = await planRoute('34.0522,-118.2437', '41.8781,-87.6298', ['39.7392,-104.9903']);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.detail?.leg_index).toBe(1);
+    expect(!result.ok && result.detail?.leg_coords).toEqual([
+      [39.7392, -104.9903],
+      [41.8781, -87.6298],
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('planRoute rethrows AbortError distinctly, never as a network_error result', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => {

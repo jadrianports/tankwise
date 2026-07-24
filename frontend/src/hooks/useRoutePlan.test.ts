@@ -61,6 +61,22 @@ test('a non-rate-limited failure sets status to error and clears data', async ()
   expect(result.current.error?.code).toBe('route_not_found');
 });
 
+test('an infeasible_route failure exposes the detail envelope, including leg_index, on the error state', async () => {
+  mockedPlanRoute.mockResolvedValueOnce({
+    ok: false,
+    code: 'infeasible_route',
+    message: 'Leg B→C is too far to reach on a full tank.',
+    detail: { leg_index: 1, leg_coords: [[39.7392, -104.9903], [41.8781, -87.6298]] },
+  });
+  const { result } = renderHook(() => useRoutePlan());
+  act(() => {
+    void result.current.submit('34.0522,-118.2437', '41.8781,-87.6298', ['39.7392,-104.9903']);
+  });
+
+  await waitFor(() => expect(result.current.status).toBe('error'));
+  expect(result.current.error?.detail?.leg_index).toBe(1);
+});
+
 test('a rate_limited failure keeps the previous data intact and exposes retryAfterS', async () => {
   mockedPlanRoute.mockResolvedValueOnce({ ok: true, data: FIRST_ROUTE });
   const { result } = renderHook(() => useRoutePlan());

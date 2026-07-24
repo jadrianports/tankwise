@@ -84,6 +84,12 @@ export interface PlanRouteFailure {
   // from the already-composed message string) so a caller can drive an
   // actual countdown timer.
   retryAfterS?: number;
+  // Additive (D-08/WAY-05, Phase 13): the raw `error.detail` envelope,
+  // passed through unparsed so a caller can read `leg_index`/`leg_coords`
+  // (InfeasibleRouteDetail) for the named-leg infeasible callout without
+  // this module needing to know about every possible error code's own
+  // detail shape.
+  detail?: ApiErrorDetail;
 }
 
 export type PlanRouteResult = PlanRouteSuccess | PlanRouteFailure;
@@ -157,5 +163,5 @@ export async function planRoute(
     typeof (detail as { retry_after_s?: unknown })?.retry_after_s === 'number'
       ? (detail as { retry_after_s: number }).retry_after_s
       : undefined;
-  return { ok: false, code, message: mapErrorToMessage({ code, message, detail }), retryAfterS };
+  return { ok: false, code, message: mapErrorToMessage({ code, message, detail }), retryAfterS, detail };
 }

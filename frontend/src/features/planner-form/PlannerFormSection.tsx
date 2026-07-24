@@ -21,11 +21,13 @@ import { SortableContext, verticalListSortingStrategy, arrayMove, sortableKeyboa
 import AddressAutocomplete, { type ResolvedAddress } from './AddressAutocomplete';
 import DemoTripChips from './DemoTripChips';
 import StopRow, { type MiddleStop } from './StopRow';
+import InfeasibleRouteCallout, { type OrderedStop } from './InfeasibleRouteCallout';
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
 import { useRecentTrips } from '../recent-trips/useRecentTrips';
 import { getLoadTripRequestSnapshot, subscribeLoadTripRequest } from '../share-export/tripState';
 import { HERO_VEHICLE_PRESET_ID, type DemoTrip } from '../../constants/presets';
 import { fetchConfig } from '../../api/configClient';
+import type { InfeasibleRouteDetail } from '../../types/routeContract';
 
 interface FieldState {
   value: string; // resolved value sent to POST /api/route (coords or address string)
@@ -82,7 +84,7 @@ function splitDemoLabel(label: string): { startLabel: string; finishLabel: strin
 // shared solve state via useRoutePlanContext() rather than prop-drilling
 // through Sidebar.tsx or App.tsx.
 function PlannerFormSection() {
-  const { status, solve } = useRoutePlanContext();
+  const { status, solve, error } = useRoutePlanContext();
   const { add: addRecentTrip } = useRecentTrips();
   const isLoading = status === 'loading';
 
@@ -259,6 +261,34 @@ function PlannerFormSection() {
 
   const isEmptyState = !start.value && !finish.value;
 
+  // A/B/C-lettered ordered stop list (D-04/D-08), the same scheme the map
+  // pins and leg-breakdown boundary rows use -- built here since this
+  // component already owns start/middleStops/finish state, rather than
+  // re-derived inside InfeasibleRouteCallout.
+  const orderedStops: OrderedStop[] = [
+    { letter: 'A', label: start.label || start.value || 'Start' },
+    ...middleStops.map((stop, index) => ({
+      letter: middleStopLetter(index),
+      label: stop.label || stop.value || `Stop ${middleStopLetter(index)}`,
+    })),
+    { letter: middleStopLetter(middleStops.length), label: finish.label || finish.value || 'Finish' },
+  ];
+
+  // The two bounding stop letters for a named-leg infeasible error
+  // (D-08) -- empty for a legacy/2-point infeasible error (`leg_index`
+  // null) or any other error code, in which case no row is highlighted.
+  const infeasibleDetail =
+    error?.code === 'infeasible_route' ? (error.detail as InfeasibleRouteDetail | undefined) : undefined;
+  const infeasibleLegIndex = infeasibleDetail?.leg_index;
+  const highlightedLetters = new Set<string>();
+  if (infeasibleLegIndex !== null && infeasibleLegIndex !== undefined) {
+    const fromLetter = orderedStops[infeasibleLegIndex]?.letter;
+    const toLetter = orderedStops[infeasibleLegIndex + 1]?.letter;
+    if (fromLetter) highlightedLetters.add(fromLetter);
+    if (toLetter) highlightedLetters.add(toLetter);
+  }
+  const highlightSx = { outline: '2px solid', outlineColor: 'error.main', borderRadius: 1, p: 0.5, m: -0.5 };
+
   return (
     <Box>
       <Typography variant="h6" component="h2" gutterBottom>
@@ -292,13 +322,19 @@ function PlannerFormSection() {
       <Box component="form" onSubmit={handleSubmit} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
           <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
-            <AddressAutocomplete
-              label="Start"
-              token={tokenState.token}
-              displayValue={start.label}
-              disabled={isLoading}
-              onResolve={(result: ResolvedAddress) => setStart({ value: result.value, label: result.label })}
-            />
+            <Box
+              data-testid="stop-row-A"
+              data-highlighted={highlightedLetters.has('A') || undefined}
+              sx={highlightedLetters.has('A') ? highlightSx : undefined}
+            >
+              <AddressAutocomplete
+                label="Start"
+                token={tokenState.token}
+                displayValue={start.label}
+                disabled={isLoading}
+                onResolve={(result: ResolvedAddress) => setStart({ value: result.value, label: result.label })}
+              />
+            </Box>
 
             {middleStops.length > 0 && (
               <DndContext sensors={stopSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
@@ -307,21 +343,30 @@ function PlannerFormSection() {
                   strategy={verticalListSortingStrategy}
                 >
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                    {middleStops.map((stop, index) => (
-                      <StopRow
-                        key={stop.id}
-                        stop={stop}
-                        letter={middleStopLetter(index)}
-                        token={tokenState.token}
-                        disabled={isLoading}
-                        onChange={handleStopChange}
-                        onRemove={handleRemoveStop}
-                        onMoveUp={index > 0 ? () => reorderMiddleStops(index, index - 1) : undefined}
-                        onMoveDown={
-                          index < middleStops.length - 1 ? () => reorderMiddleStops(index, index + 1) : undefined
-                        }
-                      />
-                    ))}
+                    {middleStops.map((stop, index) => {
+                      const letter = middleStopLetter(index);
+                      return (
+                        <Box
+                          key={stop.id}
+                          data-testid={`stop-row-${letter}`}
+                          data-highlighted={highlightedLetters.has(letter) || undefined}
+                          sx={highlightedLetters.has(letter) ? highlightSx : undefined}
+                        >
+                          <StopRow
+                            stop={stop}
+                            letter={letter}
+                            token={tokenState.token}
+                            disabled={isLoading}
+                            onChange={handleStopChange}
+                            onRemove={handleRemoveStop}
+                            onMoveUp={index > 0 ? () => reorderMiddleStops(index, index - 1) : undefined}
+                            onMoveDown={
+                              index < middleStops.length - 1 ? () => reorderMiddleStops(index, index + 1) : undefined
+                            }
+                          />
+                        </Box>
+                      );
+                    })}
                   </Box>
                 </SortableContext>
               </DndContext>
@@ -345,13 +390,21 @@ function PlannerFormSection() {
               )}
             </Box>
 
-            <AddressAutocomplete
-              label="Finish"
-              token={tokenState.token}
-              displayValue={finish.label}
-              disabled={isLoading}
-              onResolve={(result: ResolvedAddress) => setFinish({ value: result.value, label: result.label })}
-            />
+            <Box
+              data-testid={`stop-row-${middleStopLetter(middleStops.length)}`}
+              data-highlighted={highlightedLetters.has(middleStopLetter(middleStops.length)) || undefined}
+              sx={highlightedLetters.has(middleStopLetter(middleStops.length)) ? highlightSx : undefined}
+            >
+              <AddressAutocomplete
+                label="Finish"
+                token={tokenState.token}
+                displayValue={finish.label}
+                disabled={isLoading}
+                onResolve={(result: ResolvedAddress) => setFinish({ value: result.value, label: result.label })}
+              />
+            </Box>
+
+            <InfeasibleRouteCallout error={error} orderedStops={orderedStops} />
           </Box>
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1, pt: 1 }}>
             <IconButton

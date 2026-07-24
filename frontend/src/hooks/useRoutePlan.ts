@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState } from 'react';
 
 import { planRoute } from '../api/routeClient';
+import type { ApiErrorDetail } from '../api/routeClient';
 import { HERO_VEHICLE_PRESET_ID, VEHICLE_PRESETS } from '../constants/presets';
 import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
@@ -20,6 +21,11 @@ export interface RoutePlanError {
   code: string;
   message: string;
   retryAfterS?: number;
+  // Additive (D-08/WAY-05, Phase 13) -- the raw error envelope's `detail`,
+  // passed straight through from `PlanRouteFailure.detail` so a caller
+  // (the named-leg infeasible callout) can read `leg_index`/`leg_coords`
+  // without this hook needing to know about that error code's own shape.
+  detail?: ApiErrorDetail;
 }
 
 export interface UseRoutePlanResult {
@@ -120,11 +126,11 @@ export function useRoutePlan(): UseRoutePlanResult {
         // solver failure -- `data` is deliberately left untouched, and the
         // distinct `rate_limited` status keeps ResultsSection's
         // `status === 'error'` alert branch from firing.
-        setError({ code: result.code, message: result.message, retryAfterS: result.retryAfterS });
+        setError({ code: result.code, message: result.message, retryAfterS: result.retryAfterS, detail: result.detail });
         setStatus('rate_limited');
       } else {
         setData(null);
-        setError({ code: result.code, message: result.message });
+        setError({ code: result.code, message: result.message, detail: result.detail });
         setStatus('error');
       }
     },

@@ -208,6 +208,43 @@ test('an original A-to-B demo chip still solves with no waypoints (regression)',
   expect(screen.queryByLabelText(/^Stop /)).not.toBeInTheDocument();
 });
 
+test('an infeasible_route error with a leg_index highlights the two bounding stop rows and renders the named-leg callout', () => {
+  renderPlanner({
+    error: {
+      code: 'infeasible_route',
+      message: 'No feasible fuel plan.',
+      detail: { leg_index: 1, leg_coords: [] },
+    },
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+  fireEvent.change(screen.getByLabelText('Stop B'), { target: { value: 'Denver' } });
+  fireEvent.blur(screen.getByLabelText('Stop B'));
+
+  // leg_index 1 == the second leg == B -> Finish (the last letter, "C"
+  // with one middle stop) -- both bounding rows are highlighted, Start
+  // (A) is not.
+  expect(screen.getByTestId('stop-row-B')).toHaveAttribute('data-highlighted', 'true');
+  expect(screen.getByTestId('stop-row-C')).toHaveAttribute('data-highlighted', 'true');
+  expect(screen.getByTestId('stop-row-A')).not.toHaveAttribute('data-highlighted');
+
+  expect(screen.getByRole('alert')).toHaveTextContent('Leg B→C');
+});
+
+test('a legacy infeasible error with no leg_index highlights nothing and renders no named-leg callout', () => {
+  renderPlanner({
+    error: {
+      code: 'infeasible_route',
+      message: 'No feasible fuel plan.',
+      detail: { leg_index: null, leg_coords: null },
+    },
+  });
+
+  expect(screen.getByTestId('stop-row-A')).not.toHaveAttribute('data-highlighted');
+  expect(screen.getByTestId('stop-row-B')).not.toHaveAttribute('data-highlighted');
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
 test('loading a multi-stop recent/shared trip restores its middle stops and re-solves with them', () => {
   const { solve } = renderPlanner();
 
