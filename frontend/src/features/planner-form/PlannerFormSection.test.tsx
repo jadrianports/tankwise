@@ -81,6 +81,42 @@ test('at 10 total stops, "+ Add stop" is disabled and helper text is visible', (
   expect(stopLabels).toHaveLength(8);
 });
 
+test('the up/down keyboard-accessible reorder equivalent moves a middle stop without a pointer', () => {
+  renderPlanner();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+
+  fireEvent.change(screen.getByLabelText('Stop B'), { target: { value: 'B Address' } });
+  fireEvent.blur(screen.getByLabelText('Stop B'));
+  fireEvent.change(screen.getByLabelText('Stop C'), { target: { value: 'C Address' } });
+  fireEvent.blur(screen.getByLabelText('Stop C'));
+
+  // First row (B) has no "up" (list boundary); last row (C) has no "down".
+  expect(screen.getByRole('button', { name: 'Move stop B up' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: 'Move stop C down' })).toBeDisabled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Move stop B down' }));
+
+  // After the move, position 1 (letter B) now holds the former "C Address".
+  expect(screen.getByLabelText('Stop B')).toHaveValue('C Address');
+  expect(screen.getByLabelText('Stop C')).toHaveValue('B Address');
+});
+
+test('an aria-live region announces a reorder referencing the stop letter', () => {
+  renderPlanner();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+
+  const liveRegion = screen.getByTestId('reorder-announcements');
+  expect(liveRegion).toHaveTextContent('');
+
+  fireEvent.click(screen.getByRole('button', { name: 'Move stop B down' }));
+
+  expect(liveRegion).toHaveTextContent(/Stop B moved to position 2/);
+});
+
 test('middle stop rows render between Start and Finish and letter sequentially', () => {
   renderPlanner();
 

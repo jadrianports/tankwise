@@ -7,6 +7,16 @@ import Typography from '@mui/material/Typography';
 import AddIcon from '@mui/icons-material/Add';
 import SwapVertIcon from '@mui/icons-material/SwapVert';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+} from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy, arrayMove, sortableKeyboardCoordinates } from '@dnd-kit/sortable';
 
 import AddressAutocomplete, { type ResolvedAddress } from './AddressAutocomplete';
 import DemoTripChips from './DemoTripChips';
@@ -70,8 +80,18 @@ function PlannerFormSection() {
   // intermediate stops are added on demand via "+ Add stop" and are the
   // only entries that can be added, removed, or (Task 2) reordered.
   const [middleStops, setMiddleStops] = useState<MiddleStop[]>([]);
+  // Reorder announcement (D-02, WAY-02): updated by every reorder path --
+  // pointer drag, @dnd-kit's KeyboardSensor pick-up-then-arrow flow, and
+  // the explicit up/down IconButtons -- so an aria-live region announces
+  // regardless of HOW the reorder happened, not just drag.
+  const [reorderAnnouncement, setReorderAnnouncement] = useState('');
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string | null>(null);
+
+  const stopSensors = useSensors(
+    useSensor(PointerSensor),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   // pk. token for the Search Box calls, fetched independently of App.tsx's
   // own GET /api/config call (MapView's copy) -- the endpoint is lean and
@@ -150,6 +170,29 @@ function PlannerFormSection() {
     setMiddleStops((stops) => stops.filter((stop) => stop.id !== id));
   };
 
+  // Single reorder path shared by pointer drag, the KeyboardSensor's
+  // pick-up-then-arrow flow (both via handleDragEnd below), and the
+  // explicit up/down IconButtons (D-01: middle stops only, never cross
+  // Start/Finish since fromIndex/toIndex are always within middleStops).
+  const reorderMiddleStops = (fromIndex: number, toIndex: number) => {
+    setMiddleStops((stops) => {
+      if (fromIndex < 0 || fromIndex >= stops.length || toIndex < 0 || toIndex >= stops.length) return stops;
+      if (fromIndex === toIndex) return stops;
+      const movedLetter = middleStopLetter(fromIndex);
+      setReorderAnnouncement(`Stop ${movedLetter} moved to position ${toIndex + 1} of ${stops.length}.`);
+      return arrayMove(stops, fromIndex, toIndex);
+    });
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const fromIndex = middleStops.findIndex((stop) => stop.id === active.id);
+    const toIndex = middleStops.findIndex((stop) => stop.id === over.id);
+    if (fromIndex === -1 || toIndex === -1) return;
+    reorderMiddleStops(fromIndex, toIndex);
+  };
+
   const handleGeolocate = () => {
     if (!('geolocation' in navigator)) {
       setGeoError('Geolocation is not supported by this browser.');
@@ -198,6 +241,25 @@ function PlannerFormSection() {
         </Typography>
       )}
 
+      {/* Reorder announcements (D-02, WAY-02): visually hidden, always
+          present in the DOM so screen readers pick up text updates from
+          any reorder path (drag, KeyboardSensor, or the up/down buttons). */}
+      <Box
+        role="status"
+        aria-live="polite"
+        data-testid="reorder-announcements"
+        sx={{
+          position: 'absolute',
+          width: 1,
+          height: 1,
+          overflow: 'hidden',
+          clip: 'rect(0 0 0 0)',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {reorderAnnouncement}
+      </Box>
+
       <Box component="form" onSubmit={handleSubmit} sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
         <Box sx={{ display: 'flex', gap: 1, alignItems: 'flex-start' }}>
           <Box sx={{ flexGrow: 1, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 0 }}>
@@ -209,17 +271,32 @@ function PlannerFormSection() {
               onResolve={(result: ResolvedAddress) => setStart({ value: result.value, label: result.label })}
             />
 
-            {middleStops.map((stop, index) => (
-              <StopRow
-                key={stop.id}
-                stop={stop}
-                letter={middleStopLetter(index)}
-                token={tokenState.token}
-                disabled={isLoading}
-                onChange={handleStopChange}
-                onRemove={handleRemoveStop}
-              />
-            ))}
+            {middleStops.length > 0 && (
+              <DndContext sensors={stopSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                <SortableContext
+                  items={middleStops.map((stop) => stop.id)}
+                  strategy={verticalListSortingStrategy}
+                >
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                    {middleStops.map((stop, index) => (
+                      <StopRow
+                        key={stop.id}
+                        stop={stop}
+                        letter={middleStopLetter(index)}
+                        token={tokenState.token}
+                        disabled={isLoading}
+                        onChange={handleStopChange}
+                        onRemove={handleRemoveStop}
+                        onMoveUp={index > 0 ? () => reorderMiddleStops(index, index - 1) : undefined}
+                        onMoveDown={
+                          index < middleStops.length - 1 ? () => reorderMiddleStops(index, index + 1) : undefined
+                        }
+                      />
+                    ))}
+                  </Box>
+                </SortableContext>
+              </DndContext>
+            )}
 
             <Box>
               <Button
