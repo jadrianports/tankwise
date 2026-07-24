@@ -2,6 +2,7 @@ import { createContext, useContext } from 'react';
 
 import type { RoutePlanError, RoutePlanStatus } from '../hooks/useRoutePlan';
 import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
+import type { ElevationProfile } from '../types/elevationProfile';
 
 // A StopList row click carries a `nonce` (not just the stop key) so MapView
 // re-fires its fly-to/popup-open effect even when the same stop is clicked
@@ -43,6 +44,17 @@ export interface RoutePlanContextValue {
   // never re-geocodes. Consumed by features/vehicle/useDebouncedResolve.ts,
   // not called directly by VehicleSection's chips/sliders.
   resolveVehicle: (vehicle: VehicleProfileRequest) => void;
+  // Elevation chart <-> map bridge (ELEV-01/02). This is a SEPARATE
+  // channel from `focusStop` (D-04): `elevationProfile` is the
+  // client-computed series MapView publishes upward for the sidebar
+  // chart to read, and `setHoveredElevationDistanceMi` is the reverse
+  // chart->map write -- it carries only a distance-along-route and
+  // never triggers a camera fly-to or a popup like `focusStop` does.
+  // The hovered distance VALUE itself is not part of this context; it
+  // is threaded down to MapView as a plain prop from App.tsx, exactly
+  // like `focusStopRequest`.
+  elevationProfile: ElevationProfile | null;
+  setHoveredElevationDistanceMi: (distanceMi: number | null) => void;
 }
 
 export const RoutePlanContext = createContext<RoutePlanContextValue | null>(null);

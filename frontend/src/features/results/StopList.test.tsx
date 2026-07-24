@@ -19,6 +19,8 @@ const BASE_CONTEXT: RoutePlanContextValue = {
   retry: () => {},
   focusStop: () => {},
   resolveVehicle: () => {},
+  elevationProfile: null,
+  setHoveredElevationDistanceMi: () => {},
 };
 
 // Only the fields StopList actually renders or keys off -- one stop with a

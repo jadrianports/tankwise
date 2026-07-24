@@ -12,6 +12,7 @@ import { fetchConfig } from './api/configClient';
 import { useRoutePlan } from './hooks/useRoutePlan';
 import { RoutePlanContext } from './context/RoutePlanContext';
 import type { FocusStopRequest } from './context/RoutePlanContext';
+import type { ElevationProfile } from './types/elevationProfile';
 
 // ~440px scrolling sidebar (widened from the old 380px) + map filling
 // the remaining viewport.
@@ -48,6 +49,16 @@ function App() {
     setFocusStopRequest({ key, nonce: focusNonceRef.current });
   }, []);
 
+  // Elevation chart <-> map bridge (ELEV-01/02): MapView computes the
+  // profile from its own live map instance and publishes it up here via
+  // a callback prop; the sidebar chart reads it back out through
+  // RoutePlanContext. `hoveredElevationDistanceMi` is the reverse
+  // direction -- the chart writes a hovered distance through context's
+  // setter, and it is threaded down to MapView as a plain prop (mirrors
+  // `focusStopRequest`), never via MapView importing the context itself.
+  const [elevationProfile, setElevationProfile] = useState<ElevationProfile | null>(null);
+  const [hoveredElevationDistanceMi, setHoveredElevationDistanceMi] = useState<number | null>(null);
+
   // Fetch the pk. token once at boot. A missing/misconfigured token
   // degrades to the map-pane-only config-error state inside MapView; it
   // never blocks the planner sidebar.
@@ -68,7 +79,19 @@ function App() {
     <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
       <AppShell />
 
-      <RoutePlanContext.Provider value={{ status, data, error, solve: submit, retry, focusStop, resolveVehicle }}>
+      <RoutePlanContext.Provider
+        value={{
+          status,
+          data,
+          error,
+          solve: submit,
+          retry,
+          focusStop,
+          resolveVehicle,
+          elevationProfile,
+          setHoveredElevationDistanceMi,
+        }}
+      >
         <Box className="print-hide">
           <ShareExportBar data={data} shareUrl={shareUrl} />
         </Box>
@@ -117,6 +140,8 @@ function App() {
               token={config.status === 'ready' ? config.token : null}
               tokenStatus={config.status}
               focusStopRequest={focusStopRequest}
+              onElevationProfileChange={setElevationProfile}
+              hoveredDistanceMi={hoveredElevationDistanceMi}
             />
           </Box>
         </Box>

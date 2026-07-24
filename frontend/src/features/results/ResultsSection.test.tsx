@@ -17,6 +17,8 @@ const BASE_CONTEXT: RoutePlanContextValue = {
   retry: () => {},
   focusStop: () => {},
   resolveVehicle: () => {},
+  elevationProfile: null,
+  setHoveredElevationDistanceMi: () => {},
 };
 
 test('renders the mapErrorToMessage copy inside role="alert" when a plan fails', () => {

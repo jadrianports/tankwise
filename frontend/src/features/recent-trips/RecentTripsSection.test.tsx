@@ -29,6 +29,8 @@ const BASE_CONTEXT: RoutePlanContextValue = {
   retry: () => {},
   focusStop: () => {},
   resolveVehicle: () => {},
+  elevationProfile: null,
+  setHoveredElevationDistanceMi: () => {},
 };
 
 const SEEDED_TRIPS = [

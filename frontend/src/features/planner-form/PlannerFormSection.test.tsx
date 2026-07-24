@@ -28,6 +28,8 @@ function renderPlanner(overrides: Partial<RoutePlanContextValue> = {}) {
     retry: vi.fn(),
     focusStop: vi.fn(),
     resolveVehicle: vi.fn(),
+    elevationProfile: null,
+    setHoveredElevationDistanceMi: vi.fn(),
     ...overrides,
     solve,
   };

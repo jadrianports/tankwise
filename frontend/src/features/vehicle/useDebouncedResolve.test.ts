@@ -19,6 +19,8 @@ const BASE_CONTEXT: RoutePlanContextValue = {
   retry,
   focusStop: () => {},
   resolveVehicle,
+  elevationProfile: null,
+  setHoveredElevationDistanceMi: () => {},
 };
 
 beforeEach(() => {
