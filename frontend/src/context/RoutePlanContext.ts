@@ -30,7 +30,11 @@ export interface RoutePlanContextValue {
   status: RoutePlanStatus;
   data: RouteResponse | null;
   error: RoutePlanError | null;
-  solve: (start: string, finish: string) => Promise<void>;
+  // `waypoints` is optional and additive (WAY-03) -- omitted, `solve`
+  // behaves exactly as before. Widened alongside `useRoutePlan.submit`'s
+  // own additive `waypoints?` param, which this is assigned directly to
+  // in App.tsx (`solve: submit`).
+  solve: (start: string, finish: string, waypoints?: string[]) => Promise<void>;
   retry: () => void;
   focusStop: (key: string | number) => void;
   // Vehicle preset/what-if slider bridge: updates the vehicle profile

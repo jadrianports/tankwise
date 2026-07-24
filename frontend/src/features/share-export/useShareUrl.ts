@@ -10,7 +10,12 @@ import type { RouteResponse, VehicleProfileRequest } from '../../types/routeCont
 
 const HERO_VEHICLE = VEHICLE_PRESETS.find((preset) => preset.id === HERO_VEHICLE_PRESET_ID)!.vehicle;
 
-type SubmitFn = (start: string, finish: string, vehicle?: VehicleProfileRequest) => Promise<void>;
+type SubmitFn = (
+  start: string,
+  finish: string,
+  waypoints?: string[],
+  vehicle?: VehicleProfileRequest
+) => Promise<void>;
 
 // TripState.vehicle is a preset id string (the only vehicle identifier
 // that exists client-side) -- resolve it back to a real request body,
@@ -84,7 +89,7 @@ export function useShareUrl(submit: SubmitFn, data: RouteResponse | null): UseSh
     firedRef.current = true;
     const trip = decodeTripState(window.location.search);
     if (!trip) return;
-    void submit(trip.start, trip.finish, vehicleForPresetId(trip.vehicle));
+    void submit(trip.start, trip.finish, trip.waypoints, vehicleForPresetId(trip.vehicle));
   }, [submit]);
 
   const shareUrl = useMemo(() => buildShareUrl(data), [data]);

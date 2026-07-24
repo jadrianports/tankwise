@@ -138,7 +138,7 @@ test('planRoute passes the AbortSignal straight through to fetch', async () => {
   }) as unknown as typeof fetch;
   const controller = new AbortController();
   try {
-    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', undefined, controller.signal);
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', undefined, undefined, controller.signal);
     expect(capturedOptions?.signal).toBe(controller.signal);
   } finally {
     globalThis.fetch = originalFetch;
@@ -153,7 +153,11 @@ test('planRoute includes the nested vehicle object in the request body when prov
     return { ok: true, json: async () => ({}) };
   }) as unknown as typeof fetch;
   try {
-    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', { mpg: 6.5, tank_range_mi: 1050, starting_fuel: 1 });
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', undefined, {
+      mpg: 6.5,
+      tank_range_mi: 1050,
+      starting_fuel: 1,
+    });
     expect(JSON.parse(capturedOptions?.body as string).vehicle).toEqual({
       mpg: 6.5,
       tank_range_mi: 1050,
@@ -174,6 +178,42 @@ test('planRoute omits vehicle from the request body when not provided', async ()
   try {
     await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
     expect('vehicle' in JSON.parse(capturedOptions?.body as string)).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('planRoute includes waypoints in the request body when a non-empty array is provided', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (_url: RequestInfo | URL, options?: RequestInit) => {
+    capturedOptions = options;
+    return { ok: true, json: async () => ({}) };
+  }) as unknown as typeof fetch;
+  try {
+    await planRoute('34.0522,-118.2437', '41.8781,-87.6298', ['39.7392,-104.9903']);
+    expect(JSON.parse(capturedOptions?.body as string).waypoints).toEqual(['39.7392,-104.9903']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('planRoute omits waypoints from the request body when the array is empty or absent', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedOptions: RequestInit | undefined;
+  globalThis.fetch = (async (_url: RequestInfo | URL, options?: RequestInit) => {
+    capturedOptions = options;
+    return { ok: true, json: async () => ({}) };
+  }) as unknown as typeof fetch;
+  try {
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786', []);
+    expect('waypoints' in JSON.parse(capturedOptions?.body as string)).toBe(false);
+    await planRoute('39.7392,-104.9903', '39.0997,-94.5786');
+    expect('waypoints' in JSON.parse(capturedOptions?.body as string)).toBe(false);
+    expect(JSON.parse(capturedOptions?.body as string)).toEqual({
+      start: '39.7392,-104.9903',
+      finish: '39.0997,-94.5786',
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -98,7 +98,7 @@ test('useShareUrl calls submit on mount when the current query string decodes to
   const submit = vi.fn().mockResolvedValue(undefined);
   renderHook(() => useShareUrl(submit, null));
   await waitFor(() => expect(submit).toHaveBeenCalledOnce());
-  expect(submit).toHaveBeenCalledWith('34.0522,-118.2437', '40.7128,-74.0060', RV_PRESET.vehicle);
+  expect(submit).toHaveBeenCalledWith('34.0522,-118.2437', '40.7128,-74.0060', undefined, RV_PRESET.vehicle);
 });
 
 test('useShareUrl does not call submit on mount when the query string is empty', () => {

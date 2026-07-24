@@ -98,6 +98,40 @@ export interface Alternative {
   feasible: boolean;
 }
 
+// `_waypoints_repr` entry (WAY-06/WAY-08). One letter-labeled marker
+// (A, B, C, ...) per USER stop -- start, each intermediate waypoint, and
+// finish -- with cumulative driving distance/duration from start. `lat`/
+// `lng` render as floats for the map GL layer (mirrors
+// `candidate_stations[]`); `name` defaults to "START"/"FINISH"/"Stop {letter}"
+// server-side when no better label exists -- prefer `label` for the
+// map-pin/leg-breakdown cross-reference and treat `name` as a fallback
+// display string only.
+export interface WaypointMarker {
+  label: string;
+  name: string;
+  lat: number;
+  lng: number;
+  distance_from_start_mi: string;
+  duration_s: number | null;
+}
+
+// `custom_exception_handler`'s `infeasible_route` 422 envelope detail
+// (routing/exceptions.py). `leg_index`/`leg_coords` are additive
+// (D-07/WAY-05): the offending leg on a multi-stop infeasible trip.
+// Both are `null`/absent for a single-leg (2-point) infeasible route or
+// a pre-multi-stop caller -- never assume they're populated. `leg_coords`
+// is a `[lat, lng]`-order pair per bounding stop (mirrors
+// `routing/views.py::_enrich_infeasible_leg`'s `ordered_stop_coords`
+// tuples -- NOT `route_geometry`'s GeoJSON `[lng, lat]` convention).
+export interface InfeasibleRouteDetail {
+  from_station: string;
+  to_station: string;
+  gap_mi: string;
+  max_range_mi: string;
+  leg_index?: number | null;
+  leg_coords?: [number, number][] | null;
+}
+
 // `price_index_status` values: "current" (this week's EIA factors),
 // "stale" (last-known factors, EIA temporarily unreachable), or "frozen"
 // (no factors ever fetched -- the original 2024 snapshot, unindexed).
@@ -122,6 +156,11 @@ export interface RouteResponse {
   alternatives_considered: number;
   alternatives: Alternative[];
   candidate_stations: CandidateStation[];
+  // Additive (WAY-06/WAY-08, Phase 13): every live request (2-point or
+  // multi-stop) returns at least the START/FINISH A/B pair -- an
+  // instance shaped without a `waypoints` key at all (pre-Phase-13
+  // backward compat) serializes `[]` instead.
+  waypoints: WaypointMarker[];
   price_as_of: string;
   price_data_note: string;
   // Additive EIA indexing fields (Phase 12). `trend_delta_cents` is a

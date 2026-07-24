@@ -1,7 +1,7 @@
 // Typed fetch client for POST /api/route, plus a pure per-error-code envelope
 // mapper. The envelope shape and every code/detail
 // key here are grounded directly in routing/exceptions.py -- not guessed.
-import type { RouteResponse, VehicleProfileRequest } from '../types/routeContract';
+import type { InfeasibleRouteDetail, RouteResponse, VehicleProfileRequest } from '../types/routeContract';
 
 const GENERIC_FALLBACK_MESSAGE = 'Something went wrong. Please try again.';
 
@@ -46,12 +46,11 @@ export function mapErrorToMessage(error: ApiError | null | undefined): string {
       return message || GENERIC_FALLBACK_MESSAGE;
     }
     case 'infeasible_route': {
-      const { max_range_mi, from_station, to_station, gap_mi } = (detail ?? {}) as {
-        max_range_mi?: string;
-        from_station?: string;
-        to_station?: string;
-        gap_mi?: string;
-      };
+      // `leg_index`/`leg_coords` are additive (D-07/WAY-05) and unused in
+      // this message today -- the named-leg callout (D-08) is downstream
+      // UI work (13-05). Destructuring via the full `InfeasibleRouteDetail`
+      // type keeps this call site in sync with the envelope's real shape.
+      const { max_range_mi, from_station, to_station, gap_mi } = (detail ?? {}) as Partial<InfeasibleRouteDetail>;
       return `No fuel stop reachable within ${max_range_mi} mi between ${from_station} and ${to_station} (gap: ${gap_mi} mi).`;
     }
     case 'route_not_found':
@@ -103,22 +102,37 @@ function isAbortError(err: unknown): boolean {
 // must never surface as a user-facing error; only the caller (which knows
 // whether the abort was itself vs. a stale race) can safely decide to
 // ignore it.
-// `vehicle` is optional -- omitting it lets the backend fall back to its
-// own documented default (10 mpg / 500 mi / full tank). Every preset-chip/
-// slider-driven call passes it explicitly so the hero preset wins in the
-// UI without changing that API default.
+// `waypoints` is optional and additive (WAY-03) -- omitted or empty, the
+// request body is the byte-identical `{start, finish[, vehicle]}` shape
+// this endpoint has always sent. `vehicle` is optional -- omitting it
+// lets the backend fall back to its own documented default (10 mpg / 500
+// mi / full tank). Every preset-chip/slider-driven call passes it
+// explicitly so the hero preset wins in the UI without changing that API
+// default.
 export async function planRoute(
   start: string,
   finish: string,
+  waypoints?: string[],
   vehicle?: VehicleProfileRequest | null,
   signal?: AbortSignal
 ): Promise<PlanRouteResult> {
+  const requestBody: { start: string; finish: string; waypoints?: string[]; vehicle?: VehicleProfileRequest } = {
+    start,
+    finish,
+  };
+  if (waypoints && waypoints.length > 0) {
+    requestBody.waypoints = waypoints;
+  }
+  if (vehicle) {
+    requestBody.vehicle = vehicle;
+  }
+
   let res: Response;
   try {
     res = await fetch('/api/route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(vehicle ? { start, finish, vehicle } : { start, finish }),
+      body: JSON.stringify(requestBody),
       signal,
     });
   } catch (err) {
