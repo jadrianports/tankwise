@@ -1,9 +1,17 @@
-import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
+import { render, screen, fireEvent, cleanup, within, act } from '@testing-library/react';
 import { expect, test, afterEach, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
 import PlannerFormSection from './PlannerFormSection';
 import { RoutePlanContext, type RoutePlanContextValue } from '../../context/RoutePlanContext';
+import { requestLoadTrip } from '../share-export/tripState';
+
+const RECENT_TRIPS_STORAGE_KEY = 'spotter.recentTrips.v1';
+
+function readRecentTrips(): Array<{ start: string; finish: string; waypoints?: string[] }> {
+  const raw = window.localStorage.getItem(RECENT_TRIPS_STORAGE_KEY);
+  return raw ? JSON.parse(raw) : [];
+}
 
 afterEach(() => {
   cleanup();
@@ -133,4 +141,87 @@ test('middle stop rows render between Start and Finish and letter sequentially',
     .map((el) => el.getAttribute('id'));
   // Sanity: 4 fields total in DOM order (Start, Stop B, Stop C, Finish).
   expect(labels).toHaveLength(4);
+});
+
+test('submit with two middle stops calls solve with the ordered waypoints and records them in recent trips', () => {
+  const { solve } = renderPlanner();
+
+  fireEvent.change(screen.getByLabelText('Start'), { target: { value: '34.0522,-118.2437' } });
+  fireEvent.blur(screen.getByLabelText('Start'));
+  fireEvent.change(screen.getByLabelText('Finish'), { target: { value: '41.8781,-87.6298' } });
+  fireEvent.blur(screen.getByLabelText('Finish'));
+
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+  fireEvent.change(screen.getByLabelText('Stop B'), { target: { value: '39.7392,-104.9903' } });
+  fireEvent.blur(screen.getByLabelText('Stop B'));
+  fireEvent.click(screen.getByRole('button', { name: 'Add stop' }));
+  fireEvent.change(screen.getByLabelText('Stop C'), { target: { value: '41.2565,-95.9345' } });
+  fireEvent.blur(screen.getByLabelText('Stop C'));
+
+  fireEvent.submit(screen.getByLabelText('Start').closest('form') as HTMLFormElement);
+
+  expect(solve).toHaveBeenCalledWith('34.0522,-118.2437', '41.8781,-87.6298', [
+    '39.7392,-104.9903',
+    '41.2565,-95.9345',
+  ]);
+
+  const [savedTrip] = readRecentTrips();
+  expect(savedTrip.waypoints).toEqual(['39.7392,-104.9903', '41.2565,-95.9345']);
+});
+
+test('with zero middle stops, submit behaves exactly like the pre-change 2-point flow', () => {
+  const { solve } = renderPlanner();
+
+  fireEvent.change(screen.getByLabelText('Start'), { target: { value: 'Origin' } });
+  fireEvent.blur(screen.getByLabelText('Start'));
+  fireEvent.change(screen.getByLabelText('Finish'), { target: { value: 'Destination' } });
+  fireEvent.blur(screen.getByLabelText('Finish'));
+
+  fireEvent.submit(screen.getByLabelText('Start').closest('form') as HTMLFormElement);
+
+  expect(solve).toHaveBeenCalledWith('Origin', 'Destination', undefined);
+
+  const [savedTrip] = readRecentTrips();
+  expect(savedTrip.waypoints).toBeUndefined();
+});
+
+test('the LA -> Denver -> Chicago demo chip populates one middle stop and solves with the Denver coordinate', () => {
+  const { solve } = renderPlanner();
+
+  fireEvent.click(screen.getByText('Los Angeles → Denver → Chicago'));
+
+  expect(solve).toHaveBeenCalledWith('34.0522,-118.2437', '41.8781,-87.6298', ['39.7392,-104.9903']);
+  expect(screen.getByLabelText('Stop B')).toHaveValue('Denver');
+  expect(screen.getByLabelText('Start')).toHaveValue('Los Angeles');
+  expect(screen.getByLabelText('Finish')).toHaveValue('Chicago');
+
+  const [savedTrip] = readRecentTrips();
+  expect(savedTrip.waypoints).toEqual(['39.7392,-104.9903']);
+});
+
+test('an original A-to-B demo chip still solves with no waypoints (regression)', () => {
+  const { solve } = renderPlanner();
+
+  fireEvent.click(screen.getByText('Dallas → Seattle'));
+
+  expect(solve).toHaveBeenCalledWith('32.7767,-96.7970', '47.6062,-122.3321', undefined);
+  expect(screen.queryByLabelText(/^Stop /)).not.toBeInTheDocument();
+});
+
+test('loading a multi-stop recent/shared trip restores its middle stops and re-solves with them', () => {
+  const { solve } = renderPlanner();
+
+  act(() => {
+    requestLoadTrip({
+      start: '34.0522,-118.2437',
+      finish: '41.8781,-87.6298',
+      startLabel: 'Los Angeles',
+      finishLabel: 'Chicago',
+      vehicle: 'semi-loaded',
+      waypoints: ['39.7392,-104.9903'],
+    });
+  });
+
+  expect(solve).toHaveBeenCalledWith('34.0522,-118.2437', '41.8781,-87.6298', ['39.7392,-104.9903']);
+  expect(screen.getByLabelText('Stop B')).toHaveValue('39.7392,-104.9903');
 });

@@ -56,12 +56,24 @@ function middleStopLetter(index: number): string {
   return String.fromCharCode(65 + 1 + index);
 }
 
-// Demo trip labels are always "A → B" (constants/presets.ts) -- split on
-// the arrow to get per-endpoint display labels without inventing a second
-// per-trip label field.
-function splitDemoLabel(label: string): [string, string] {
-  const [startLabel, finishLabel] = label.split('→').map((part) => part.trim());
-  return [startLabel || label, finishLabel || label];
+// Demo trip labels are "A → B" for a plain trip or "A → B → C" for a
+// multi-stop one (constants/presets.ts) -- split on every arrow rather
+// than just the first: the FIRST segment is always the start label, the
+// LAST is always the finish label, and everything between is a middle
+// stop's display label (positionally matched against trip.waypoints,
+// same order). A 2-segment label degrades to middleLabels: [], the exact
+// pre-multi-stop behavior.
+function splitDemoLabel(label: string): { startLabel: string; finishLabel: string; middleLabels: string[] } {
+  const parts = label
+    .split('→')
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length === 0) return { startLabel: label, finishLabel: label, middleLabels: [] };
+  return {
+    startLabel: parts[0],
+    finishLabel: parts[parts.length - 1],
+    middleLabels: parts.slice(1, -1),
+  };
 }
 
 // The planner input surface: two address-autocomplete fields,
@@ -129,9 +141,15 @@ function PlannerFormSection() {
     if (!loadTripRequest || loadTripRequest.nonce === lastHandledNonceRef.current) return;
     lastHandledNonceRef.current = loadTripRequest.nonce;
     const { trip } = loadTripRequest;
+    const waypoints = trip.waypoints ?? [];
     setStart({ value: trip.start, label: trip.startLabel });
     setFinish({ value: trip.finish, label: trip.finishLabel });
-    void solve(trip.start, trip.finish);
+    // TripState's waypoints are plain "lat,lng"/address strings with no
+    // separate per-waypoint label field -- the row's label falls back to
+    // its own value, same as a hand-typed address before autocomplete
+    // resolves it.
+    setMiddleStops(waypoints.map((value) => ({ id: createMiddleStopId(), value, label: value })));
+    void solve(trip.start, trip.finish, waypoints.length > 0 ? waypoints : undefined);
   }, [loadTripRequest, solve]);
 
   const handleSubmit = (event: FormEvent) => {
@@ -139,13 +157,15 @@ function PlannerFormSection() {
     const startValue = start.value.trim();
     const finishValue = finish.value.trim();
     if (!startValue || !finishValue || isLoading) return;
-    void solve(startValue, finishValue);
+    const waypointValues = middleStops.map((stop) => stop.value.trim()).filter(Boolean);
+    void solve(startValue, finishValue, waypointValues.length > 0 ? waypointValues : undefined);
     addRecentTrip({
       start: startValue,
       finish: finishValue,
       startLabel: start.label || startValue,
       finishLabel: finish.label || finishValue,
       vehicle: HERO_VEHICLE_PRESET_ID,
+      waypoints: waypointValues.length > 0 ? waypointValues : undefined,
     });
   };
 
@@ -215,16 +235,25 @@ function PlannerFormSection() {
   };
 
   const handleDemoTripSelect = (trip: DemoTrip) => {
-    const [startLabel, finishLabel] = splitDemoLabel(trip.label);
+    const { startLabel, finishLabel, middleLabels } = splitDemoLabel(trip.label);
+    const waypoints = trip.waypoints ?? [];
     setStart({ value: trip.start, label: startLabel });
     setFinish({ value: trip.finish, label: finishLabel });
-    void solve(trip.start, trip.finish);
+    setMiddleStops(
+      waypoints.map((value, index) => ({
+        id: createMiddleStopId(),
+        value,
+        label: middleLabels[index] ?? value,
+      }))
+    );
+    void solve(trip.start, trip.finish, waypoints.length > 0 ? waypoints : undefined);
     addRecentTrip({
       start: trip.start,
       finish: trip.finish,
       startLabel,
       finishLabel,
       vehicle: HERO_VEHICLE_PRESET_ID,
+      waypoints: waypoints.length > 0 ? waypoints : undefined,
     });
   };
 
