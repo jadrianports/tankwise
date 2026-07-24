@@ -13,6 +13,7 @@ import SummaryCard from './SummaryCard';
 import StopList from './StopList';
 import LegBreakdown from './LegBreakdown';
 import TankChart from './TankChart';
+import ElevationChart from './ElevationChart';
 import LoadingNarration from './LoadingNarration';
 
 // Composes the full static results story from already-returned response
@@ -28,7 +29,7 @@ import LoadingNarration from './LoadingNarration';
 // full-takeover LoadingNarration is reserved for the very first solve,
 // when there is no prior plan to keep showing.
 function ResultsSection() {
-  const { status, data, error, retry } = useRoutePlanContext();
+  const { status, data, error, retry, elevationProfile, setHoveredElevationDistanceMi } = useRoutePlanContext();
 
   const handleRetry = useCallback(() => {
     retry();
@@ -79,6 +80,17 @@ function ResultsSection() {
               <TankChart legs={data.legs} stops={data.fuel_stops} vehicle={data.vehicle} waypoints={data.waypoints} />
             </AccordionDetails>
           </Accordion>
+
+          <Box>
+            <Typography variant="subtitle1" sx={{ mb: 1 }}>
+              Elevation profile
+            </Typography>
+            <ElevationChart
+              profile={elevationProfile}
+              waypoints={data.waypoints}
+              onHoverDistanceChange={setHoveredElevationDistanceMi}
+            />
+          </Box>
 
           <StopList stops={data.fuel_stops} waypoints={data.waypoints} />
         </Box>
