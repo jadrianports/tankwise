@@ -66,6 +66,7 @@ function ResultsSection() {
                 legs={data.legs}
                 totalDurationS={data.total_duration_s}
                 fuelStopCount={data.fuel_stop_count}
+                waypoints={data.waypoints}
               />
             </AccordionDetails>
           </Accordion>
@@ -75,11 +76,11 @@ function ResultsSection() {
               <Typography variant="body1">Tank level along the route</Typography>
             </AccordionSummary>
             <AccordionDetails>
-              <TankChart legs={data.legs} stops={data.fuel_stops} vehicle={data.vehicle} />
+              <TankChart legs={data.legs} stops={data.fuel_stops} vehicle={data.vehicle} waypoints={data.waypoints} />
             </AccordionDetails>
           </Accordion>
 
-          <StopList stops={data.fuel_stops} />
+          <StopList stops={data.fuel_stops} waypoints={data.waypoints} />
         </Box>
       )}
 

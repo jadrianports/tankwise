@@ -4,7 +4,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import StopList from './StopList';
 import { RoutePlanContext } from '../../context/RoutePlanContext';
 import type { RoutePlanContextValue } from '../../context/RoutePlanContext';
-import type { FuelStop } from '../../types/routeContract';
+import type { FuelStop, WaypointMarker } from '../../types/routeContract';
 
 // This file's vite config runs without vitest's `globals` option, so
 // testing-library's auto-cleanup detection never fires -- each render
@@ -87,4 +87,36 @@ test('clicking a StopList row with no station id falls back to its index', () =>
   fireEvent.click(screen.getByText('Loves Travel Stop'));
 
   expect(focusStop).toHaveBeenCalledWith(1);
+});
+
+const THREE_STOP_WAYPOINTS = [
+  { label: 'A', name: 'START', lat: 34.0522, lng: -118.2437, distance_from_start_mi: '0', duration_s: 0 },
+  { label: 'B', name: 'Stop B', lat: 39.7392, lng: -104.9903, distance_from_start_mi: '150.0', duration_s: 9000 },
+  { label: 'C', name: 'FINISH', lat: 41.8781, lng: -87.6298, distance_from_start_mi: '600.7', duration_s: 36000 },
+] as unknown as WaypointMarker[];
+
+test('an intermediate waypoint renders as a distinct letter-badged row, not the numbered fuel-icon avatar', () => {
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
+      <StopList stops={STOPS} waypoints={THREE_STOP_WAYPOINTS} />
+    </RoutePlanContext.Provider>
+  );
+
+  expect(screen.getByText('Stop B')).toBeInTheDocument();
+  expect(screen.getByText('Your stop')).toBeInTheDocument();
+  // The waypoint row has no numbered fuel-stop click handler -- it is a
+  // plain (non-button) list item.
+  expect(screen.queryByRole('button', { name: /Stop B/i })).not.toBeInTheDocument();
+});
+
+test('StopList renders nothing extra for a 2-point response (no intermediate waypoints)', () => {
+  const twoPointWaypoints = [THREE_STOP_WAYPOINTS[0], THREE_STOP_WAYPOINTS[2]];
+
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
+      <StopList stops={STOPS} waypoints={twoPointWaypoints} />
+    </RoutePlanContext.Provider>
+  );
+
+  expect(screen.getAllByRole('button')).toHaveLength(STOPS.length);
 });
