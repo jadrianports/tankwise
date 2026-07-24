@@ -8,7 +8,7 @@ import { useColorScheme } from '@mui/material/styles';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 
-import type { CandidateStation, FuelStop, RouteResponse } from '../../types/routeContract';
+import type { CandidateStation, FuelStop, RouteResponse, WaypointMarker } from '../../types/routeContract';
 import type { FocusStopRequest } from '../../context/RoutePlanContext';
 import { useMapStyle } from './useMapStyle';
 import { useTerrain, getConditionalPitch } from './useTerrain';
@@ -57,6 +57,21 @@ function toNumber(value: string | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const n = Number(value);
   return Number.isFinite(n) ? n : null;
+}
+
+// Lettered A/B/C… pin colors (D-04, WAY-06). The first (A/start) and last
+// (finish) letters keep the exact colors the retired hardcoded S/F
+// markers used; any INTERMEDIATE user stop gets a third, consistent
+// accent tied to the route line color (ROUTE_COLOR) -- distinct from both
+// the start/finish endpoints and the smaller fuel-icon markers.
+function waypointPinColors(index: number, total: number, isDark: boolean): { bg: string; text: string } {
+  if (index === 0) {
+    return isDark ? { bg: '#1F8F68', text: '#10151B' } : { bg: '#0A4F39', text: '#FFFFFF' };
+  }
+  if (index === total - 1) {
+    return isDark ? { bg: '#3A4550', text: '#EDEFF2' } : { bg: '#1A2027', text: '#FFFFFF' };
+  }
+  return isDark ? { bg: ROUTE_COLOR.dark, text: '#10151B' } : { bg: ROUTE_COLOR.light, text: '#FFFFFF' };
 }
 
 export interface MapViewProps {
@@ -221,28 +236,52 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
   const finishLng = toNumber(data?.finish?.longitude);
   const finishLat = toNumber(data?.finish?.latitude);
 
-  // Camera holds position on every re-solve: fitBounds runs ONLY
-  // from an effect scoped to the resolved start/finish coordinates, never
-  // to every new plan response -- a later slider re-solve keeps the same
-  // start/finish and must never move the camera.
+  const waypoints: WaypointMarker[] = data?.waypoints ?? [];
+  // A stable PRIMITIVE derived from the resolved waypoint coordinates
+  // (not the `waypoints` array reference, and not `data` itself) -- the
+  // exact same "camera holds position on every re-solve" discipline the
+  // old 2-point effect relied on ([startLat, startLng, finishLat,
+  // finishLng], all primitives), generalized to N stops. A later
+  // vehicle-slider re-solve that lands on the identical stop coordinates
+  // produces the identical key and never re-fires the camera move, even
+  // though `data`/`waypoints` are fresh object/array references by then.
+  const waypointCoordsKey = waypoints.map((w) => `${w.lat},${w.lng}`).join('|');
+
+  // Camera holds position on every re-solve: fitBounds runs ONLY from an
+  // effect scoped to the resolved coordinates, never to every new plan
+  // response. Generalized from the old 2-point Math.min/Math.max pair to
+  // an N-point bbox over every user stop (D-04); falls back to the
+  // start/finish pair only for a pre-Phase-13-shaped instance with no
+  // `waypoints` key at all, preserving the exact old 2-point camera.
   useEffect(() => {
-    if (
-      !mapRef.current ||
-      startLng === null ||
-      startLat === null ||
-      finishLng === null ||
-      finishLat === null
-    ) {
-      return;
-    }
-    mapRef.current.fitBounds(
-      [
+    if (!mapRef.current) return;
+
+    const coords = waypoints
+      .map((w): [number, number] | null => (Number.isFinite(w.lng) && Number.isFinite(w.lat) ? [w.lng, w.lat] : null))
+      .filter((c): c is [number, number] => c !== null);
+
+    let bounds: [[number, number], [number, number]] | null = null;
+    if (coords.length > 0) {
+      const lngs = coords.map(([lng]) => lng);
+      const lats = coords.map(([, lat]) => lat);
+      bounds = [
+        [Math.min(...lngs), Math.min(...lats)],
+        [Math.max(...lngs), Math.max(...lats)],
+      ];
+    } else if (startLng !== null && startLat !== null && finishLng !== null && finishLat !== null) {
+      bounds = [
         [Math.min(startLng, finishLng), Math.min(startLat, finishLat)],
         [Math.max(startLng, finishLng), Math.max(startLat, finishLat)],
-      ],
-      { padding: 64, duration: 800 }
-    );
-  }, [startLat, startLng, finishLat, finishLng]);
+      ];
+    }
+
+    if (!bounds) return;
+    mapRef.current.fitBounds(bounds, { padding: 64, duration: 800 });
+    // `waypoints` itself is deliberately NOT a dependency here --
+    // `waypointCoordsKey` is the coordinate-only primitive this effect is
+    // scoped to (see comment above); depending on the array reference too
+    // would refire the camera on every re-solve, even an unchanged one.
+  }, [waypointCoordsKey, startLat, startLng, finishLat, finishLng]);
 
   // A StopList row (features/results, inside the sidebar) requests focus
   // via App.tsx's shared context -- resolve the request's key against
@@ -301,46 +340,30 @@ function MapView({ data, token, tokenStatus, focusStopRequest }: MapViewProps) {
         onLoad={handleLoad}
         style={{ width: '100%', height: '100%' }}
       >
-        {startLng !== null && startLat !== null && (
-          <Marker longitude={startLng} latitude={startLat} anchor="center">
-            <Box
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                bgcolor: isDark ? '#1F8F68' : '#0A4F39',
-                color: isDark ? '#10151B' : '#FFFFFF',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 600,
-                boxSizing: 'border-box',
-              }}
-            >
-              S
-            </Box>
-          </Marker>
-        )}
-        {finishLng !== null && finishLat !== null && (
-          <Marker longitude={finishLng} latitude={finishLat} anchor="center">
-            <Box
-              sx={{
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                bgcolor: isDark ? '#3A4550' : '#1A2027',
-                color: isDark ? '#EDEFF2' : '#FFFFFF',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontWeight: 600,
-                boxSizing: 'border-box',
-              }}
-            >
-              F
-            </Box>
-          </Marker>
-        )}
+        {waypoints.map((waypoint, index) => {
+          if (!Number.isFinite(waypoint.lng) || !Number.isFinite(waypoint.lat)) return null;
+          const colors = waypointPinColors(index, waypoints.length, isDark);
+          return (
+            <Marker key={`waypoint-${waypoint.label}`} longitude={waypoint.lng} latitude={waypoint.lat} anchor="center">
+              <Box
+                sx={{
+                  width: 32,
+                  height: 32,
+                  borderRadius: '50%',
+                  bgcolor: colors.bg,
+                  color: colors.text,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontWeight: 600,
+                  boxSizing: 'border-box',
+                }}
+              >
+                {waypoint.label}
+              </Box>
+            </Marker>
+          );
+        })}
         {fuelStops.map((stop, index) => {
           const key = stop.station_id ?? index;
           const lat = toNumber(stop.location?.latitude);
