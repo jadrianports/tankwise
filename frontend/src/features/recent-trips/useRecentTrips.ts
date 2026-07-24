@@ -54,8 +54,15 @@ function writeStorage(trips: RecentTrip[]): void {
   }
 }
 
+// Additive (D-10, Pitfall C): folds in an order-preserving encoding of
+// `waypoints` so two different multi-stop trips sharing the same
+// start/finish/vehicle (e.g. "LA->Denver->Chicago" vs
+// "LA->Phoenix->Chicago") no longer collide onto the same recent-trips
+// slot -- a plain A->B trip (`waypoints` empty/absent) keys identically
+// to before this field existed.
 function tripKey(trip: TripState): string {
-  return `${trip.start}|${trip.finish}|${trip.vehicle}`;
+  const waypointsToken = trip.waypoints && trip.waypoints.length > 0 ? trip.waypoints.join(';') : '';
+  return `${trip.start}|${trip.finish}|${trip.vehicle}|${waypointsToken}`;
 }
 
 let state: RecentTrip[] = readStorage();

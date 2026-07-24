@@ -18,6 +18,16 @@ const TRIP: TripState = {
   vehicle: 'semi-loaded',
 };
 
+const MULTI_STOP_TRIP: TripState = {
+  start: '34.0522,-118.2437',
+  finish: '41.8781,-87.6298',
+  startLabel: 'Los Angeles',
+  finishLabel: 'Chicago',
+  vehicle: 'semi-loaded',
+  waypoints: ['39.7392,-104.9903'],
+  stopCount: 3,
+};
+
 test('encodeTripState carries every field under its real parameter key', () => {
   const params = encodeTripState(TRIP);
   expect(params.get('start')).toBe(TRIP.start);
@@ -66,6 +76,57 @@ test('decodeTripState accepts a pre-built URLSearchParams as well as a raw query
   const fromString = decodeTripState(tripStateToQueryString(TRIP));
   expect(fromParams).toEqual(fromString);
   expect(fromParams).toEqual(TRIP);
+});
+
+test('encodeTripState carries an ordered waypoints list and a derived stopCount hint', () => {
+  const params = encodeTripState(MULTI_STOP_TRIP);
+  expect(params.get('stops')).toBe('39.7392,-104.9903');
+  expect(params.get('stopCount')).toBe('3');
+});
+
+test('encodeTripState omits stops/stopCount entirely for a plain A-to-B trip', () => {
+  const params = encodeTripState(TRIP);
+  expect(params.has('stops')).toBe(false);
+  expect(params.has('stopCount')).toBe(false);
+});
+
+test('a multi-stop trip round-trips its ordered waypoints and stopCount through decodeTripState', () => {
+  const queryString = tripStateToQueryString(MULTI_STOP_TRIP);
+  expect(decodeTripState(queryString)).toEqual(MULTI_STOP_TRIP);
+});
+
+test('an old A-to-B share link with no stops param decodes to the identical TripState as before D-10', () => {
+  const params = encodeTripState(TRIP);
+  expect(params.has('stops')).toBe(false);
+  const trip = decodeTripState(params);
+  expect(trip).toEqual(TRIP);
+  expect(trip?.waypoints).toBeUndefined();
+  expect(trip?.stopCount).toBeUndefined();
+  expect(trip?.staleClientWarning).toBeUndefined();
+});
+
+test('a link whose stopCount hint exceeds the recovered waypoints yields a stale-client warning, never a silent 2-point collapse', () => {
+  // Simulates a stale bundle that could not fully parse `stops` --
+  // encoded by an originating client expecting 3 total stops, but this
+  // decode only recovers the 2 endpoints (no `stops` param at all).
+  const params = new URLSearchParams();
+  params.set('start', MULTI_STOP_TRIP.start);
+  params.set('finish', MULTI_STOP_TRIP.finish);
+  params.set('stopCount', '3');
+
+  const trip = decodeTripState(params);
+  expect(trip).not.toBeNull();
+  expect(trip?.start).toBe(MULTI_STOP_TRIP.start);
+  expect(trip?.finish).toBe(MULTI_STOP_TRIP.finish);
+  expect(trip?.waypoints).toBeUndefined();
+  expect(trip?.staleClientWarning).toBe(
+    'This shared trip expected 3 stops but only 2 loaded — refresh for the full route.'
+  );
+});
+
+test('a stopCount hint that matches the recovered waypoints produces no stale-client warning', () => {
+  const trip = decodeTripState(tripStateToQueryString(MULTI_STOP_TRIP));
+  expect(trip?.staleClientWarning).toBeUndefined();
 });
 
 test('requestLoadTrip makes getLoadTripRequestSnapshot return the supplied trip and notifies subscribers', () => {

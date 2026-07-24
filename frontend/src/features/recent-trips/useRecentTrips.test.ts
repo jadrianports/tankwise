@@ -50,6 +50,56 @@ test('add dedupes by identity fields, leaving length unchanged and moving the ma
   expect(result.current.trips[1].start).toBe('c');
 });
 
+test('add keeps two multi-stop trips sharing start/finish/vehicle but differing waypoints as distinct entries', async () => {
+  const { useRecentTrips } = await import('./useRecentTrips');
+  const { result } = renderHook(() => useRecentTrips());
+
+  act(() => {
+    result.current.add({
+      start: '34.0522,-118.2437',
+      finish: '41.8781,-87.6298',
+      startLabel: 'LA',
+      finishLabel: 'Chicago',
+      vehicle: 'semi-loaded',
+      waypoints: ['39.7392,-104.9903'],
+    });
+  });
+  act(() => {
+    result.current.add({
+      start: '34.0522,-118.2437',
+      finish: '41.8781,-87.6298',
+      startLabel: 'LA',
+      finishLabel: 'Chicago',
+      vehicle: 'semi-loaded',
+      waypoints: ['33.4484,-112.0740'],
+    });
+  });
+
+  expect(result.current.trips).toHaveLength(2);
+});
+
+test('add still dedupes two multi-stop trips sharing identical waypoints, in the same order', async () => {
+  const { useRecentTrips } = await import('./useRecentTrips');
+  const { result } = renderHook(() => useRecentTrips());
+  const trip = {
+    start: '34.0522,-118.2437',
+    finish: '41.8781,-87.6298',
+    startLabel: 'LA',
+    finishLabel: 'Chicago',
+    vehicle: 'semi-loaded',
+    waypoints: ['39.7392,-104.9903'],
+  };
+
+  act(() => {
+    result.current.add(trip);
+  });
+  act(() => {
+    result.current.add(trip);
+  });
+
+  expect(result.current.trips).toHaveLength(1);
+});
+
 test('add truncates the list to the module max-entries cap', async () => {
   const { useRecentTrips } = await import('./useRecentTrips');
   const { result } = renderHook(() => useRecentTrips());
