@@ -8,7 +8,9 @@ values (opis_id, coordinates, precision, status) from
 Semantics: idempotent upsert on opis_id, every run -- NOT
 skip-if-already-populated, NOT truncate-and-reload. A first run against an
 empty DB creates every row; a second run changes nothing; a run against a
-drifted table converges it back to the CSV.
+drifted table converges it back to the CSV. The upsert itself is issued in
+two batched write calls rather than one write per row, so the query count
+stays flat as the CSV grows -- see the write phase below.
 """
 
 import csv
@@ -33,6 +35,18 @@ DEFAULT_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 # separately below since blank cells must coerce to None).
 STRAIGHT_FIELDS = ["name", "address", "city", "state", "rack_id"]
 DECIMAL_FIELDS = ["retail_price", "price_min", "price_max"]
+
+# Every key _row_to_defaults returns, derived from the two field lists above
+# plus the columns it sets by hand -- kept as a derivation (not a
+# hand-retyped literal) so a future column added to _row_to_defaults can't
+# silently drift out of the batched update's field set below.
+UPDATE_FIELDS = STRAIGHT_FIELDS + DECIMAL_FIELDS + [
+    "observation_count",
+    "latitude",
+    "longitude",
+    "geocode_precision",
+    "geocode_status",
+]
 
 
 def _parse_decimal(value):
@@ -93,6 +107,9 @@ class Command(BaseCommand):
                 # update_or_create just assigned (mirrors import_stations).
                 existing_by_opis_id = {s.opis_id: s for s in Station.objects.all()}
 
+                to_create = []
+                to_update = []
+
                 for line_num, row in enumerate(reader, start=2):
                     try:
                         opis_id = int(row["opis_id"])
@@ -110,7 +127,7 @@ class Command(BaseCommand):
                     existing = existing_by_opis_id.get(opis_id)
 
                     if existing is None:
-                        Station.objects.update_or_create(opis_id=opis_id, defaults=defaults)
+                        to_create.append(Station(opis_id=opis_id, **defaults))
                         created += 1
                         continue
 
@@ -118,11 +135,24 @@ class Command(BaseCommand):
                         getattr(existing, field_name) != value
                         for field_name, value in defaults.items()
                     )
-                    Station.objects.update_or_create(opis_id=opis_id, defaults=defaults)
                     if changed:
+                        for field_name, value in defaults.items():
+                            setattr(existing, field_name, value)
+                        to_update.append(existing)
                         updated += 1
                     else:
                         unchanged += 1
+
+                # Rejected the simpler single-pass upsert (passing
+                # update_conflicts=True, unique_fields=["opis_id"], and
+                # update_fields=UPDATE_FIELDS to the create call below): it
+                # writes every row on every idempotent replay, which would
+                # destroy the unchanged count above entirely. batch_size=500
+                # is a deliberate choice -- SQLite has a bound-parameter
+                # limit and CI runs this command against both SQLite and
+                # Postgres.
+                Station.objects.bulk_create(to_create, batch_size=500)
+                Station.objects.bulk_update(to_update, UPDATE_FIELDS, batch_size=500)
 
         # The corridor STRtree is a process-level cache of Station rows
         # (routing.services.corridor._INDEX); a reseed inside a long-lived

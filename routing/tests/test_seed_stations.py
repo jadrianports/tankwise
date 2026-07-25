@@ -5,7 +5,9 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from routing.models import GeocodeStatus, Station
 
@@ -177,3 +179,29 @@ class SeedStationsTests(TestCase):
         # Upsert (not skip-if-populated): the drifted row is reported as
         # updated, not left unchanged.
         self.assertIn("0 created, 1 updated, 3 unchanged", out.getvalue())
+
+    def test_query_count_does_not_scale_with_row_count(self):
+        # Guards against the pre-batching behavior: one write round trip per
+        # row would make the 40-row query count roughly ten times the 4-row
+        # count instead of staying flat.
+        with CaptureQueriesContext(connection) as ctx_small:
+            call_command("seed_stations", self.csv_path, stdout=io.StringIO())
+        small_count = len(ctx_small)
+
+        Station.objects.all().delete()
+
+        large_rows = []
+        for replica in range(10):
+            for row in FIXTURE_ROWS:
+                large_row = dict(row)
+                large_row["opis_id"] = str(int(row["opis_id"]) + replica * 1000)
+                large_rows.append(large_row)
+        large_csv_path = _write_fixture_csv(large_rows)
+        try:
+            with CaptureQueriesContext(connection) as ctx_large:
+                call_command("seed_stations", large_csv_path, stdout=io.StringIO())
+            large_count = len(ctx_large)
+        finally:
+            Path(large_csv_path).unlink(missing_ok=True)
+
+        self.assertLessEqual(large_count, small_count + 2)
