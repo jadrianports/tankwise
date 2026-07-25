@@ -9,6 +9,7 @@ import ShareExportBar from './features/share-export/ShareExportBar';
 import { useShareUrl } from './features/share-export/useShareUrl';
 import './features/share-export/print.css';
 import { fetchConfig } from './api/configClient';
+import { prewarmServer } from './api/readyClient';
 import { useRoutePlan } from './hooks/useRoutePlan';
 import { RoutePlanContext } from './context/RoutePlanContext';
 import type { FocusStopRequest } from './context/RoutePlanContext';
@@ -58,6 +59,14 @@ function App() {
   // `focusStopRequest`), never via MapView importing the context itself.
   const [elevationProfile, setElevationProfile] = useState<ElevationProfile | null>(null);
   const [hoveredElevationDistanceMi, setHoveredElevationDistanceMi] = useState<number | null>(null);
+
+  // Fire-and-forget pre-warm ping (D-07): begins waking a sleeping
+  // free-tier dyno while the user is still reading or typing on the
+  // planner form. Intentionally has no cleanup -- nothing is set from its
+  // result, so there is no state to guard against an unmount race.
+  useEffect(() => {
+    void prewarmServer();
+  }, []);
 
   // Fetch the pk. token once at boot. A missing/misconfigured token
   // degrades to the map-pane-only config-error state inside MapView; it

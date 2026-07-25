@@ -4,8 +4,11 @@ export type ColdStartStage = 'solving' | 'checking' | 'waking';
 
 // "A few seconds" before the narration admits it's taking a while, and a
 // longer threshold before it names the free-tier cold-start possibility.
+// 4000ms is D-07's threshold for escalating to the waking presentation --
+// the same threshold now drives two consumers: the existing inline
+// LoadingNarration copy and the dedicated ColdStartModal overlay.
 const CHECKING_THRESHOLD_MS = 3000;
-const WAKING_THRESHOLD_MS = 8000;
+const WAKING_THRESHOLD_MS = 4000;
 
 // Cold start is detected purely by an elapsed-time threshold on the
 // in-flight request -- no extra request, no /api/health probe, no server
