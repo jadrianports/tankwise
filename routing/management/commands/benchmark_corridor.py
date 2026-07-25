@@ -2,6 +2,18 @@
 query vs. the current lazily-built STRtree, with the mean-latitude
 hoisting fix's contribution attributed separately from the tree's.
 
+Also supports a `--profile` mode (CORR-02) that reimplements
+`corridor._candidates_single_leg` step-by-step with `time.perf_counter()`
+boundaries around five named sub-stages (`buffer`, `tree_query`,
+`planar_build`, `vectorized`, `candidate_loop`), reporting each stage's
+median time and share of the pass, plus the prefilter survivor count and
+final candidate count. The profiled variant is correctness-guarded the
+same way the legacy/hoisted/strtree variants above already are: it must
+return the exact same candidate set as `corridor.candidates()` (same
+sorted `opis_id` list and the same `distance_from_start_mi` strings), or
+the command raises `CommandError` -- a profile that measures different
+work than production measures nothing.
+
 Read-only reporting command: no writes, no network calls. Routes are
 synthesized offline by linearly interpolating (plus a small deterministic
 wiggle) between hardcoded continental-US endpoint pairs and densifying to
@@ -18,6 +30,7 @@ import statistics
 import time
 from decimal import Decimal
 
+import shapely
 from django.core.management.base import BaseCommand, CommandError
 from shapely.geometry import LineString
 
@@ -137,6 +150,104 @@ def _legacy_candidates(route, *, hoist_mean_lat):
     return result
 
 
+_PROFILE_STAGES = ("buffer", "tree_query", "planar_build", "vectorized", "candidate_loop")
+
+
+def _profiled_single_pass(route):
+    """One profiled pass of the single-leg corridor build -- mirrors
+    `corridor._candidates_single_leg` step for step, with
+    `time.perf_counter()` boundaries around five named sub-stages.
+    Returns `(candidates, stage_ms, survivor_count)`; `stage_ms` covers
+    THIS pass only -- the caller takes the median across repeats.
+
+    Deliberately duplicates `corridor._candidates_single_leg`'s body
+    rather than importing timing hooks into it, following this file's
+    existing `_legacy_candidates` precedent (a benchmark-only
+    reimplementation, correctness-guarded against the real function by
+    the caller comparing candidate sets).
+    """
+    rooftop_mi, city_mi = corridor._corridor_widths()
+    coords = route.raw_coordinates
+    mean_lat = corridor.mean_lat_rad(coords)
+    tree, indexed_stations = corridor._get_index()
+
+    stage_ms = {}
+
+    # `buffer`: LineString(coords) + .buffer(buffer_deg) against the RAW
+    # (unsimplified) route -- corridor.py:302-307's comment records that
+    # this buffer always runs against the raw geometry, never the
+    # simplified planar line.
+    started = time.perf_counter()
+    buffer_deg = corridor._corridor_buffer_degrees(coords, city_mi, mean_lat=mean_lat)
+    raw_route = LineString(coords)
+    query_region = raw_route.buffer(buffer_deg)
+    stage_ms["buffer"] = (time.perf_counter() - started) * 1000
+
+    # `tree_query`: the STRtree prefilter query itself.
+    started = time.perf_counter()
+    survivor_idx = tree.query(query_region, predicate="intersects")
+    stations = [indexed_stations[i] for i in survivor_idx]
+    stage_ms["tree_query"] = (time.perf_counter() - started) * 1000
+    survivor_count = len(stations)
+
+    # `planar_build`: the equirectangular-projected route line plus its
+    # simplification -- route_length_mi is derived from this SAME
+    # simplified object immediately after, matching corridor.py:311-317's
+    # route_length_mi invariant.
+    started = time.perf_counter()
+    planar_route = corridor.build_planar_route(coords, mean_lat=mean_lat)
+    planar_route = planar_route.simplify(corridor.SIMPLIFY_TOLERANCE_MI)
+    route_length_mi = corridor._as_decimal(planar_route.length)
+    stage_ms["planar_build"] = (time.perf_counter() - started) * 1000
+
+    total_route_mi = route.total_route_mi
+
+    # `vectorized`: the vectorized shapely distance/along-line pass over
+    # every prefilter survivor.
+    started = time.perf_counter()
+    planar_points = corridor._planar_points_for_stations(stations, mean_lat)
+    perpendicular_mi_raw = shapely.distance(planar_route, planar_points)
+    along_line_mi_raw = shapely.line_locate_point(planar_route, planar_points)
+    stage_ms["vectorized"] = (time.perf_counter() - started) * 1000
+
+    # `candidate_loop`: the per-survivor Python loop with its Decimal
+    # arithmetic -- byte-identical to corridor._candidates_single_leg's
+    # own loop body, including the neutral 1.0 EIA factor (this profile
+    # never threads a real factor_for through, matching the production
+    # default caller).
+    started = time.perf_counter()
+    result = []
+    for station, perp_raw, along_raw in zip(
+        stations, perpendicular_mi_raw, along_line_mi_raw
+    ):
+        half_width = (
+            rooftop_mi
+            if station.geocode_precision == GeocodePrecision.ROOFTOP
+            else city_mi
+        )
+        perpendicular_mi = corridor._as_decimal(float(perp_raw))
+        if perpendicular_mi > half_width:
+            continue
+
+        fraction = corridor._as_decimal(float(along_raw)) / route_length_mi
+        distance_from_start_mi = fraction * total_route_mi
+        distance_from_start_mi = max(
+            Decimal(0), min(distance_from_start_mi, total_route_mi)
+        )
+
+        result.append(
+            Candidate(
+                name=station.name,
+                opis_id=station.opis_id,
+                price_per_gallon=station.retail_price * corridor._no_op_factor(station.state),
+                distance_from_start_mi=distance_from_start_mi,
+            )
+        )
+    stage_ms["candidate_loop"] = (time.perf_counter() - started) * 1000
+
+    return result, stage_ms, survivor_count
+
+
 def _median_ms(fn, repeats):
     samples_ms = []
     result = None
@@ -152,6 +263,11 @@ class Command(BaseCommand):
         "Time the corridor filter's legacy DB-bbox path against the "
         "current STRtree path over synthetic offline routes, attributing "
         "the mean-latitude-hoisting and STRtree speedups separately. "
+        "With --profile, additionally splits the current STRtree pass "
+        "itself into five named sub-stages (buffer, tree_query, "
+        "planar_build, vectorized, candidate_loop) with per-stage median "
+        "ms and percent-of-pass, guarded against divergence from "
+        "corridor.candidates()'s own output. "
         "Read-only: no writes, no network calls. Must NOT run in CI -- "
         "timing numbers are informational, not a pass/fail gate."
     )
@@ -187,12 +303,25 @@ class Command(BaseCommand):
                 "the given path."
             ),
         )
+        parser.add_argument(
+            "--profile",
+            action="store_true",
+            help=(
+                "Additionally split the current STRtree corridor pass into "
+                "five named sub-stages (buffer, tree_query, planar_build, "
+                "vectorized, candidate_loop) with per-stage median ms and "
+                "percent-of-pass, plus the prefilter survivor count and "
+                "final candidate count. Raises CommandError if the profiled "
+                "pass ever diverges from corridor.candidates()'s own output."
+            ),
+        )
 
     def handle(self, *args, **options):
         n_routes = options["routes"]
         n_points = options["points"]
         repeats = options["repeats"]
         baseline_out = options["baseline_out"]
+        profile = options["profile"]
 
         if n_routes < 1 or n_points < 2 or repeats < 1:
             raise CommandError(
@@ -242,6 +371,9 @@ class Command(BaseCommand):
                     f"Route {idx}: the three corridor variants returned "
                     "different candidate sets."
                 )
+
+            if profile:
+                self._run_profile(route, idx, n_points, repeats, strtree_result)
 
             legacy_ms_all.append(legacy_ms)
             hoisted_ms_all.append(hoisted_ms)
@@ -319,3 +451,60 @@ class Command(BaseCommand):
             with open(baseline_out, "w", encoding="utf-8") as f:
                 json.dump(document, f, indent=2)
             self.stdout.write(f"Baseline written to {baseline_out}")
+
+    def _run_profile(self, route, idx, n_points, repeats, strtree_result):
+        """Run `_profiled_single_pass` `repeats` times for `route`, print a
+        per-stage median-ms / percent-of-pass report, and raise
+        `CommandError` if the profiled candidate set ever diverges from
+        `strtree_result` (the same `corridor.candidates(route)` output
+        already timed and correctness-checked by the caller) -- same
+        sorted `opis_id` list AND the same `distance_from_start_mi`
+        strings. The index is already warm by the time this runs (the
+        caller's own STRtree timing above already forced a build), so
+        every profiled pass here measures geometry work only.
+        """
+        stage_samples = {stage: [] for stage in _PROFILE_STAGES}
+        survivor_count = None
+        profiled_result = None
+        for _ in range(repeats):
+            profiled_result, stage_ms, survivor_count = _profiled_single_pass(route)
+            for stage in _PROFILE_STAGES:
+                stage_samples[stage].append(stage_ms[stage])
+
+        profiled_ids = sorted(c.opis_id for c in profiled_result)
+        strtree_ids = sorted(c.opis_id for c in strtree_result)
+        if profiled_ids != strtree_ids:
+            raise CommandError(
+                f"Route {idx}: --profile's candidate set diverges from "
+                f"corridor.candidates() by opis_id "
+                f"(profiled={len(profiled_ids)}, production={len(strtree_ids)}) -- "
+                "a profile that measures different work than production "
+                "measures nothing."
+            )
+        profiled_by_id = {c.opis_id: c for c in profiled_result}
+        strtree_by_id = {c.opis_id: c for c in strtree_result}
+        for opis_id in strtree_ids:
+            profiled_distance = str(profiled_by_id[opis_id].distance_from_start_mi)
+            production_distance = str(strtree_by_id[opis_id].distance_from_start_mi)
+            if profiled_distance != production_distance:
+                raise CommandError(
+                    f"Route {idx}: --profile's distance_from_start_mi for "
+                    f"opis_id={opis_id} diverges from corridor.candidates() "
+                    f"({profiled_distance!r} != {production_distance!r})."
+                )
+
+        stage_medians = {
+            stage: statistics.median(samples) for stage, samples in stage_samples.items()
+        }
+        pass_total_ms = sum(stage_medians.values())
+
+        self.stdout.write(
+            f"Route {idx} ({n_points} pts) --profile: "
+            f"{survivor_count} prefilter survivor(s) -> "
+            f"{len(profiled_result)} candidate(s), "
+            f"pass total (sum of stage medians)={pass_total_ms:.2f}ms"
+        )
+        for stage in _PROFILE_STAGES:
+            median_ms = stage_medians[stage]
+            percent = (median_ms / pass_total_ms * 100) if pass_total_ms > 0 else 0.0
+            self.stdout.write(f"    {stage:<15} median={median_ms:8.3f}ms  ({percent:5.1f}%)")
