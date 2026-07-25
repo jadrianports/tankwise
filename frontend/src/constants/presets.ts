@@ -91,6 +91,14 @@ export interface DemoTrip {
   // so a repeat click always hits the same normalized cache key. Absent
   // for the three original A->B chips, which stay byte-unchanged.
   waypoints?: string[];
+  // Additive, cache-warming-only field. Nothing in the UI reads this --
+  // DemoTripChips renders every entry exactly as before. Marks a trip as
+  // permanently excluded from the keep-warm workflow's warm POSTs. The
+  // reason is mechanical, not cosmetic: views.py only calls cache.set on
+  // the success path, so a route that 422s (no drivable route) is never
+  // cached -- warming it would spend a real Mapbox Directions call on
+  // every warm cycle forever while never producing a cache hit.
+  excludeFromWarming?: boolean;
 }
 
 // Exported as `PRESET_ROUTES`; `DEMO_TRIPS` below is the alias current
@@ -113,6 +121,7 @@ export const PRESET_ROUTES: DemoTrip[] = [
     description: 'No drivable route',
     start: '33.3879,-118.4163',
     finish: '34.0522,-118.2437',
+    excludeFromWarming: true,
   },
   {
     label: 'Los Angeles → Denver → Chicago',

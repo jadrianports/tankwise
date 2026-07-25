@@ -4,13 +4,18 @@ name: Keep warm
 # this file is on the repository's default branch (main) at origin -- a
 # local commit alone changes nothing.
 on:
-  # Best-effort: GitHub Actions cron runs are queued at low priority and
-  # can be delayed, sometimes well past the interval, during periods of
-  # high load -- runs on the hour are the most contended. A 10-minute
-  # cadence against Render's ~15-minute free-tier idle threshold reduces
-  # but does not eliminate the chance the service still spins down.
   schedule:
+    # Best-effort: GitHub Actions cron runs are queued at low priority and
+    # can be delayed, sometimes well past the interval, during periods of
+    # high load -- runs on the hour are the most contended. A 10-minute
+    # cadence against Render's ~15-minute free-tier idle threshold reduces
+    # but does not eliminate the chance the service still spins down.
     - cron: '*/10 * * * *'
+    # Hourly, off-the-hour (minute 17, not minute 0) for the same
+    # on-the-hour-contention reason noted above. This drives the `warm`
+    # job below, not `ping` -- see that job's own comment block for why
+    # an hourly cadence is the right one for a route-cache warm.
+    - cron: '17 * * * *'
   # Lets this be fired by hand from the Actions tab.
   workflow_dispatch:
 
@@ -57,3 +62,85 @@ jobs:
           curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
             --max-time 90 "https://tankwise.onrender.com/api/health" \
             || echo 'ping failed (non-fatal)'
+
+  warm:
+    name: Warm the demo routes
+    runs-on: ubuntu-latest
+    # Gated on the HOURLY cron (and workflow_dispatch) -- NOT on the
+    # 10-minute liveness cron. Expressed as "not equal to the 10-minute
+    # cron string" rather than "equal to the hourly cron string" on
+    # purpose: workflow_dispatch supplies an empty github.event.schedule,
+    # and an equality test against the hourly string would silently skip
+    # manual runs.
+    if: github.event.schedule != '*/10 * * * *'
+    # Longer than `ping`'s budget: this job makes real /api/route POSTs,
+    # and a genuine cache miss on the Render free plan measured 10.8s
+    # wall for the slowest demo route, plus up to ~400ms for a cold
+    # worker's one-time station-index build. The job budget below stays
+    # comfortably above the sum of all warm POSTs' individual --max-time
+    # values plus the health wake-up step.
+    timeout-minutes: 8
+    steps:
+      # Same wake-the-service step as `ping`, run first so the FIRST warm
+      # POST below never absorbs a ~40s cold boot on top of its own
+      # --max-time budget.
+      - name: Wake the service
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 90 "https://tankwise.onrender.com/api/health" \
+            || echo 'wake failed (non-fatal)'
+
+      # Why hourly, not more often: the route cache TTL is 24h
+      # (CACHE_TTL_SECONDS, config/settings/base.py), so warming only has
+      # to outrun that TTL plus the key's EIA-vintage rollover (a full
+      # route solve every 10 minutes would be pure waste). Cadence is NOT
+      # what drives Mapbox cost -- a warm request that HITS the cache
+      # makes zero external calls, so the only real Directions spend is
+      # roughly one call per warmed route per invalidation event (TTL
+      # expiry, EIA week rollover, or an EIA status flip), a rounding
+      # error against the 100,000/month free tier. Hourly bounds a
+      # reviewer's worst-case cold window to about an hour; the cost of
+      # that choice is Upstash GETs and a few seconds of Render CPU, not
+      # Mapbox quota.
+      #
+      # Each body below reproduces the frontend's own /api/route request
+      # body exactly (frontend/src/api/routeClient.ts): the literal
+      # coordinate strings from PRESET_ROUTES, `waypoints` only for the
+      # multi-stop route, and the hero `semi-loaded` vehicle preset
+      # always present. Omitting `vehicle` would quantize to the
+      # backend's default profile and warm a DIFFERENT route:v4: cache
+      # key than the one a chip click actually reads -- see
+      # routing/cache.py's `_vehicle_token`. Bodies stay off stdout
+      # (piped to /dev/null) and only the status code and timing are
+      # logged, matching `ping`'s hygiene -- a /api/route response
+      # carries the map_url field's Mapbox `pk.` token.
+      #
+      # The Catalina Island -> Los Angeles demo chip is deliberately
+      # excluded: it has no drivable route, /api/route returns a 422 for
+      # it, and views.py only calls cache.set on the success path -- an
+      # error response is never cached. Warming it would spend a real
+      # Mapbox Directions call every cycle, forever, for zero possible
+      # cache hit.
+      - name: Warm Los Angeles to New York City
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 120 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data '{"start":"34.0522,-118.2437","finish":"40.7128,-74.0060","vehicle":{"mpg":6.5,"tank_range_mi":1050,"starting_fuel":1}}' \
+            || echo 'warm failed (non-fatal)'
+
+      - name: Warm Dallas to Seattle
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 120 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data '{"start":"32.7767,-96.7970","finish":"47.6062,-122.3321","vehicle":{"mpg":6.5,"tank_range_mi":1050,"starting_fuel":1}}' \
+            || echo 'warm failed (non-fatal)'
+
+      - name: Warm Los Angeles to Denver to Chicago
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 120 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data '{"start":"34.0522,-118.2437","finish":"41.8781,-87.6298","waypoints":["39.7392,-104.9903"],"vehicle":{"mpg":6.5,"tank_range_mi":1050,"starting_fuel":1}}' \
+            || echo 'warm failed (non-fatal)'
