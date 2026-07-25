@@ -15,6 +15,7 @@ waypoint). The mechanism is grounded against a captured 3-stop
 LA->Denver->Chicago fixture below.
 """
 import json
+import math
 from decimal import Decimal
 from pathlib import Path
 
@@ -279,6 +280,107 @@ class SingleLegRegressionTests(TestCase):
         self.assertEqual(
             result_without[0].distance_from_start_mi,
             result_with[0].distance_from_start_mi,
+        )
+
+
+class MultiLegSimplifyLengthInvariantTests(TestCase):
+    """Multi-leg analogue of `CorridorSimplifyLengthInvariantTests`
+    (`routing/tests/test_corridor.py`): each leg's `leg_planar_lengths_mi`
+    entry must be derived from the SAME simplified per-leg planar line
+    the vectorized `.distance()`/`.line_locate_point()` calls in
+    `_candidates_multi_leg` run against -- never from a stale
+    full-resolution leg length. Every pre-existing multi-leg test above
+    uses 1-segment legs, where `.simplify()` is a structural no-op and
+    cannot exercise this hazard class at all.
+
+    A PERFECTLY STRAIGHT densified leg (all points collinear) is NOT a
+    sufficient fixture here, even though `.simplify()` measurably drops
+    its vertex count: for a straight line, the sum of consecutive
+    segment lengths always equals the straight-line distance exactly
+    (no chord ever "cuts a corner"), so the pre- and post-simplification
+    lengths are bit-for-bit identical and the hazard this test exists to
+    catch cannot manifest. This fixture instead traces a gentle
+    high-frequency sine wiggle (amplitude comfortably under
+    `SIMPLIFY_TOLERANCE_MI`'s 0.05 mi threshold, so `.simplify()` still
+    irons leg 1 down to its 2 bounding vertices) around each leg's
+    north-south trend line -- real curvature that `.simplify()`
+    genuinely shortens, so a stale pre-simplification length measurably
+    disagrees with the correct one."""
+
+    LEG0_REAL_MI = Decimal("400")
+    LEG1_REAL_MI = Decimal("400")
+    N_POINTS_PER_LEG = 6000
+    WIGGLE_AMPLITUDE_DEG = 0.0009
+    WIGGLE_CYCLES = 400
+
+    def setUp(self):
+        super().setUp()
+        reset_index()
+
+    def _leg_coords(self, lat_start, lat_end):
+        n = self.N_POINTS_PER_LEG
+        coords = []
+        for i in range(n):
+            t = i / (n - 1)
+            lat = lat_start + (lat_end - lat_start) * t
+            lng = -97.00 + self.WIGGLE_AMPLITUDE_DEG * math.sin(
+                2 * math.pi * self.WIGGLE_CYCLES * t
+            )
+            coords.append([lng, lat])
+        return coords
+
+    def _route(self):
+        # Two wiggly north-south legs sharing a boundary waypoint at
+        # lat 35.00 -- the shared coordinate is included once, per
+        # `leg_coordinate_slices`'s documented mechanism.
+        leg0_coords = self._leg_coords(30.00, 35.00)
+        leg1_coords = self._leg_coords(35.00, 40.00)
+        combined = leg0_coords + leg1_coords[1:]
+        return Route(
+            total_route_mi=self.LEG0_REAL_MI + self.LEG1_REAL_MI,
+            geometry=LineString(combined),
+            raw_coordinates=combined,
+            leg_distances_mi=[self.LEG0_REAL_MI, self.LEG1_REAL_MI],
+            leg_annotation_lengths=[
+                self.N_POINTS_PER_LEG - 1,
+                self.N_POINTS_PER_LEG - 1,
+            ],
+        )
+
+    def test_simplification_reduces_vertex_count_on_both_legs(self):
+        """Sanity check that this fixture actually exercises
+        simplification on EVERY leg -- otherwise the invariant test
+        below would pass vacuously."""
+        flattened = flatten_route(self._route())
+
+        self.assertEqual(len(flattened.leg_lines), 2)
+        for leg_line, leg_coords in zip(
+            flattened.leg_lines, flattened.leg_coord_slices
+        ):
+            self.assertLess(len(leg_line.coords), len(leg_coords))
+
+    def test_known_fraction_station_positions_correctly_on_simplified_leg(self):
+        # 36.25 is exactly 25% of the way from 35.00 to 40.00, on leg 1
+        # (the SECOND leg) -- this also exercises the offset-sum
+        # boundary addition (leg 0's full 400 mi plus leg 1's own
+        # fraction), not just an isolated in-leg fraction. Leg 1's
+        # simplified line collapses fully to its 2 bounding vertices, so
+        # the correct answer lands on the analytic 25% mark essentially
+        # exactly -- a stale-length regression shifts it by several
+        # miles (verified via temporary sabotage during this task; see
+        # the corresponding SUMMARY/commit).
+        _make_station(
+            501,
+            latitude=Decimal("36.25"),
+            longitude=Decimal("-97.00"),
+        )
+
+        result = candidates(self._route())
+
+        self.assertEqual(len(result), 1)
+        expected = self.LEG0_REAL_MI + self.LEG1_REAL_MI * Decimal("0.25")
+        self.assertAlmostEqual(
+            float(result[0].distance_from_start_mi), float(expected), delta=1.0
         )
 
 
