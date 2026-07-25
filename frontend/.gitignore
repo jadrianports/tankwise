@@ -21,6 +21,11 @@ playwright-report/
 blob-report/
 playwright/.cache/
 
+# scripts/flake-hunt.mjs run artifacts -- per-run vitest JSON reports and
+# combined-output logs, retained only for a failing run and used purely
+# for local diagnosis. Never a deliverable.
+.flake-hunt/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
