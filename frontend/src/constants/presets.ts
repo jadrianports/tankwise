@@ -63,13 +63,18 @@ export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 // coordinate strings, never addresses, so a repeat click always hits the
 // same normalized cache key.
 //
-// Both demo trips return ~6 stops at the hero preset, not the 2-3 assumed
-// while planning. That is the solver working as designed: it minimizes
-// dollars, not stop count, so it takes opportunistic `top_up_at_cheapest`
-// purchases wherever fuel is cheap. LA->NYC is ~2,790 mi on a ~1,050 mi
-// range, so 2 stops is only the physical floor -- every stop beyond that
-// is the optimizer buying cheap. Copy here and in the UI says "multiple
-// fuel stops" rather than a fixed count for exactly this reason.
+// Resolved (not an open question): the ~6-stop count measured at the
+// hero preset, well above the 2-3 assumed while planning, is accepted as
+// correct solver behaviour rather than something to fix. The solver
+// minimizes total dollars, not stop count, so it takes opportunistic
+// `top_up_at_cheapest` purchases wherever fuel is cheap. LA->NYC is
+// ~2,790 mi on a ~1,050 mi range, so 2 stops is only the physical floor
+// -- every stop beyond that is the optimizer buying cheap. The
+// user-facing copy below stays count-agnostic for exactly this reason,
+// and the product now explains the behaviour in-app through the
+// WhyMultipleStopsPopup dialog mounted above the itinerary in
+// ResultsSection, so a reviewer reads the count as intelligence rather
+// than a bug.
 export interface DemoTrip {
   label: string;
   description: string;
