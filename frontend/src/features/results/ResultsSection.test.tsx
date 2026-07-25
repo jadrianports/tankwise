@@ -1,4 +1,4 @@
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
 import { afterEach, expect, test } from 'vitest';
 
 import ResultsSection from './ResultsSection';
@@ -108,4 +108,66 @@ test('savings renders as exactly one trip-total figure, never a per-leg breakdow
 
   expect(screen.getAllByText(/^Save \$/)).toHaveLength(1);
   expect(screen.getByText('Save $32.50 (11.7%)')).toBeInTheDocument();
+});
+
+test('a control named for the multiple-stops question is present and focusable when a plan is rendered', () => {
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, status: 'success', data: MULTI_STOP_DATA }}>
+      <ResultsSection />
+    </RoutePlanContext.Provider>
+  );
+
+  const trigger = screen.getByRole('button', { name: /why multiple fuel stops/i });
+  expect(trigger).toBeInTheDocument();
+  trigger.focus();
+  expect(trigger).toHaveFocus();
+});
+
+test('activating the fuel-stops explainer trigger opens the explainer dialog', () => {
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, status: 'success', data: MULTI_STOP_DATA }}>
+      <ResultsSection />
+    </RoutePlanContext.Provider>
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: /why multiple fuel stops/i }));
+  expect(screen.getByRole('dialog', { name: /why multiple fuel stops/i })).toBeInTheDocument();
+});
+
+test('closing the explainer dialog removes it while the itinerary stays rendered', async () => {
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, status: 'success', data: MULTI_STOP_DATA }}>
+      <ResultsSection />
+    </RoutePlanContext.Provider>
+  );
+
+  fireEvent.click(screen.getByRole('button', { name: /why multiple fuel stops/i }));
+  fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(screen.getByText('Fuel stops')).toBeInTheDocument();
+});
+
+test('the idle state renders neither the fuel-stops header nor the explainer trigger', () => {
+  render(
+    <RoutePlanContext.Provider value={BASE_CONTEXT}>
+      <ResultsSection />
+    </RoutePlanContext.Provider>
+  );
+
+  expect(screen.queryByText('Fuel stops')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /why multiple fuel stops/i })).not.toBeInTheDocument();
+});
+
+test('the existing SummaryCard, accordions, elevation chart, and stop list still render alongside the new header', () => {
+  render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, status: 'success', data: MULTI_STOP_DATA }}>
+      <ResultsSection />
+    </RoutePlanContext.Provider>
+  );
+
+  expect(screen.getByText('Per-leg breakdown')).toBeInTheDocument();
+  expect(screen.getByText('Tank level along the route')).toBeInTheDocument();
+  expect(screen.getByText('Elevation profile')).toBeInTheDocument();
+  expect(screen.getByText('Fuel stops')).toBeInTheDocument();
 });

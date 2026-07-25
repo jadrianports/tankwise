@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useState } from 'react';
 import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Accordion from '@mui/material/Accordion';
@@ -7,6 +7,9 @@ import AccordionDetails from '@mui/material/AccordionDetails';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import Button from '@mui/material/Button';
 import LinearProgress from '@mui/material/LinearProgress';
+import Tooltip from '@mui/material/Tooltip';
+import IconButton from '@mui/material/IconButton';
+import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 
 import { useRoutePlanContext } from '../../context/RoutePlanContext';
 import SummaryCard from './SummaryCard';
@@ -15,6 +18,7 @@ import LegBreakdown from './LegBreakdown';
 import TankChart from './TankChart';
 import ElevationChart from './ElevationChart';
 import LoadingNarration from './LoadingNarration';
+import WhyMultipleStopsPopup from './WhyMultipleStopsPopup';
 
 // Composes the full static results story from already-returned response
 // fields: hero cost + savings + fleet math + alternatives badge + price
@@ -30,10 +34,19 @@ import LoadingNarration from './LoadingNarration';
 // when there is no prior plan to keep showing.
 function ResultsSection() {
   const { status, data, error, retry, elevationProfile, setHoveredElevationDistanceMi } = useRoutePlanContext();
+  const [explainerOpen, setExplainerOpen] = useState(false);
 
   const handleRetry = useCallback(() => {
     retry();
   }, [retry]);
+
+  const handleExplainerOpen = useCallback(() => {
+    setExplainerOpen(true);
+  }, []);
+
+  const handleExplainerClose = useCallback(() => {
+    setExplainerOpen(false);
+  }, []);
 
   return (
     <Box aria-live="polite" aria-atomic="false">
@@ -92,7 +105,23 @@ function ResultsSection() {
             />
           </Box>
 
+          {/* A long-haul plan legitimately returns more stops than a reader
+              expects; this trigger turns that count from a suspected bug
+              into a stated optimization strategy. Mounted here (rather than
+              in SummaryCard or either shell) reaches both the desktop
+              sidebar and the mobile sheet from one mount. */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5, mb: 1 }}>
+            <Typography variant="subtitle1">Fuel stops</Typography>
+            <Tooltip title="Why multiple fuel stops?">
+              <IconButton size="small" aria-label="Why multiple fuel stops?" onClick={handleExplainerOpen}>
+                <InfoOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Tooltip>
+          </Box>
+
           <StopList stops={data.fuel_stops} waypoints={data.waypoints} />
+
+          <WhyMultipleStopsPopup open={explainerOpen} onClose={handleExplainerClose} />
         </Box>
       )}
 
