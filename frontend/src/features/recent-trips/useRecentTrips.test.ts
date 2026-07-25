@@ -1,22 +1,36 @@
 import { renderHook, act } from '@testing-library/react';
-import { expect, test, beforeEach, vi } from 'vitest';
+import { expect, test, beforeEach } from 'vitest';
 
-// No static top-level import of the module under test -- its trip list is a
-// module-scoped binding initialised from localStorage at import time, and
-// vitest only reloads the module graph between test *files*, not between
-// blocks in one file. Every block below does a fresh `await import(...)`
-// after `vi.resetModules()` so it gets a genuinely new module instance,
-// instead of the accumulated state of whichever block ran before it.
+import { useRecentTrips, resetRecentTripsStoreForTests } from './useRecentTrips';
+
+// The trip list is a module-scoped binding seeded from localStorage at
+// import time, and vitest reloads the module graph between test *files*,
+// not between blocks in one file. This spec used to work around that with
+// `vi.resetModules()` plus a fresh `await import(...)` per block, which
+// handed each block its own module instance.
+//
+// That pattern caused a real intermittent failure in the sibling
+// RecentTripsSection spec: an `await` mid-test can exceed the test timeout
+// under CPU load, at which point vitest fails the test and moves on while
+// the async continuation keeps running -- so a later render landed in
+// `document.body` after cleanup had swept, and the next block matched two
+// trees. Re-seeding the store in place lets every block below be fully
+// synchronous, which removes that window by construction.
 const STORAGE_KEY = 'spotter.recentTrips.v1';
 const MAX_ENTRIES = 5;
 
+// Re-read localStorage into the module store, so a block that seeds
+// storage sees it on the next render without a fresh module instance.
+function reseedStoreFromStorage(): void {
+  resetRecentTripsStoreForTests();
+}
+
 beforeEach(() => {
   localStorage.clear();
-  vi.resetModules();
+  reseedStoreFromStorage();
 });
 
-test('add prepends a trip so the newest entry is first in trips', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add prepends a trip so the newest entry is first in trips', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   act(() => {
@@ -31,8 +45,7 @@ test('add prepends a trip so the newest entry is first in trips', async () => {
   expect(result.current.trips[1].start).toBe('a');
 });
 
-test('add dedupes by identity fields, leaving length unchanged and moving the match to the front', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add dedupes by identity fields, leaving length unchanged and moving the match to the front', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   act(() => {
@@ -50,8 +63,7 @@ test('add dedupes by identity fields, leaving length unchanged and moving the ma
   expect(result.current.trips[1].start).toBe('c');
 });
 
-test('add keeps two multi-stop trips sharing start/finish/vehicle but differing waypoints as distinct entries', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add keeps two multi-stop trips sharing start/finish/vehicle but differing waypoints as distinct entries', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   act(() => {
@@ -78,8 +90,7 @@ test('add keeps two multi-stop trips sharing start/finish/vehicle but differing 
   expect(result.current.trips).toHaveLength(2);
 });
 
-test('add still dedupes two multi-stop trips sharing identical waypoints, in the same order', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add still dedupes two multi-stop trips sharing identical waypoints, in the same order', () => {
   const { result } = renderHook(() => useRecentTrips());
   const trip = {
     start: '34.0522,-118.2437',
@@ -100,8 +111,7 @@ test('add still dedupes two multi-stop trips sharing identical waypoints, in the
   expect(result.current.trips).toHaveLength(1);
 });
 
-test('add truncates the list to the module max-entries cap', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add truncates the list to the module max-entries cap', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   for (let i = 0; i < MAX_ENTRIES + 2; i += 1) {
@@ -124,8 +134,7 @@ test('add truncates the list to the module max-entries cap', async () => {
   expect(result.current.trips.some((trip) => trip.start === 'start-1')).toBe(false);
 });
 
-test('add persists to localStorage under the module storage key, readable as JSON', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('add persists to localStorage under the module storage key, readable as JSON', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   act(() => {
@@ -140,8 +149,7 @@ test('add persists to localStorage under the module storage key, readable as JSO
   expect(parsed[0].start).toBe('a');
 });
 
-test('remove deletes the entry at the given index and leaves the rest in order', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('remove deletes the entry at the given index and leaves the rest in order', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   act(() => {
@@ -163,29 +171,28 @@ test('remove deletes the entry at the given index and leaves the rest in order',
   expect(result.current.trips[1].start).toBe('a');
 });
 
-test('a hook mounted with a pre-seeded localStorage entry exposes those trips on first render', async () => {
+test('a hook mounted with a pre-seeded localStorage entry exposes those trips on first render', () => {
   const seeded = [{ start: 'x', finish: 'y', startLabel: 'X', finishLabel: 'Y', vehicle: 'semi-loaded', savedAt: 1 }];
   localStorage.setItem(STORAGE_KEY, JSON.stringify(seeded));
+  reseedStoreFromStorage();
 
-  const { useRecentTrips } = await import('./useRecentTrips');
   const { result } = renderHook(() => useRecentTrips());
 
   expect(result.current.trips).toHaveLength(1);
   expect(result.current.trips[0].start).toBe('x');
 });
 
-test('a malformed localStorage value yields an empty trip list rather than throwing', async () => {
+test('a malformed localStorage value yields an empty trip list rather than throwing', () => {
   localStorage.setItem(STORAGE_KEY, 'not valid json{{{');
+  reseedStoreFromStorage();
 
-  const { useRecentTrips } = await import('./useRecentTrips');
   expect(() => renderHook(() => useRecentTrips())).not.toThrow();
 
   const { result } = renderHook(() => useRecentTrips());
   expect(result.current.trips).toEqual([]);
 });
 
-test('an absent localStorage value also yields an empty trip list', async () => {
-  const { useRecentTrips } = await import('./useRecentTrips');
+test('an absent localStorage value also yields an empty trip list', () => {
   const { result } = renderHook(() => useRecentTrips());
 
   expect(result.current.trips).toEqual([]);
