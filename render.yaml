@@ -26,6 +26,15 @@ services:
     plan: free
     region: oregon
     healthCheckPath: /api/ready
+    # Render's own default is to deploy on every commit pushed to the linked
+    # branch, which would happily ship a red-CI tree straight to production.
+    # ci.yml already reports GitHub Actions commit-status checks (backend
+    # SQLite + Postgres-parity, frontend test/typecheck/lint/build), so
+    # gating on those needs no workflow change -- just this one key. The
+    # rejected alternative was autoDeploy: false plus a
+    # curl $RENDER_DEPLOY_HOOK_URL step in ci.yml: it works, but adds a
+    # managed secret and moves the trigger logic out of reviewable IaC.
+    autoDeployTrigger: checksPass
     envVars:
       # --- Dashboard-supplied secrets (prompted for on Blueprint
       # creation, never written into this file) ---
