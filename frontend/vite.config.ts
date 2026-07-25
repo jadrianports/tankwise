@@ -22,6 +22,18 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: './src/test/setup.ts',
+    // Vitest's 5s default is tight for this suite: several specs mount MUI
+    // trees in jsdom, and CI runners (and any machine doing something else
+    // at the time) routinely push a single such render past it. The failure
+    // mode is worse than a slow test -- when a test times out, Vitest fails
+    // it and moves on, but the test function's async continuation keeps
+    // running, so a later `render()` lands in `document.body` after
+    // `afterEach(cleanup)` has already swept. The next test then matches
+    // both trees and dies on testing-library's "found multiple elements",
+    // pointing at an innocent spec. Raising the ceiling removes the
+    // orphaned-continuation window; genuinely hung tests still fail, just
+    // 15s later.
+    testTimeout: 15000,
     coverage: {
       provider: 'v8',
       // lcov is the format most coverage-consuming tools (e.g. Codecov) expect.

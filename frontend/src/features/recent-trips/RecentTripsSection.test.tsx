@@ -1,46 +1,32 @@
 import { render, fireEvent, cleanup, within } from '@testing-library/react';
 import { expect, test, beforeEach, afterEach, vi } from 'vitest';
 
+import { RoutePlanContext } from '../../context/RoutePlanContext';
 import type { RoutePlanContextValue } from '../../context/RoutePlanContext';
+import { requestLoadTrip } from '../share-export/tripState';
 
-// KNOWN INTERMITTENT (not resolved): this spec has failed intermittently
-// during full-suite gate runs -- twice with a bare `npm test` (no
-// verbatim text captured either time until 2026-07-25), and once more
-// via frontend/scripts/flake-hunt.mjs's own `--load` campaign condition
-// (though that run's failureMessages were a generic vitest runner
-// STACK_TRACE_ERROR placeholder produced by severe CPU starvation, not
-// the assertion text below -- a different symptom, not necessarily the
-// same cause). The one CONFIRMED capture (2026-07-25, a plain `npm test`
-// immediately after a burst of file-read activity) was
-// `screen.getByText('Alpha → Bravo')` throwing testing-library's
-// "multiple elements found" error -- i.e. leftover DOM from an earlier
-// render was still present in `document.body` when this test's own
-// `screen` query ran, even though both a file-local and the global
-// (src/test/setup.ts) `afterEach(cleanup)` are wired up. That prior
-// global-cleanup attempt (commit 3490287) did not resolve it, and ~17
-// further clean local runs since then never reproduced it.
-//
-// If this fires again, capture it properly instead of letting the text
-// scroll away: `node scripts/flake-hunt.mjs --runs 10` (or
-// `--after-build` / `--load <core count>` to match whatever condition
-// was running when it happened) from `frontend/`. A failing run's
-// verbatim `failureMessages` are printed to stdout immediately and
-// retained under `frontend/.flake-hunt/<timestamp>/`.
-//
-// Below, every query that used to go through the global `screen` object
-// (which searches all of `document.body`) is scoped to `within(container)`
-// instead -- immunity to a CLASS of cause (any leaked DOM, from anywhere,
-// makes this test's assertions safe by construction), not a root-cause
-// fix. The actual leak source is still unknown.
+import RecentTripsSection from './RecentTripsSection';
+import { resetRecentTripsStoreForTests } from './useRecentTrips';
 
-// RecentTripsSection reads through useRecentTrips' module-scoped trip list,
-// initialised from localStorage at import time -- the same singleton
-// Task 1 resets per block. vi.resetModules() plus a fresh dynamic import
-// gives each block its own instance not just of the component but of
-// everything it transitively imports (the context module and the
-// trip-load bridge included), so every value a block reads back --
-// the Provider's Context object, the mocked bridge -- is re-imported
-// fresh in the same block rather than captured once at file load time.
+// This spec used to give every test its own module instance -- a
+// `vi.resetModules()` in `beforeEach` plus a fresh dynamic `import()` of
+// the component in each test -- because useRecentTrips' store is seeded
+// from localStorage once, at import time, and seeding storage after the
+// import would otherwise be invisible.
+//
+// That pattern was the cause of a long-running intermittent failure: each
+// test mounted a tree from a *different* module instance, so a slow
+// `await import()` under CPU contention could interleave with the previous
+// test's unmount and leave its markup in `document.body`. The next test's
+// `screen` query then matched two nodes and threw testing-library's "found
+// multiple elements" error. It reproduced only in loaded full-suite runs
+// and never in 25 consecutive isolated runs of this file, which is exactly
+// the signature of a timing-dependent ordering bug rather than leaked
+// state -- per-file localStorage isolation was separately verified intact.
+//
+// Static imports plus an explicit store reset remove the race by
+// construction: one module instance, one store, one mounted tree at a
+// time. Queries stay scoped to `container` as a second line of defence.
 vi.mock('../share-export/tripState', async () => {
   const actual = await vi.importActual<typeof import('../share-export/tripState')>('../share-export/tripState');
   return {
@@ -68,97 +54,71 @@ const SEEDED_TRIPS = [
   { start: 'c', finish: 'd', startLabel: 'Charlie', finishLabel: 'Delta', vehicle: 'semi-loaded', savedAt: 2 },
 ];
 
+// Seed storage and re-read it into the store, so the next render sees the
+// seeded trips without needing a fresh module instance.
+function seedTrips(): void {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(SEEDED_TRIPS));
+  resetRecentTripsStoreForTests();
+}
+
+function renderSection(context: Partial<RoutePlanContextValue> = {}) {
+  return render(
+    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, ...context }}>
+      <RecentTripsSection />
+    </RoutePlanContext.Provider>
+  );
+}
+
 beforeEach(() => {
   localStorage.clear();
-  vi.resetModules();
+  resetRecentTripsStoreForTests();
+  vi.mocked(requestLoadTrip).mockClear();
 });
 
-// This suite renders a fresh module instance per test (see the vi.resetModules
-// note above) without a global `afterEach(cleanup)` wired into setup.ts, so
-// each rendered tree must be explicitly unmounted or a later test's queries
-// can match leftover DOM from an earlier one.
 afterEach(() => {
   cleanup();
 });
 
-test('with an empty trip store, the component renders nothing at all', async () => {
-  const { default: RecentTripsSection } = await import('./RecentTripsSection');
-  const { RoutePlanContext } = await import('../../context/RoutePlanContext');
-
-  const { container } = render(
-    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
-      <RecentTripsSection />
-    </RoutePlanContext.Provider>
-  );
+test('with an empty trip store, the component renders nothing at all', () => {
+  const { container } = renderSection();
 
   expect(container).toBeEmptyDOMElement();
 });
 
-test('with a seeded trip store, one row is rendered per stored trip showing its start and finish labels', async () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(SEEDED_TRIPS));
-  const { default: RecentTripsSection } = await import('./RecentTripsSection');
-  const { RoutePlanContext } = await import('../../context/RoutePlanContext');
+test('with a seeded trip store, one row is rendered per stored trip showing its start and finish labels', () => {
+  seedTrips();
 
-  const { container } = render(
-    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
-      <RecentTripsSection />
-    </RoutePlanContext.Provider>
-  );
-  const scoped = within(container);
+  const scoped = within(renderSection().container);
 
   expect(scoped.getByText('Alpha → Bravo')).toBeInTheDocument();
   expect(scoped.getByText('Charlie → Delta')).toBeInTheDocument();
   expect(scoped.getAllByRole('listitem')).toHaveLength(2);
 });
 
-test("clicking a row invokes the trip-load bridge with that row's trip", async () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(SEEDED_TRIPS));
-  const { default: RecentTripsSection } = await import('./RecentTripsSection');
-  const { RoutePlanContext } = await import('../../context/RoutePlanContext');
-  const { requestLoadTrip } = await import('../share-export/tripState');
+test("clicking a row invokes the trip-load bridge with that row's trip", () => {
+  seedTrips();
 
-  const { container } = render(
-    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
-      <RecentTripsSection />
-    </RoutePlanContext.Provider>
-  );
-  const scoped = within(container);
-
+  const scoped = within(renderSection().container);
   fireEvent.click(scoped.getByText('Alpha → Bravo'));
 
   expect(requestLoadTrip).toHaveBeenCalledTimes(1);
   expect(requestLoadTrip).toHaveBeenCalledWith(expect.objectContaining({ start: 'a', finish: 'b' }));
 });
 
-test("clicking a row's remove control drops that row from the rendered list", async () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(SEEDED_TRIPS));
-  const { default: RecentTripsSection } = await import('./RecentTripsSection');
-  const { RoutePlanContext } = await import('../../context/RoutePlanContext');
+test("clicking a row's remove control drops that row from the rendered list", () => {
+  seedTrips();
 
-  const { container } = render(
-    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT }}>
-      <RecentTripsSection />
-    </RoutePlanContext.Provider>
-  );
-  const scoped = within(container);
-
+  const scoped = within(renderSection().container);
   fireEvent.click(scoped.getByRole('button', { name: /Remove Alpha to Bravo from recent trips/i }));
 
   expect(scoped.queryByText('Alpha → Bravo')).not.toBeInTheDocument();
   expect(scoped.getByText('Charlie → Delta')).toBeInTheDocument();
 });
 
-test('while the context status indicates a solve is in flight, the row buttons render disabled', async () => {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(SEEDED_TRIPS));
-  const { default: RecentTripsSection } = await import('./RecentTripsSection');
-  const { RoutePlanContext } = await import('../../context/RoutePlanContext');
+test('while the context status indicates a solve is in flight, the row buttons render disabled', () => {
+  seedTrips();
 
-  const { container } = render(
-    <RoutePlanContext.Provider value={{ ...BASE_CONTEXT, status: 'loading' }}>
-      <RecentTripsSection />
-    </RoutePlanContext.Provider>
-  );
-  const scoped = within(container);
+  const scoped = within(renderSection({ status: 'loading' }).container);
 
   expect(scoped.getByText('Alpha → Bravo').closest('[role="button"]')).toHaveAttribute('aria-disabled', 'true');
 });

@@ -85,6 +85,24 @@ function getSnapshot(): RecentTrip[] {
   return state;
 }
 
+// Test seam. `state` above is seeded from localStorage once, at module
+// import time, so a test that seeds localStorage AFTER importing this
+// module would otherwise read a stale snapshot. The workaround used to be
+// `vi.resetModules()` plus a fresh dynamic `import()` in every test, which
+// gave each test its own module instance -- and therefore its own
+// `listeners` set and its own mounted React tree racing the previous
+// test's cleanup. That raced only under load, which is why it surfaced as
+// an intermittent "found multiple elements" failure in full-suite runs and
+// never once in 25 isolated runs of the same spec.
+//
+// Re-seeding in place removes the need for per-test module instances
+// entirely: one static import, one store, deterministic ordering. Not
+// wired into any production path -- nothing outside a test imports it.
+export function resetRecentTripsStoreForTests(): void {
+  state = readStorage();
+  listeners.forEach((listener) => listener());
+}
+
 export interface UseRecentTripsResult {
   trips: RecentTrip[];
   add: (trip: TripState) => void;
