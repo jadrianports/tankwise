@@ -319,3 +319,36 @@ window) against the *newly pushed* SHA and its CI run before treating this
 pre-flight as still current — the tests above were run against the local
 tree, not against a pushed-and-CI-checked commit.
 
+---
+
+## Deployed (2026-07-25, ~14:12 UTC)
+
+The Render Blueprint went live. Deploy `dep-d9ic8c6rnols73f1rtfg`, assigned
+hostname **`tankwise.onrender.com`** — the unsuffixed default (D-06).
+
+- `GET https://tankwise.onrender.com/api/ready` — HTTP 200:
+
+  ```json
+  {"status": "ready", "checks": {"db": true, "cache": true, "tokens": true}, "station_count": 6738}
+  ```
+
+- EIA weekly price indexing came up live in production on first boot (the
+  operator set `EIA_API_KEY` in the Render dashboard, outside the Blueprint's
+  `sync: false` prompt flow, exactly as Section 3 step 5 describes):
+  `price_index_status: "current"`, `eia_week: "2026-07-20"`.
+- No divergence was reported between the real Neon, Upstash, and Render
+  dashboards and the sections above — nothing in this document needed
+  correcting.
+- Whether *this particular* first deploy waited on GitHub Actions checks
+  before starting is inconclusive, and is left open rather than claimed:
+  Blueprint creation itself triggers a service's first deploy, independent of
+  `autoDeployTrigger: checksPass`, and CI on the deployed commit had already
+  been green for the better part of an hour before the Blueprint was
+  created. This one deploy can't prove the gate either way. Section 5 step 4
+  — push a trivial commit and watch the dashboard hold for CI — is what
+  actually exercises the gate, and remains to be done.
+
+Plan 15-08 consumes `tankwise.onrender.com` as the literal hostname for
+every remaining host-dependent value (`og:url`/`og:image`, the live Bruno
+environment, the README badge).
+
