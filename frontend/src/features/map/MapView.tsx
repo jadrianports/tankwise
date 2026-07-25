@@ -209,6 +209,31 @@ function MapView({
     onElevationProfileChange?.(elevationProfile);
   }, [elevationProfile, onElevationProfileChange]);
 
+  // Capture-only readiness signal (D-22): nothing in the application ever
+  // reads this flag and no behaviour branches on it -- it exists purely
+  // so an out-of-page Playwright script can wait for Mapbox to actually
+  // stop drawing before screenshotting, instead of guessing with a fixed
+  // sleep. Mirrors the idle-gating discipline useElevationProfile already
+  // established just above, keyed on [mapInstance, data] so a fresh solve
+  // (a new fitBounds animation, new tiles) clears the flag until the map
+  // settles again. Written through a cast rather than a declared global
+  // type -- tsconfig runs strict, and a .d.ts for a capture-only boolean
+  // is more surface than the flag deserves.
+  useEffect(() => {
+    if (!mapInstance) return;
+
+    (window as unknown as Record<string, unknown>).__tankwiseMapReady = false;
+
+    const markReady = () => {
+      (window as unknown as Record<string, unknown>).__tankwiseMapReady = true;
+    };
+    mapInstance.once('idle', markReady);
+
+    return () => {
+      mapInstance.off('idle', markReady);
+    };
+  }, [mapInstance, data]);
+
   // Trip playback: composed entirely from the already-fetched `data` prop
   // -- no new fetch. `mapInstance` (the raw mapboxgl.Map, not the
   // react-map-gl MapRef wrapper) is what
