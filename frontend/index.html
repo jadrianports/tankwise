@@ -13,10 +13,9 @@
     <!--
       The two absolute-URL tags below (Open Graph "url"/"image") must stay
       absolute: crawlers do not resolve relative or protocol-relative
-      URLs. They use D-06's default Render host (tankwise.onrender.com);
-      plan 15-08 verifies both against the host Render actually assigns
-      and corrects them here if the assigned subdomain differs from this
-      default.
+      URLs. Confirmed live 2026-07-25 against the actual Render-assigned
+      hostname: it matched this file's existing default value, so no
+      rewrite was needed here -- these values are settled, not a guess.
     -->
     <meta property="og:url" content="https://tankwise.onrender.com/" />
     <meta property="og:image" content="https://tankwise.onrender.com/og-card.png" />

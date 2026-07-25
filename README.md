@@ -3,7 +3,7 @@
 [![CI](https://github.com/jadrianports/tankwise/actions/workflows/ci.yml/badge.svg)](https://github.com/jadrianports/tankwise/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/jadrianports/tankwise/graph/badge.svg)](https://codecov.io/gh/jadrianports/tankwise)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Live demo: coming soon](https://img.shields.io/badge/live%20demo-coming%20soon-lightgrey.svg)](#free-tier-deployment)
+[![Live demo: online](https://img.shields.io/badge/live%20demo-online-brightgreen.svg)](https://tankwise.onrender.com)
 [![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/)
 [![Django 6.0](https://img.shields.io/badge/django-6.0-092e20.svg)](https://www.djangoproject.com/)
 [![Node 24](https://img.shields.io/badge/node-24-339933.svg)](https://nodejs.org/)
@@ -146,7 +146,7 @@ On secrets: `.env` is gitignored and never committed, and `.env.example` (commit
 
 ## Free-tier deployment
 
-The live deployment (when published) runs on Render's free web-service tier, backed by Neon (Postgres) and Upstash (Redis) -- three independent $0 services, not a production SLA. Three things worth knowing before judging response times or data freshness:
+TankWise is live at [tankwise.onrender.com](https://tankwise.onrender.com), running on Render's free web-service tier, backed by Neon (Postgres) and Upstash (Redis) -- three independent $0 services, not a production SLA. Three things worth knowing before judging response times or data freshness:
 
 1. **Cold starts.** Render spins the free-tier instance down after about 15 minutes with no inbound traffic. The first request after that idle window wakes it back up, which can take roughly a minute; every request after that is fast again. An external cron pings `GET /api/health` every ~10 minutes to keep the instance warm during normal use, so this mostly only shows up after a long gap between visits, not mid-demo.
 2. **Data vintage.** Fuel prices are a static truck-stop snapshot with no per-row timestamp -- not live quotes. Cross-referencing the dataset's own price statistics (mean ~$3.50/gal, a California high near $6.40) against EIA's published on-highway diesel averages dates it to roughly late 2024/early 2025 (`FUEL_PRICE_AS_OF`, `2025-01-01`). Every price and cost figure the API returns reflects that one snapshot, not today's pump prices.
