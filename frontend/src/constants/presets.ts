@@ -63,18 +63,24 @@ export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 // coordinate strings, never addresses, so a repeat click always hits the
 // same normalized cache key.
 //
-// Resolved (not an open question): the ~6-stop count measured at the
-// hero preset, well above the 2-3 assumed while planning, is accepted as
-// correct solver behaviour rather than something to fix. The solver
-// minimizes total dollars, not stop count, so it takes opportunistic
-// `top_up_at_cheapest` purchases wherever fuel is cheap. LA->NYC is
-// ~2,790 mi on a ~1,050 mi range, so 2 stops is only the physical floor
-// -- every stop beyond that is the optimizer buying cheap. The
-// user-facing copy below stays count-agnostic for exactly this reason,
-// and the product now explains the behaviour in-app through the
-// WhyMultipleStopsPopup dialog mounted above the itinerary in
-// ResultsSection, so a reviewer reads the count as intelligence rather
-// than a bug.
+// Resolved (not an open question): stop counts were re-measured against
+// the final v3 build -- EIA-indexed prices, multi-stop routing, and
+// elevation all live -- via the showcase capture script
+// (frontend/scripts/showcase.capture.ts), which reads the count straight
+// out of the rendered itinerary rather than assuming it. At the hero
+// preset (LA->NYC, Semi-loaded) that measured count is 10, well above
+// both the ~6 pre-EIA-indexing figure this comment previously carried
+// and the 2-3 assumed while planning; the multi-stop chip (LA->Denver->
+// Chicago) measures 6. Both are accepted as correct solver behaviour
+// rather than something to fix. The solver minimizes total dollars, not
+// stop count, so it takes opportunistic `top_up_at_cheapest` purchases
+// wherever fuel is cheap. LA->NYC is ~2,790 mi on a ~1,050 mi range, so 2
+// stops is only the physical floor -- every stop beyond that is the
+// optimizer buying cheap. The user-facing copy below stays count-agnostic
+// for exactly this reason, and the product now explains the behaviour
+// in-app through the WhyMultipleStopsPopup dialog mounted above the
+// itinerary in ResultsSection, so a reviewer reads the count as
+// intelligence rather than a bug.
 export interface DemoTrip {
   label: string;
   description: string;
