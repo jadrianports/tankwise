@@ -44,15 +44,30 @@ The gotcha: opening `map_url` directly sends no `Referer` header, since it's a d
 
 ### Screenshots
 
-A routed multi-stop trip (Dallas → Los Angeles), light and dark:
+The hero shot plans TankWise's own "Los Angeles → New York City" demo route, light and dark:
 
-| Light | Dark |
+| Theme | Screenshot |
 |---|---|
-| ![Light mode: routed trip with fuel stops](docs/screenshots/light.png) | ![Dark mode: routed trip with fuel stops](docs/screenshots/dark.png) |
+| Light | ![Light mode: LA to NYC route on Mapbox GL, with the solved plan and savings figure in the sidebar](docs/screenshots/hero-light.png) |
+| Dark | ![Dark mode: the same LA to NYC route, with the dark Mapbox GL basemap and UI theme](docs/screenshots/hero-dark.png) |
 
-Both show the same plan: the summary card with total cost, gallons, route miles, and stop count; the ordered itinerary listing each station's name, price per gallon, gallons, and cost; and the map with the route polyline, numbered fuel-stop markers, and start/finish pins.
+Both show the same solved plan: the summary card with total cost, the savings figure against the priciest feasible alternative, an annualized fleet-savings estimate, and the EIA week-over-week trend chip; the ordered itinerary listing each station's name, price per gallon, gallons, and cost; and the map with the route polyline, numbered fuel-stop markers, and start/finish pins.
 
-> These two captures predate the move to Mapbox GL JS and still show the earlier map renderer. The plan panel and itinerary are current; the map surface is not.
+Three more shots cover what the hero pair alone doesn't show:
+
+**Per-leg breakdown, tank chart, and savings**
+![Sidebar with the per-leg breakdown table, tank-level chart, and elevation profile all expanded above the fuel-stop list](docs/screenshots/results-panel.png)
+The expanded accordions: a leg-by-leg distance/duration/gallons table and the running tank-level chart, alongside the summary card's savings figure and the price disclaimer naming the EIA data vintage.
+
+**Multi-stop routing**
+![Routed Los Angeles, Denver, Chicago trip with a lettered waypoint pin distinct from the numbered fuel-stop markers](docs/screenshots/multi-stop.png)
+A user-added stop on a multi-stop trip (the lettered pin) plotted alongside the solver's own numbered fuel stops on one continuous route.
+
+**Elevation profile**
+![Elevation-vs-distance chart for a Rockies crossing, with min, max, ascent, and descent stat chips above it](docs/screenshots/elevation-profile.png)
+The elevation-vs-distance chart, sampled from Mapbox's terrain data, with ascent/descent stat chips above it.
+
+All five images are script-generated, not hand-captured — `npm run capture --prefix frontend -- showcase` regenerates the full set from source against a running `docker compose up -d --build` stack.
 
 ## Architecture
 
