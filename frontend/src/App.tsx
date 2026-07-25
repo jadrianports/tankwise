@@ -4,6 +4,7 @@ import Box from '@mui/material/Box';
 import AppShell from './components/AppShell';
 import Sidebar from './components/Sidebar';
 import BottomSheet from './components/BottomSheet';
+import ColdStartModal from './components/ColdStartModal';
 import MapView from './features/map/MapView';
 import ShareExportBar from './features/share-export/ShareExportBar';
 import { useShareUrl } from './features/share-export/useShareUrl';
@@ -101,6 +102,12 @@ function App() {
           setHoveredElevationDistanceMi,
         }}
       >
+        {/* Single mount point for the cold-start overlay: it reads `status`
+            from this same context, so one mount here covers both the
+            desktop sidebar and the mobile BottomSheet below -- MUI Dialog
+            portals to the document body regardless of where it's mounted. */}
+        <ColdStartModal />
+
         <Box className="print-hide">
           <ShareExportBar data={data} shareUrl={shareUrl} />
         </Box>
