@@ -72,6 +72,21 @@ class ProductionSettingsAllowedHostsTests(SimpleTestCase):
         self.assertIn("tankwise.onrender.com", settings.ALLOWED_HOSTS)
 
 
+class ProductionSettingsCsrfTests(SimpleTestCase):
+    def test_csrf_trusted_origins_includes_render_host_with_scheme(self):
+        settings = _import_fresh(
+            "config.settings.production",
+            {
+                "DJANGO_ALLOWED_HOSTS": "example.onrender.com",
+                "RENDER_EXTERNAL_HOSTNAME": "tankwise.onrender.com",
+            },
+        )
+
+        self.assertIn("https://tankwise.onrender.com", settings.CSRF_TRUSTED_ORIGINS)
+        self.assertNotIn("tankwise.onrender.com", settings.CSRF_TRUSTED_ORIGINS)
+        self.assertNotIn("*", settings.CSRF_TRUSTED_ORIGINS)
+
+
 class ProductionSettingsDatabaseTests(SimpleTestCase):
     def test_postgres_engine_carries_sslmode_option(self):
         settings = _import_fresh(

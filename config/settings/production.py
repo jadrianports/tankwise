@@ -37,6 +37,21 @@ _render_host = _env("RENDER_EXTERNAL_HOSTNAME")
 if _render_host and _render_host not in ALLOWED_HOSTS:
     ALLOWED_HOSTS.append(_render_host)
 
+# Defense-in-depth, not a fix for a live gap: this app's only unsafe-method
+# endpoint is a DRF APIView, which DRF wraps in csrf_exempt, and there is no
+# Django admin and no session-cookie HTML form -- so Django's CSRF
+# middleware never inspects a request today. The setting exists so that if
+# a future session-driven feature is added, it does not fail with a
+# mysterious 403. Mirrors the ALLOWED_HOSTS auto-append above, but entries
+# here need the scheme (Django 4+ rejects a bare hostname).
+CSRF_TRUSTED_ORIGINS = [
+    o.strip() for o in _env("DJANGO_CSRF_TRUSTED_ORIGINS", "").split(",") if o.strip()
+]
+if _render_host:
+    _render_origin = f"https://{_render_host}"
+    if _render_origin not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_render_origin)
+
 # STORAGES replaces the whole dict rather than merging into it -- defining
 # only "staticfiles" here would silently drop the "default" file storage.
 # Manifest strictness is left at its default (True): if it fires during the
