@@ -152,6 +152,8 @@ The live deployment (when published) runs on Render's free web-service tier, bac
 2. **Data vintage.** Fuel prices are a static truck-stop snapshot with no per-row timestamp -- not live quotes. Cross-referencing the dataset's own price statistics (mean ~$3.50/gal, a California high near $6.40) against EIA's published on-highway diesel averages dates it to roughly late 2024/early 2025 (`FUEL_PRICE_AS_OF`, `2025-01-01`). Every price and cost figure the API returns reflects that one snapshot, not today's pump prices.
 3. **Free-tier scope.** This is a single instance running a small worker count (`WEB_CONCURRENCY=2`), a free-tier database and cache, no horizontal scaling, and no uptime guarantee -- a demo deployment, not a production one.
 
+For the step-by-step provisioning runbook (Neon, then Upstash, then the Render Blueprint, then verification), see [`docs/DEPLOY.md`](docs/DEPLOY.md).
+
 ### Readiness and liveness
 
 Two probes exist because they answer two different questions. `GET /api/health` touches no dependency at all -- it's what the keep-warm cron and Docker Compose's own healthcheck poll, so neither one puts load on the database or cache on a schedule. `GET /api/ready` actually checks the database, cache, and Mapbox token configuration, and is what the hosting platform gates traffic routing on: an instance reporting `not_ready` never receives real requests. See both response shapes in the API reference below.
