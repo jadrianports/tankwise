@@ -41,7 +41,7 @@ function AppShell() {
     <AppBar position="static" color="primary">
       <Toolbar sx={{ px: { xs: 2, sm: 4 } }}>
         <Typography variant="h5" component="h1" sx={{ flexGrow: 1 }}>
-          Fuel Route Optimizer
+          TankWise
         </Typography>
         <ColorModeToggle />
       </Toolbar>

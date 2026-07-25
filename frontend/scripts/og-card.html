@@ -78,16 +78,15 @@
       /*
         The real Mapbox GL route screenshot (docs/screenshots/hero-light.png
         from plan 15-05), used as a full-bleed backdrop. hero-light.png is
-        a 1280x720 full-app screenshot: a green (pre-rebrand-titled) header
-        + toolbar row (source y 0-124) and a form sidebar (source x 0-424)
-        alongside the actual routed map (source x 424-1280, y 124-720).
-        These fixed pixel values scale and position the image so only that
-        map region fills the card -- keeping the stale header text and the
-        form sidebar entirely out of frame -- and center the vertical crop
-        within the map region so it favors the route's midpoint over the
-        map's own floating UI controls (which sit just above this crop's
-        start). The map is what makes this read as a product, not a repo
-        link, so it gets the whole frame.
+        a 1280x720 full-app screenshot: a green header + toolbar row
+        (source y 0-124) and a form sidebar (source x 0-424) alongside the
+        actual routed map (source x 424-1280, y 124-720). These fixed pixel
+        values scale and position the image so only that map region fills
+        the card -- keeping the app chrome and the form sidebar entirely out
+        of frame -- and center the vertical crop within the map region so it
+        favors the route's midpoint over the map's own floating UI controls
+        (which sit just above this crop's start). The map is what makes this
+        read as a product, not a repo link, so it gets the whole frame.
       */
       .card__backdrop {
         position: absolute;
