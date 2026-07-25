@@ -125,6 +125,27 @@ class ServerTimingCacheMissTests(APITestCase):
         self.assertIn("total;dur=", header)
         self.assertNotIn("dur=", json.dumps(response.data))
 
+    def test_index_stage_is_distinct_from_corridor_stage(self):
+        """The one-time station-index build must be its own named stage,
+        never conflated into `corridor`'s per-route geometry number --
+        that conflation is exactly why a 21.6s `corridor` reading
+        couldn't be attributed to a cause (see this plan's evidence)."""
+        _make_station(803)
+
+        with mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        ):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": FINISH_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        header = response["Server-Timing"]
+        self.assertIn("index;dur=", header)
+        self.assertIn("corridor;dur=", header)
+
 
 @override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public")
 class ServerTimingCacheHitTests(APITestCase):

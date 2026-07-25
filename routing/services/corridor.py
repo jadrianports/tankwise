@@ -139,6 +139,19 @@ def _get_index():
         return _INDEX
 
 
+def warm_index():
+    """Explicitly-callable handle on `_get_index()`'s lazy build, so a
+    caller (views.py's `_solve_all_alternatives`) can force the one-time
+    index build to happen inside its own timing stage, BEFORE the
+    per-alternative corridor stages -- otherwise the first `candidates()`
+    call of a process silently bills the index build's cost against
+    whichever alternative happens to run first, conflating a one-time
+    process-level cost with per-route geometry work. Returns nothing;
+    does not change `_get_index()`, `_build_index()`, `reset_index()`, or
+    the double-checked locking behaviour."""
+    _get_index()
+
+
 def reset_index():
     """The sole invalidation hook: clears the process-level index so
     the next `candidates()` call rebuilds it from the current Station

@@ -12,6 +12,7 @@ Must NOT run in CI: timing numbers are informational, not a pass/fail
 gate -- see routing/tests/test_corridor.py for the correctness
 coverage this command deliberately does not duplicate.
 """
+import json
 import math
 import statistics
 import time
@@ -174,11 +175,24 @@ class Command(BaseCommand):
             default=5,
             help="Timing repetitions per variant, per route (default 5).",
         )
+        parser.add_argument(
+            "--baseline-out",
+            type=str,
+            default=None,
+            help=(
+                "Optional path to write a JSON baseline document: per synthetic "
+                "route, the sorted candidate opis_id list, each candidate's "
+                "distance_from_start_mi (as a string), and the timing medians "
+                "already reported. Read-only w.r.t. the DB -- only ever writes "
+                "the given path."
+            ),
+        )
 
     def handle(self, *args, **options):
         n_routes = options["routes"]
         n_points = options["points"]
         repeats = options["repeats"]
+        baseline_out = options["baseline_out"]
 
         if n_routes < 1 or n_points < 2 or repeats < 1:
             raise CommandError(
@@ -188,6 +202,7 @@ class Command(BaseCommand):
         pairs = [_ENDPOINT_PAIRS[i % len(_ENDPOINT_PAIRS)] for i in range(n_routes)]
 
         legacy_ms_all, hoisted_ms_all, strtree_ms_all = [], [], []
+        baseline_routes = []
 
         for idx, (start, finish) in enumerate(pairs, start=1):
             route = _synthetic_route(start, finish, n_points)
@@ -244,6 +259,33 @@ class Command(BaseCommand):
                 f"({tree_speedup:.2f}x over hoisted-only)"
             )
 
+            if baseline_out:
+                # Recorded off the current production path (`strtree_result`,
+                # i.e. `corridor.candidates(route)`) -- the exact answer this
+                # plan's later optimization tasks must reproduce byte-for-byte.
+                by_opis_id = {c.opis_id: c for c in strtree_result}
+                baseline_routes.append(
+                    {
+                        "index": idx,
+                        "endpoint_pair": f"{start} -> {finish}",
+                        "points": n_points,
+                        "candidates": [
+                            {
+                                "opis_id": opis_id,
+                                "distance_from_start_mi": str(
+                                    by_opis_id[opis_id].distance_from_start_mi
+                                ),
+                            }
+                            for opis_id in strtree_ids
+                        ],
+                        "timings_ms": {
+                            "legacy": legacy_ms,
+                            "hoisted": hoisted_ms,
+                            "strtree": strtree_ms,
+                        },
+                    }
+                )
+
         overall_legacy = statistics.median(legacy_ms_all)
         overall_hoisted = statistics.median(hoisted_ms_all)
         overall_strtree = statistics.median(strtree_ms_all)
@@ -264,3 +306,16 @@ class Command(BaseCommand):
                 f"({overall_tree_speedup:.2f}x over hoisted-only)"
             )
         )
+
+        if baseline_out:
+            document = {
+                "routes": baseline_routes,
+                "overall_medians_ms": {
+                    "legacy": overall_legacy,
+                    "hoisted": overall_hoisted,
+                    "strtree": overall_strtree,
+                },
+            }
+            with open(baseline_out, "w", encoding="utf-8") as f:
+                json.dump(document, f, indent=2)
+            self.stdout.write(f"Baseline written to {baseline_out}")

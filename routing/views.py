@@ -729,6 +729,18 @@ class RouteView(APIView):
         (enriched per `_enrich_infeasible_leg`), so the request reports
         the closest miss rather than an arbitrary one.
         """
+        # The one-time process-level station-index build (Neon fetch +
+        # point construction + STRtree build) is forced here, in its own
+        # stage, BEFORE the per-alternative loop below. Previously this
+        # build ran lazily inside the first `corridor.candidates()` call,
+        # so its one-time cost was silently billed against the "corridor"
+        # stage alongside genuine per-route geometry work -- a single
+        # conflated number that could not be attributed to either cause.
+        # With the index already warm, every per-alternative "corridor"
+        # stage below measures geometry work only.
+        with self._timing.stage("index"):
+            corridor.warm_index()
+
         results = []
         smallest_gap_exc = None
         smallest_gap_route = None
