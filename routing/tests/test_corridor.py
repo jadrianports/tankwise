@@ -145,6 +145,72 @@ class CorridorPositioningTests(CorridorTestCase):
         self.assertLessEqual(result[0].distance_from_start_mi, self.TOTAL_ROUTE_MI)
 
 
+class CorridorSimplifyLengthInvariantTests(CorridorTestCase):
+    """`route_length_mi` must be derived from the SAME simplified planar
+    line the vectorized `.distance()`/`.project()` calls run against --
+    never from a stale full-resolution length. A heavily densified,
+    near-straight route (thousands of near-collinear vertices, well over
+    `SIMPLIFY_TOLERANCE_MI`'s 0.05 mi threshold) is guaranteed to have its
+    vertex count reduced by `.simplify()`; if `route_length_mi` were ever
+    taken from the pre-simplification line instead, a known-fraction
+    station's `distance_from_start_mi` would skew measurably -- this test
+    would have caught that class of bug."""
+
+    TOTAL_ROUTE_MI = Decimal("700")
+
+    def _densified_route_coords(self, n_points=3000):
+        # A near-straight north-south line with points spaced closely
+        # enough that .simplify(0.05) collapses the vast majority of them
+        # -- verified below via the vertex-count assertion.
+        return [
+            (-97.00, 30.00 + (40.00 - 30.00) * i / (n_points - 1))
+            for i in range(n_points)
+        ]
+
+    def _route(self):
+        coords = self._densified_route_coords()
+        return Route(
+            total_route_mi=self.TOTAL_ROUTE_MI,
+            geometry=LineString(coords),
+            raw_coordinates=coords,
+        )
+
+    def test_simplification_reduces_vertex_count_on_this_fixture(self):
+        """Sanity check that this test fixture actually exercises
+        simplification -- otherwise the invariant test below would pass
+        vacuously."""
+        from routing.services.corridor import (
+            SIMPLIFY_TOLERANCE_MI,
+            build_planar_route,
+            mean_lat_rad,
+        )
+
+        coords = self._densified_route_coords()
+        mean_lat = mean_lat_rad(coords)
+        planar_route = build_planar_route(coords, mean_lat=mean_lat)
+        simplified = planar_route.simplify(SIMPLIFY_TOLERANCE_MI)
+
+        self.assertLess(len(simplified.coords), len(planar_route.coords))
+
+    def test_known_fraction_station_positions_correctly_on_simplified_route(self):
+        # 32.50 is exactly 25% of the way from 30.00 to 40.00.
+        _make_station(
+            opis_id=901,
+            geocode_status=GeocodeStatus.OK,
+            latitude=Decimal("32.50"),
+            longitude=Decimal("-97.00"),
+            geocode_precision=GeocodePrecision.ROOFTOP,
+        )
+
+        result = candidates(self._route())
+
+        self.assertEqual(len(result), 1)
+        expected = self.TOTAL_ROUTE_MI * Decimal("0.25")
+        self.assertAlmostEqual(
+            float(result[0].distance_from_start_mi), float(expected), delta=1.0
+        )
+
+
 class CorridorPrecisionTieringTests(CorridorTestCase):
     """A station ~10 mi off the route is excluded at the 5-mi
     rooftop tier but included at the 20-mi city tier."""

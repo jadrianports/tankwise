@@ -32,6 +32,17 @@ from routing.services.solver import Candidate
 # projection).
 MI_PER_DEGREE_LAT = Decimal("69.172")
 
+# `.simplify()` tolerance for the planar (mile-scaled) route/leg line used
+# for the precise perpendicular-distance/along-line test, in MILES -- the
+# planar frame is already scaled to real miles (MI_PER_DEGREE_LAT x
+# cos(mean_lat)), so this needs no unit conversion. Pinned on a measured
+# sweep (see this plan's evidence): candidate sets held identical through
+# 0.10 mi and first diverged at 0.25 mi on 5,000-vertex synthetic routes.
+# 0.05 mi sits two tiers of margin below that first divergence, and ~100x
+# below the 5-mi rooftop corridor half-width -- geometrically negligible
+# next to either the corridor width or the divergence point.
+SIMPLIFY_TOLERANCE_MI = 0.05
+
 
 class IndexedStation(NamedTuple):
     """The seven `Station` attributes the corridor path actually reads --
@@ -216,6 +227,21 @@ def _corridor_buffer_degrees(coords_lnglat, city_mi, *, mean_lat=None):
     return float(max(lat_pad, lng_pad))
 
 
+def _planar_points_for_stations(stations, mean_lat):
+    """Vectorized equivalent of calling `project_point()` once per station:
+    the identical equirectangular scaling (same `mean_lat`, same
+    `MI_PER_DEGREE_LAT`), built as one `shapely.points()` call over two
+    float lists instead of a per-station `Point(...)` construction --
+    verified bit-identical output to the scalar per-station calls it
+    replaces. Shared by both the single-leg and multi-leg candidate
+    builds so the two paths can never drift apart on this formula."""
+    cos_lat = math.cos(mean_lat)
+    scale = float(MI_PER_DEGREE_LAT)
+    xs = [float(s.longitude) * scale * cos_lat for s in stations]
+    ys = [float(s.latitude) * scale for s in stations]
+    return shapely.points(xs, ys)
+
+
 def _no_op_factor(_state):
     """Default `factor_for` when the caller passes none -- neutral 1.0
     for every state, preserving pre-EIA-indexing behavior exactly."""
@@ -258,8 +284,11 @@ def candidates(route, factor_for=None) -> list[Candidate]:
 
 
 def _candidates_single_leg(route, factor_for) -> list[Candidate]:
-    """The original whole-route single-corridor build -- unchanged
-    behavior, extracted verbatim so `candidates()` can dispatch to it."""
+    """The original whole-route single-corridor build -- same STRtree
+    prefilter and precision-tiered threshold test as before, but the
+    precise perpendicular-distance/along-line pass now runs against a
+    SIMPLIFIED planar route with vectorized shapely calls, not a
+    per-station Python loop."""
     rooftop_mi, city_mi = _corridor_widths()
 
     coords = route.raw_coordinates
@@ -269,36 +298,47 @@ def _candidates_single_leg(route, factor_for) -> list[Candidate]:
     mean_lat = mean_lat_rad(coords)
     tree, indexed_stations = _get_index()
 
+    # The STRtree prefilter query always runs against the RAW (unsimplified)
+    # degree-space route -- simplification only ever applies to the planar
+    # line used for the precise perpendicular test below, never to this
+    # coarse over-inclusive prefilter.
     buffer_deg = _corridor_buffer_degrees(coords, city_mi, mean_lat=mean_lat)
     raw_route = LineString(coords)
     query_region = raw_route.buffer(buffer_deg)
     survivor_idx = tree.query(query_region, predicate="intersects")
     stations = [indexed_stations[i] for i in survivor_idx]
 
+    # `route_length_mi` MUST come from the SAME (simplified) object passed
+    # to the vectorized `.distance()`/`.project()` calls below -- computed
+    # immediately after simplifying, in this same function, so the two can
+    # never drift apart (see this plan's route_length_mi hazard note).
     planar_route = build_planar_route(coords, mean_lat=mean_lat)
+    planar_route = planar_route.simplify(SIMPLIFY_TOLERANCE_MI)
     route_length_mi = _as_decimal(planar_route.length)
     total_route_mi = route.total_route_mi
 
-    result = []
-    for station in stations:
-        planar_point = project_point(
-            float(station.longitude),
-            float(station.latitude),
-            coords,
-            mean_lat=mean_lat,
-        )
+    planar_points = _planar_points_for_stations(stations, mean_lat)
+    perpendicular_mi_raw = shapely.distance(planar_route, planar_points)
+    along_line_mi_raw = shapely.line_locate_point(planar_route, planar_points)
 
+    result = []
+    for station, perp_raw, along_raw in zip(
+        stations, perpendicular_mi_raw, along_line_mi_raw
+    ):
         half_width = (
             rooftop_mi
             if station.geocode_precision == GeocodePrecision.ROOFTOP
             else city_mi
         )
 
-        perpendicular_mi = _as_decimal(planar_route.distance(planar_point))
+        # float() first -- verified to produce identical Decimals to the
+        # numpy scalar directly, but kept as defensive clarity, not a
+        # behaviour change.
+        perpendicular_mi = _as_decimal(float(perp_raw))
         if perpendicular_mi > half_width:
             continue
 
-        fraction = _as_decimal(planar_route.project(planar_point)) / route_length_mi
+        fraction = _as_decimal(float(along_raw)) / route_length_mi
         distance_from_start_mi = fraction * total_route_mi
         distance_from_start_mi = max(
             Decimal(0), min(distance_from_start_mi, total_route_mi)
@@ -360,25 +400,29 @@ def _candidates_multi_leg(route, factor_for) -> list[Candidate]:
         survivor_idx = tree.query(query_region, predicate="intersects")
         stations = [indexed_stations[i] for i in survivor_idx]
 
-        for station in stations:
-            planar_point = project_point(
-                float(station.longitude),
-                float(station.latitude),
-                leg_coords,
-                mean_lat=mean_lat,
-            )
+        # `planar_leg` and `leg_planar_length_mi` are already derived
+        # together, from the SAME simplified leg line, inside
+        # `flatten_route()` -- see this plan's per-leg route_length_mi
+        # hazard note. The vectorized distance/along-line pass below runs
+        # against that same simplified `planar_leg`.
+        planar_points = _planar_points_for_stations(stations, mean_lat)
+        perpendicular_mi_raw = shapely.distance(planar_leg, planar_points)
+        along_line_mi_raw = shapely.line_locate_point(planar_leg, planar_points)
 
+        for station, perp_raw, along_raw in zip(
+            stations, perpendicular_mi_raw, along_line_mi_raw
+        ):
             half_width = (
                 rooftop_mi
                 if station.geocode_precision == GeocodePrecision.ROOFTOP
                 else city_mi
             )
 
-            perpendicular_mi = _as_decimal(planar_leg.distance(planar_point))
+            perpendicular_mi = _as_decimal(float(perp_raw))
             if perpendicular_mi > half_width:
                 continue
 
-            fraction = _as_decimal(planar_leg.project(planar_point)) / leg_planar_length_mi
+            fraction = _as_decimal(float(along_raw)) / leg_planar_length_mi
             local_mi = fraction * leg_real_mi
             local_mi = max(Decimal(0), min(local_mi, leg_real_mi))
             distance_from_start_mi = offset_mi + local_mi

@@ -19,7 +19,11 @@ Django-settings-backed helpers.
 from dataclasses import dataclass
 from decimal import Decimal
 
-from routing.services.corridor import build_planar_route, mean_lat_rad
+from routing.services.corridor import (
+    SIMPLIFY_TOLERANCE_MI,
+    build_planar_route,
+    mean_lat_rad,
+)
 
 
 @dataclass(frozen=True)
@@ -79,6 +83,12 @@ def flatten_route(route) -> FlattenedRoute:
     for leg_coords in slices:
         mean_lat = mean_lat_rad(leg_coords)
         planar_leg = build_planar_route(leg_coords, mean_lat=mean_lat)
+        # Simplified immediately, and the leg's planar length derived from
+        # THIS SAME simplified object in this same iteration -- corridor.py's
+        # per-leg candidate build later calls .distance()/.line_locate_point()
+        # against this exact `planar_leg`, so the two can never drift apart
+        # (see this plan's per-leg route_length_mi hazard note).
+        planar_leg = planar_leg.simplify(SIMPLIFY_TOLERANCE_MI)
         leg_mean_lats.append(mean_lat)
         leg_lines.append(planar_leg)
         leg_planar_lengths_mi.append(Decimal(str(planar_leg.length)))
