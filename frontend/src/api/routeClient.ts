@@ -110,6 +110,51 @@ const BOOT_RETRY_BUDGET_MS = 60000;
 // request of a page session is ever eligible to retry.
 let bootRetryConsumed = false;
 
+// The honest "the server genuinely did not answer" signal for the
+// in-flight request -- the load-bearing discriminator useColdStart gates
+// its "waking" stage on, instead of elapsed time alone. Scoped to the
+// CURRENT request: reset at the start of every `planRoute` call (see
+// `resetBootSignal` below) so a stale `true` from an earlier, unrelated
+// request never leaks into a later one. Set at the two boot-retry
+// `continue` sites below (a rejected fetch, or a 502/503 carrying no
+// structured error envelope -- see those sites' own comments), and by
+// `readyClient.ts`'s pre-warm ping as a second, independent
+// not-answering signal into this SAME store. A module-level store
+// subscribed to via `useSyncExternalStore`, the same technique
+// `tripState.ts`'s `pendingLoadRequest` store uses.
+let bootSignalFired = false;
+const bootSignalListeners = new Set<() => void>();
+
+// Exported (alongside `markServerNotAnswering`) so tests can drive the
+// store directly without needing to re-run planRoute's own retry loop --
+// mirrors the backend's `reset_index()` test-facing reset idiom.
+export function resetBootSignal(): void {
+  if (!bootSignalFired) return;
+  bootSignalFired = false;
+  bootSignalListeners.forEach((listener) => listener());
+}
+
+// Exported so `readyClient.ts`'s pre-warm ping can record its own
+// non-OK/rejected `/api/ready` result into this same store -- the second
+// genuine not-answering signal, independent of `planRoute`'s own
+// boot-retry loop.
+export function markServerNotAnswering(): void {
+  if (bootSignalFired) return;
+  bootSignalFired = true;
+  bootSignalListeners.forEach((listener) => listener());
+}
+
+export function subscribeBootSignal(listener: () => void): () => void {
+  bootSignalListeners.add(listener);
+  return () => {
+    bootSignalListeners.delete(listener);
+  };
+}
+
+export function getBootSignalSnapshot(): boolean {
+  return bootSignalFired;
+}
+
 // Resolves after `ms`, or rejects with an AbortError the instant `signal`
 // fires -- this is what keeps a superseding submit from leaking a stale
 // retry that later overwrites fresher state while this call is asleep
@@ -166,6 +211,10 @@ export async function planRoute(
   vehicle?: VehicleProfileRequest | null,
   signal?: AbortSignal
 ): Promise<PlanRouteResult> {
+  // Reset for THIS request -- see `resetBootSignal`'s own comment for why
+  // this happens once per call rather than once per page session.
+  resetBootSignal();
+
   const requestBody: { start: string; finish: string; waypoints?: string[]; vehicle?: VehicleProfileRequest } = {
     start,
     finish,
@@ -199,6 +248,7 @@ export async function planRoute(
           throw err;
         }
         if (bootAttempt && withinBootRetryBudget(attempt, attemptStartedAt)) {
+          markServerNotAnswering();
           await sleep(BOOT_RETRY_DELAYS_MS[attempt], signal);
           continue;
         }
@@ -224,6 +274,7 @@ export async function planRoute(
           (res.status === 502 || res.status === 503) &&
           withinBootRetryBudget(attempt, attemptStartedAt)
         ) {
+          markServerNotAnswering();
           await sleep(BOOT_RETRY_DELAYS_MS[attempt], signal);
           continue;
         }

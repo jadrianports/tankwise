@@ -299,6 +299,15 @@ async function freshPlanRoute() {
   return mod.planRoute;
 }
 
+// Same "fresh module instance" idiom as `freshPlanRoute`, additionally
+// returning `getBootSignalSnapshot` from the SAME import so the two stay
+// in sync with each other for the boot-signal assertions below.
+async function freshRouteClientModule() {
+  vi.resetModules();
+  const mod = await import('./routeClient');
+  return { planRoute: mod.planRoute, getBootSignalSnapshot: mod.getBootSignalSnapshot };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -483,6 +492,130 @@ test('exhausting the retry budget returns the existing network_error failure env
     expect(!result.ok && result.message).toBe('Something went wrong. Please try again.');
     // Initial attempt plus all 6 rungs of the backoff ladder.
     expect(callCount).toBe(7);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// Boot signal (D-XX/LNCH-03 follow-up): the honest "server genuinely did
+// not answer" store useColdStart gates its 'waking' stage on.
+test('a first call whose fetch rejects with a non-abort network error sets the shared boot signal before the retry', async () => {
+  vi.useFakeTimers();
+  const { planRoute: planRouteFresh, getBootSignalSnapshot } = await freshRouteClientModule();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      throw new Error('network down');
+    }
+    return { ok: true, json: async () => ({ total_cost: '12.34' }) };
+  }) as unknown as typeof fetch;
+
+  try {
+    expect(getBootSignalSnapshot()).toBe(false);
+    const resultPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(1000);
+    await resultPromise;
+    expect(getBootSignalSnapshot()).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a 503 with no error envelope sets the shared boot signal before the retry', async () => {
+  vi.useFakeTimers();
+  const { planRoute: planRouteFresh, getBootSignalSnapshot } = await freshRouteClientModule();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return {
+        ok: false,
+        status: 503,
+        json: async () => {
+          throw new Error('not json');
+        },
+      };
+    }
+    return { ok: true, json: async () => ({ total_cost: '12.34' }) };
+  }) as unknown as typeof fetch;
+
+  try {
+    expect(getBootSignalSnapshot()).toBe(false);
+    const resultPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(1000);
+    await resultPromise;
+    expect(getBootSignalSnapshot()).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a 502 whose body carries a structured upstream_error envelope does NOT set the shared boot signal -- a genuine map-service outage is not a boot condition', async () => {
+  vi.useFakeTimers();
+  const { planRoute: planRouteFresh, getBootSignalSnapshot } = await freshRouteClientModule();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({
+    ok: false,
+    status: 502,
+    json: async () => ({
+      error: { code: 'upstream_error', message: 'Upstream routing provider failed.', detail: {} },
+    }),
+  })) as unknown as typeof fetch;
+
+  try {
+    const result = await planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    expect(result.ok).toBe(false);
+    expect(getBootSignalSnapshot()).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a fully successful first call never sets the shared boot signal', async () => {
+  const { planRoute: planRouteFresh, getBootSignalSnapshot } = await freshRouteClientModule();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async () => ({ ok: true, json: async () => ({ total_cost: '12.34' }) })) as unknown as typeof fetch;
+
+  try {
+    await planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    expect(getBootSignalSnapshot()).toBe(false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('the boot signal resets at the start of a fresh planRoute call, even after a prior call left it true', async () => {
+  vi.useFakeTimers();
+  const { planRoute: planRouteFresh, getBootSignalSnapshot } = await freshRouteClientModule();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      throw new Error('network down');
+    }
+    return { ok: true, json: async () => ({}) };
+  }) as unknown as typeof fetch;
+
+  try {
+    // First call: rejects once, retries, then succeeds -- leaves the
+    // signal true.
+    const firstPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(1000);
+    await firstPromise;
+    expect(getBootSignalSnapshot()).toBe(true);
+
+    // Second call (a fresh, unrelated in-flight request): the module-level
+    // `bootAttempt` flag is now consumed (`bootRetryConsumed`), so this
+    // second call never retries -- but the reset at planRoute's own start
+    // must still have cleared the signal back to false immediately, before
+    // any fetch runs at all.
+    globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch;
+    await planRouteFresh('34.0522,-118.2437', '41.8781,-87.6298');
+    expect(getBootSignalSnapshot()).toBe(false);
   } finally {
     globalThis.fetch = originalFetch;
   }

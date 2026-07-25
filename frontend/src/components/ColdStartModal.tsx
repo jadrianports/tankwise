@@ -18,6 +18,15 @@ import { useRoutePlanContext } from '../context/RoutePlanContext';
 // stage as a full dialog instead of an inline sentence. Structurally a
 // copy of JustificationPopup's dialog shell (Dialog/DialogTitle/
 // DialogContent/IconButton close pattern).
+//
+// `stage === 'waking'` is now the genuine "the server did not answer"
+// signal, not bare elapsed time: useColdStart.ts only ever returns
+// 'waking' once BOTH the same 4000ms threshold as before has passed AND
+// routeClient's shared boot signal (routeClient's own retry loop, or
+// readyClient's pre-warm ping) has actually fired. A request that is
+// merely slow but genuinely answering gets useColdStart's 'pricing'
+// stage instead -- this modal only ever opens for the former, never the
+// latter, so it can never claim a wake-up that isn't happening.
 function ColdStartModal() {
   const { status } = useRoutePlanContext();
   const isLoading = status === 'loading';

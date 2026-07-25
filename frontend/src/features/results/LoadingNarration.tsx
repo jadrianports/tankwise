@@ -6,10 +6,15 @@ import { useColdStart, type ColdStartStage } from './useColdStart';
 
 // Progressive loading copy -- escalates to a named cold-start explanation
 // rather than leaving a slow free-tier solve looking like a hung request.
+// `pricing` is the honest counterpart to `waking` (useColdStart.ts): a
+// request that is merely slow but genuinely answering, past the same
+// threshold `waking` uses, gets accurate in-progress copy instead of a
+// server-wake-up claim that isn't true.
 const STAGE_COPY: Record<ColdStartStage, string> = {
   solving: 'Solving your route…',
   checking: 'Still working — checking fuel prices along the corridor…',
   waking: 'Waking up the server — free tier, this can take up to a minute…',
+  pricing: 'Still solving — planning the route and pricing stops along the corridor…',
 };
 
 // Only ever mounted while a solve is in flight (see ResultsSection), so the
