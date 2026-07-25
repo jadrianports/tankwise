@@ -1,0 +1,59 @@
+name: Keep warm
+
+# The schedule and manual-dispatch triggers below only become active once
+# this file is on the repository's default branch (main) at origin -- a
+# local commit alone changes nothing.
+on:
+  # Best-effort: GitHub Actions cron runs are queued at low priority and
+  # can be delayed, sometimes well past the interval, during periods of
+  # high load -- runs on the hour are the most contended. A 10-minute
+  # cadence against Render's ~15-minute free-tier idle threshold reduces
+  # but does not eliminate the chance the service still spins down.
+  schedule:
+    - cron: '*/10 * * * *'
+  # Lets this be fired by hand from the Actions tab.
+  workflow_dispatch:
+
+# Least privilege: this job checks out nothing and needs no write scope.
+permissions:
+  contents: read
+
+jobs:
+  ping:
+    name: Ping liveness probe
+    runs-on: ubuntu-latest
+    # A hung runner should not be left to idle.
+    timeout-minutes: 3
+    steps:
+      # No actions/checkout, no third-party actions -- a single curl step
+      # is the whole job, so this workflow adds zero supply-chain surface.
+      #
+      # Targets the dependency-free liveness probe (bare route: /api/health),
+      # never the dependency-aware readiness probe (bare route: /api/ready).
+      # The readiness probe opens a DB cursor and does a cache round-trip on
+      # every call, so pinging it ~4,320 times a month would spend Neon
+      # CU-hours and Upstash commands for nothing -- the liveness probe
+      # touches no DB, no cache, and no Mapbox.
+      #
+      # The 90-second curl budget below is evidence-driven: a cold curl of
+      # the live probe during planning returned 200 after 41.95s, so
+      # anything near curl's usual 30s ceiling would time out on exactly
+      # the wake this workflow exists to trigger.
+      #
+      # Non-fatal on purpose: the ping failing is often just the cold start
+      # it exists to absorb, and a scheduled job that paints a red X on every
+      # transient blip is worse noise than a near-zero signal on a
+      # badge-bearing public repo. Swallowing the exit (not
+      # continue-on-error) keeps the run genuinely, cleanly green rather than
+      # warning-annotated. Only the status code and timing are logged --
+      # never the response body.
+      #
+      # Caveat: GitHub automatically disables scheduled workflows after
+      # 60 days with no repository activity (it emails the repo owner
+      # first). After a quiet stretch, this stops running until someone
+      # re-enables it from the Actions tab.
+      - name: Ping the liveness probe
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 90 "https://tankwise.onrender.com/api/health" \
+            || echo 'ping failed (non-fatal)'
