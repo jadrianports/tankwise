@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest';
+import { afterEach, expect, test, vi } from 'vitest';
 
 import { mapErrorToMessage, planRoute } from './routeClient';
 
@@ -282,6 +282,207 @@ test('planRoute rethrows AbortError distinctly, never as a network_error result'
     await expect(planRoute('39.7392,-104.9903', '39.0997,-94.5786')).rejects.toSatisfy(
       (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
     );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+// Boot-retry loop (D-10). `bootRetryConsumed` is module-level state that
+// only ever flips false -> true, so each test below re-imports a fresh
+// module instance via `vi.resetModules()` rather than widening
+// routeClient's public API with a test-only reset helper -- this way the
+// module's real "first request of a page session" contract stays exactly
+// as production code sees it, just re-run fresh per test.
+async function freshPlanRoute() {
+  vi.resetModules();
+  const mod = await import('./routeClient');
+  return mod.planRoute;
+}
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+test('a first call whose fetch rejects with a non-abort network error is retried, and a subsequent successful attempt returns the success result', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      throw new Error('network down');
+    }
+    return { ok: true, json: async () => ({ total_cost: '12.34' }) };
+  }) as unknown as typeof fetch;
+
+  try {
+    const resultPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await resultPromise;
+    expect(callCount).toBe(2);
+    expect(result.ok).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a first call receiving a 503 with no error envelope is retried, and a subsequent 200 returns the success result', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    if (callCount === 1) {
+      return {
+        ok: false,
+        status: 503,
+        json: async () => {
+          throw new Error('not json');
+        },
+      };
+    }
+    return { ok: true, json: async () => ({ total_cost: '12.34' }) };
+  }) as unknown as typeof fetch;
+
+  try {
+    const resultPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(1000);
+    const result = await resultPromise;
+    expect(callCount).toBe(2);
+    expect(result.ok).toBe(true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a 502 whose body carries an error.code of upstream_error returns immediately without any retry', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    return {
+      ok: false,
+      status: 502,
+      json: async () => ({
+        error: { code: 'upstream_error', message: 'Upstream routing provider failed.', detail: {} },
+      }),
+    };
+  }) as unknown as typeof fetch;
+
+  try {
+    const result = await planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    expect(callCount).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('upstream_error');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a 429 rate-limited response returns immediately without any retry, preserving retryAfterS', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    return {
+      ok: false,
+      status: 429,
+      json: async () => ({
+        error: { code: 'rate_limited', message: 'Too many requests.', detail: { retry_after_s: 9 } },
+      }),
+    };
+  }) as unknown as typeof fetch;
+
+  try {
+    const result = await planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    expect(callCount).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('rate_limited');
+    expect(!result.ok && result.retryAfterS).toBe(9);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('the SECOND and later planRoute calls of a page session never retry, even on a network error', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+
+  // First call succeeds on its first attempt -- consumes the session's
+  // one boot-retry eligibility.
+  globalThis.fetch = (async () => ({ ok: true, json: async () => ({}) })) as unknown as typeof fetch;
+  await planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    throw new Error('network down');
+  }) as unknown as typeof fetch;
+
+  try {
+    const result = await planRouteFresh('34.0522,-118.2437', '41.8781,-87.6298');
+    expect(callCount).toBe(1);
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('network_error');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('aborting the signal while the loop is sleeping between attempts rejects with an AbortError rather than proceeding to another attempt', async () => {
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    throw new Error('network down');
+  }) as unknown as typeof fetch;
+
+  const controller = new AbortController();
+  try {
+    const resultPromise = planRouteFresh(
+      '39.7392,-104.9903',
+      '39.0997,-94.5786',
+      undefined,
+      undefined,
+      controller.signal
+    );
+    controller.abort();
+    await expect(resultPromise).rejects.toSatisfy(
+      (err: unknown) => err instanceof DOMException && err.name === 'AbortError'
+    );
+    expect(callCount).toBe(1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('exhausting the retry budget returns the existing network_error failure envelope -- no new error code is introduced', async () => {
+  vi.useFakeTimers();
+  const planRouteFresh = await freshPlanRoute();
+  const originalFetch = globalThis.fetch;
+  let callCount = 0;
+  globalThis.fetch = (async () => {
+    callCount += 1;
+    throw new Error('network down');
+  }) as unknown as typeof fetch;
+
+  try {
+    const resultPromise = planRouteFresh('39.7392,-104.9903', '39.0997,-94.5786');
+    await vi.advanceTimersByTimeAsync(100000);
+    const result = await resultPromise;
+    expect(result.ok).toBe(false);
+    expect(!result.ok && result.code).toBe('network_error');
+    expect(!result.ok && result.message).toBe('Something went wrong. Please try again.');
+    // Initial attempt plus all 6 rungs of the backoff ladder.
+    expect(callCount).toBe(7);
   } finally {
     globalThis.fetch = originalFetch;
   }

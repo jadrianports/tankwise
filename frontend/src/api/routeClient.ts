@@ -98,6 +98,46 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError';
 }
 
+// Backoff ladder and cumulative ceiling for the boot-retry loop below
+// (D-10) -- a fixed 6-entry ladder bounded by a ~60s budget, so the retry
+// can never become an unbounded hammer against the API.
+const BOOT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000, 15000];
+const BOOT_RETRY_BUDGET_MS = 60000;
+
+// Page-session flag: flips to true once a call to `planRoute` has run to
+// completion (see the `finally` inside `planRoute`). A mid-session
+// 502/503 is a real outage, not a boot condition -- only the FIRST
+// request of a page session is ever eligible to retry.
+let bootRetryConsumed = false;
+
+// Resolves after `ms`, or rejects with an AbortError the instant `signal`
+// fires -- this is what keeps a superseding submit from leaking a stale
+// retry that later overwrites fresher state while this call is asleep
+// between attempts.
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+// True while a delay remains in the ladder AND the cumulative elapsed
+// time since the first attempt hasn't crossed the ~60s budget yet.
+function withinBootRetryBudget(attempt: number, startedAt: number): boolean {
+  return attempt < BOOT_RETRY_DELAYS_MS.length && Date.now() - startedAt < BOOT_RETRY_BUDGET_MS;
+}
+
 // POSTs the relative /api/route path (identical in dev via the Vite proxy and
 // in Docker via the WhiteNoise-served single service -- see vite.config.ts).
 //
@@ -115,6 +155,10 @@ function isAbortError(err: unknown): boolean {
 // mi / full tank). Every preset-chip/slider-driven call passes it
 // explicitly so the hero preset wins in the UI without changing that API
 // default.
+//
+// The FIRST request of a page session (only) survives a booting free-tier
+// dyno by retrying quietly with backoff for up to ~60s (D-10) -- see
+// `bootRetryConsumed`/`BOOT_RETRY_DELAYS_MS`/`BOOT_RETRY_BUDGET_MS` above.
 export async function planRoute(
   start: string,
   finish: string,
@@ -133,35 +177,67 @@ export async function planRoute(
     requestBody.vehicle = vehicle;
   }
 
-  let res: Response;
+  // Captured once, up front -- true only for this session's very first
+  // call. Flipped in the `finally` below regardless of how this call
+  // ends (success, structured failure, exhausted retries, or a rethrown
+  // abort), so every later call always fails fast on its first attempt.
+  const bootAttempt = !bootRetryConsumed;
+  const attemptStartedAt = Date.now();
+
   try {
-    res = await fetch('/api/route', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-      signal,
-    });
-  } catch (err) {
-    if (isAbortError(err)) {
-      throw err;
+    for (let attempt = 0; ; attempt++) {
+      let res: Response;
+      try {
+        res = await fetch('/api/route', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(requestBody),
+          signal,
+        });
+      } catch (err) {
+        if (isAbortError(err)) {
+          throw err;
+        }
+        if (bootAttempt && withinBootRetryBudget(attempt, attemptStartedAt)) {
+          await sleep(BOOT_RETRY_DELAYS_MS[attempt], signal);
+          continue;
+        }
+        return { ok: false, code: 'network_error', message: GENERIC_FALLBACK_MESSAGE };
+      }
+
+      const body = await res.json().catch(() => null);
+
+      if (res.ok) {
+        return { ok: true, data: body as RouteResponse };
+      }
+
+      if (!body || !body.error) {
+        // The load-bearing discriminator: a platform 502/503 emitted by
+        // Render's edge before gunicorn is listening carries no structured
+        // envelope at all, whereas the backend's own Mapbox-outage failure
+        // always returns 502 WITH a `{error: {code: 'upstream_error', ...}}`
+        // envelope (handled below, past this branch). Retrying only this
+        // envelope-less shape means a genuine map-service outage still
+        // surfaces immediately, never hidden behind a 60s spinner.
+        if (
+          bootAttempt &&
+          (res.status === 502 || res.status === 503) &&
+          withinBootRetryBudget(attempt, attemptStartedAt)
+        ) {
+          await sleep(BOOT_RETRY_DELAYS_MS[attempt], signal);
+          continue;
+        }
+        return { ok: false, code: 'network_error', message: GENERIC_FALLBACK_MESSAGE };
+      }
+
+      const { code, message, detail } = body.error;
+      const retryAfterS =
+        typeof (detail as { retry_after_s?: unknown })?.retry_after_s === 'number'
+          ? (detail as { retry_after_s: number }).retry_after_s
+          : undefined;
+      return { ok: false, code, message: mapErrorToMessage({ code, message, detail }), retryAfterS, detail };
     }
-    return { ok: false, code: 'network_error', message: GENERIC_FALLBACK_MESSAGE };
+  } finally {
+    bootRetryConsumed = true;
   }
-
-  const body = await res.json().catch(() => null);
-
-  if (res.ok) {
-    return { ok: true, data: body as RouteResponse };
-  }
-
-  if (!body || !body.error) {
-    return { ok: false, code: 'network_error', message: GENERIC_FALLBACK_MESSAGE };
-  }
-
-  const { code, message, detail } = body.error;
-  const retryAfterS =
-    typeof (detail as { retry_after_s?: unknown })?.retry_after_s === 'number'
-      ? (detail as { retry_after_s: number }).retry_after_s
-      : undefined;
-  return { ok: false, code, message: mapErrorToMessage({ code, message, detail }), retryAfterS, detail };
 }
