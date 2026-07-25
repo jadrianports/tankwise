@@ -4,6 +4,7 @@ Routes are constructed directly as synthetic `Route` objects -- no
 Mapbox call is ever made. All tests touch the DB (seeded `Station`
 rows), so they use `django.test.TestCase`.
 """
+import math
 from decimal import Decimal
 from unittest import skipUnless
 
@@ -148,24 +149,55 @@ class CorridorPositioningTests(CorridorTestCase):
 class CorridorSimplifyLengthInvariantTests(CorridorTestCase):
     """`route_length_mi` must be derived from the SAME simplified planar
     line the vectorized `.distance()`/`.project()` calls run against --
-    never from a stale full-resolution length. A heavily densified,
-    near-straight route (thousands of near-collinear vertices, well over
-    `SIMPLIFY_TOLERANCE_MI`'s 0.05 mi threshold) is guaranteed to have its
-    vertex count reduced by `.simplify()`; if `route_length_mi` were ever
-    taken from the pre-simplification line instead, a known-fraction
+    never from a stale full-resolution length. If `route_length_mi` were
+    ever taken from the pre-simplification line instead, a known-fraction
     station's `distance_from_start_mi` would skew measurably -- this test
-    would have caught that class of bug."""
+    is meant to catch that class of bug.
+
+    A PERFECTLY STRAIGHT densified route (all points collinear) is NOT a
+    sufficient fixture here, even though `.simplify()` measurably drops its
+    vertex count: for a straight line, the sum of consecutive segment
+    lengths always equals the straight-line distance exactly (no chord ever
+    "cuts a corner"), so the pre- and post-simplification lengths are
+    bit-for-bit identical and the hazard this test exists to catch cannot
+    manifest -- confirmed empirically: swapping `route_length_mi`'s source
+    to the pre-simplification line on a collinear fixture produced zero
+    deviation. This fixture instead reuses the technique proven in
+    `MultiLegSimplifyLengthInvariantTests`
+    (`routing/tests/test_multi_leg.py`): a gentle high-frequency sine
+    wiggle (amplitude comfortably under `SIMPLIFY_TOLERANCE_MI`'s 0.05 mi
+    threshold) around the north-south trend line -- real curvature that
+    `.simplify()` genuinely shortens, so a stale pre-simplification length
+    measurably disagrees with the correct one."""
 
     TOTAL_ROUTE_MI = Decimal("700")
+    # Higher point/cycle count than the multi-leg analogue's per-leg
+    # fixture -- this route spans a wider 10-degree latitude range (vs.
+    # ~5 degrees per multi-leg leg), so matching the multi-leg fixture's
+    # cycles-per-degree density (and then some, for comfortable margin
+    # above this test's delta=1.0 tolerance) takes proportionally more
+    # points and cycles. Tuned empirically via this task's manual
+    # sabotage/revert check (see class docstring).
+    N_POINTS = 10000
+    WIGGLE_AMPLITUDE_DEG = 0.0009
+    WIGGLE_CYCLES = 1200
 
-    def _densified_route_coords(self, n_points=3000):
-        # A near-straight north-south line with points spaced closely
-        # enough that .simplify(0.05) collapses the vast majority of them
-        # -- verified below via the vertex-count assertion.
-        return [
-            (-97.00, 30.00 + (40.00 - 30.00) * i / (n_points - 1))
-            for i in range(n_points)
-        ]
+    def _densified_route_coords(self, n_points=None):
+        # A wiggly north-south line: points spaced closely enough, and
+        # curved enough, that .simplify(0.05) both collapses the vast
+        # majority of vertices AND genuinely shortens the line -- verified
+        # below via the vertex-count assertion and, separately, via this
+        # task's manual sabotage/revert check.
+        n = n_points if n_points is not None else self.N_POINTS
+        coords = []
+        for i in range(n):
+            t = i / (n - 1)
+            lat = 30.00 + (40.00 - 30.00) * t
+            lng = -97.00 + self.WIGGLE_AMPLITUDE_DEG * math.sin(
+                2 * math.pi * self.WIGGLE_CYCLES * t
+            )
+            coords.append((lng, lat))
+        return coords
 
     def _route(self):
         coords = self._densified_route_coords()
@@ -193,7 +225,10 @@ class CorridorSimplifyLengthInvariantTests(CorridorTestCase):
         self.assertLess(len(simplified.coords), len(planar_route.coords))
 
     def test_known_fraction_station_positions_correctly_on_simplified_route(self):
-        # 32.50 is exactly 25% of the way from 30.00 to 40.00.
+        # 32.50 is exactly 25% of the way from 30.00 to 40.00. The wiggle
+        # only perturbs longitude by up to 0.0009 deg (well inside both
+        # corridor tiers), so this station still lands inside the corridor
+        # of every wiggled coordinate near it.
         _make_station(
             opis_id=901,
             geocode_status=GeocodeStatus.OK,
