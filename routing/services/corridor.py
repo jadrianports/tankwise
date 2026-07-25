@@ -16,7 +16,9 @@ test `setUp`, never from `candidates()` itself.
 import math
 import threading
 from decimal import Decimal
+from typing import NamedTuple
 
+import shapely
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from shapely import STRtree
@@ -30,11 +32,31 @@ from routing.services.solver import Candidate
 # projection).
 MI_PER_DEGREE_LAT = Decimal("69.172")
 
-# Lazily-built (STRtree, list[Station]) pair over Station.objects.routable(),
-# in raw lng/lat degree space -- route-independent, built once per process.
-# None until first use. Guarded by _INDEX_LOCK (double-checked locking) so
-# concurrent first-request builds under a threaded worker model collapse to
-# one build; querying an already-built tree is read-only and needs no lock.
+
+class IndexedStation(NamedTuple):
+    """The seven `Station` attributes the corridor path actually reads --
+    `_candidates_single_leg`/`_candidates_multi_leg` access `.name`,
+    `.retail_price`, `.geocode_precision`, etc. exactly as they would on a
+    full `Station` instance, so swapping the index's row type here needs
+    no change at either call site. Deliberately narrower than `Station`'s
+    15 concrete columns -- `_build_index()` fetches only these seven, since
+    that fetch crosses the network to Neon on every per-worker cold start."""
+
+    opis_id: int
+    name: str
+    state: str
+    retail_price: Decimal
+    latitude: Decimal
+    longitude: Decimal
+    geocode_precision: str | None
+
+
+# Lazily-built (STRtree, list[IndexedStation]) pair over
+# Station.objects.routable(), in raw lng/lat degree space -- route-independent,
+# built once per process. None until first use. Guarded by _INDEX_LOCK
+# (double-checked locking) so concurrent first-request builds under a
+# threaded worker model collapse to one build; querying an already-built
+# tree is read-only and needs no lock.
 _INDEX = None
 _INDEX_LOCK = threading.Lock()
 
@@ -119,9 +141,22 @@ def _build_index():
     """Materialize the routable station set and a parallel STRtree of raw
     lng/lat degree Points. Route-independent -- built once per process, in
     the tree's native (unscaled) coordinate space, never the
-    equirectangular-scaled planar frame `build_planar_route` uses."""
-    stations = list(Station.objects.routable())
-    points = [Point(float(s.longitude), float(s.latitude)) for s in stations]
+    equirectangular-scaled planar frame `build_planar_route` uses.
+
+    Fetches exactly the seven columns the corridor path reads (via
+    `values_list`, never full `Station` instances) -- narrowing 15 columns
+    to 7 matters far more over the network to Neon than it does locally,
+    and every per-worker cold start pays this fetch again. Point
+    construction is a single vectorized `shapely.points()` call rather than
+    a per-row `Point(...)` list comprehension."""
+    rows = Station.objects.routable().values_list(
+        "opis_id", "name", "state", "retail_price", "latitude", "longitude",
+        "geocode_precision",
+    )
+    stations = [IndexedStation(*row) for row in rows]
+    xs = [float(s.longitude) for s in stations]
+    ys = [float(s.latitude) for s in stations]
+    points = shapely.points(xs, ys)
     return STRtree(points), stations
 
 

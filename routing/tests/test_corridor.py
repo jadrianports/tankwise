@@ -13,7 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from shapely.geometry import LineString
 
 from routing.models import GeocodePrecision, GeocodeStatus, Station
-from routing.services.corridor import candidates, reset_index
+from routing.services.corridor import IndexedStation, candidates, reset_index
 from routing.services.mapbox import Route
 
 
@@ -355,3 +355,24 @@ class StrtreeIndexTests(CorridorTestCase):
 
     def test_empty_station_table_returns_empty_list_without_raising(self):
         self.assertEqual(candidates(self._route()), [])
+
+
+class IndexedStationAttributeNamesTest(CorridorTestCase):
+    """Pins the seven attribute names the corridor path relies on
+    (`station.name` / `station.retail_price` / `station.geocode_precision`
+    etc.) so a future field rename on `IndexedStation` fails loudly here
+    rather than silently degrading candidate selection downstream."""
+
+    def test_indexed_station_has_the_seven_relied_upon_fields(self):
+        self.assertEqual(
+            IndexedStation._fields,
+            (
+                "opis_id",
+                "name",
+                "state",
+                "retail_price",
+                "latitude",
+                "longitude",
+                "geocode_precision",
+            ),
+        )
