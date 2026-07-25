@@ -12,6 +12,15 @@ dist
 dist-ssr
 *.local
 
+# Playwright run artifacts -- traces, videos, and HTML reports can embed
+# request URLs carrying the public Mapbox token, and none of them is a
+# deliverable (the deliverables are the PNGs a capture spec writes
+# directly into docs/screenshots).
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
