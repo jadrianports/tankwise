@@ -250,4 +250,72 @@ covering API, infra, and UI:
 
 ---
 
-<!-- gsd:write-continue -->
+## Pre-flight verified (2026-07-25, 12:03–12:12 UTC)
+
+Run immediately before opening the provisioning checkpoint, in the same
+session, against the tree at commit `f44bd3a` (this doc's own runbook
+commit). Re-run this block and re-date it if it's been more than ~30 minutes,
+or if any push has landed on `main`, before the checkpoint is presented.
+
+- [x] `manage.py test` — **405 tests, 0 failures**, exit 0.
+- [x] `npm test --prefix frontend` — **257 tests / 34 files, 0 failures**,
+      exit 0.
+- [x] `npm run typecheck --prefix frontend` — exit 0, no errors.
+- [x] `npm run lint --prefix frontend` (oxlint) — exit 0, no errors.
+- [x] `npm run build --prefix frontend` — exit 0. `frontend/dist/og-card.png`
+      exists; `frontend/dist/index.html` contains `twitter:card`.
+- [x] `git status --short` — clean working tree.
+- [x] `docker compose down -v && docker compose up --build -d` — a genuine
+      cold boot from a destroyed SQLite volume, so the conditional
+      first-boot seed path actually ran (not skipped by an already-populated
+      table).
+  - Container start (`docker inspect` `StartedAt`): `2026-07-25T12:10:53Z`.
+  - `migrate` (13 migrations) + the batched 6,738-row `seed_stations` upsert
+    completed and gunicorn began listening at `2026-07-25T12:11:03Z` —
+    **~10 seconds** from container start to the port being bound and
+    `/api/ready` first becoming reachable at all.
+  - Docker Compose's own healthcheck (against `/api/health`, `start_period:
+    30s`, polling every 10s) first reported the container `healthy` at
+    **~53 seconds** wall-clock from the `docker compose up` invocation —
+    that number reflects the healthcheck's own polling schedule, not app
+    slowness; the app itself was ready to serve traffic roughly 43 seconds
+    before Compose's healthcheck happened to notice.
+  - Either number sits at a small fraction of Render's 15-minute health-check
+    cancel window — this is the concrete evidence behind this doc's
+    "wide safety margin" claim in "Read this first."
+- [x] `GET /api/ready` against the cold stack — HTTP 200:
+
+  ```json
+  {"status": "ready", "checks": {"db": true, "cache": true, "tokens": true}, "station_count": 6738}
+  ```
+
+- [x] `POST /api/route` (Dallas → Los Angeles) against the cold stack —
+      returned a solved plan: `total_route_mi: 1437`, `4` fuel stops,
+      non-empty `total_cost`. Confirms Mapbox + solver + Redis cache all
+      work end-to-end against a freshly-seeded database, not just the
+      readiness probe's shallow checks.
+
+### One real gap this pre-flight surfaced — read before opening the checkpoint
+
+**Local `main` is 58 commits ahead of `origin/main`, all unpushed.** This
+runbook's commit (`f44bd3a`) and everything back through the start of this
+phase's work exist only in this local checkout. `origin/main`'s current tip
+is `c90596a` (last pushed 2026-07-22), which has a confirmed green CI run —
+but that SHA predates this entire phase and does not carry the complete v3
+product (multi-stop, elevation, cold-start UX, meta tags, or this runbook
+itself).
+
+Render's Blueprint deploys from GitHub, and `autoDeployTrigger: checksPass`
+only ever waits on checks for whatever commit is actually pushed. **Pushing
+local `main` to `origin/main` is a required step before Section 3 can
+produce a deploy of the complete product** — and it is a plain `git push`,
+not an account-creation or dashboard action, so it does not itself cross the
+D-04 provisioning boundary. It's called out here rather than silently
+assumed because skipping it would mean the very first live deploy ships an
+old, incomplete tree.
+
+Once pushed, re-verify the freshness condition above (SHA + ~30 minute
+window) against the *newly pushed* SHA and its CI run before treating this
+pre-flight as still current — the tests above were run against the local
+tree, not against a pushed-and-CI-checked commit.
+
