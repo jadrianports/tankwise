@@ -52,10 +52,38 @@ test('rendered with isLoading true, nothing appears for the first 4000ms of fake
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 });
 
-test('past 4000ms with NO boot signal, the dialog never appears -- a slow-but-answering request is not a server wake-up', () => {
+test('at 12000ms with NO boot signal, the dialog still does not appear -- slower than the measured warm ceiling but under the waking threshold is not a server wake-up', () => {
   vi.useFakeTimers();
   renderWithStatus('loading');
 
+  act(() => {
+    vi.advanceTimersByTime(12000);
+  });
+
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+test('at 18000ms with NO boot signal at all, an accessible dialog opens named "waking up the server" -- the elapsed-only path for a hung request that never errors', () => {
+  vi.useFakeTimers();
+  renderWithStatus('loading');
+
+  act(() => {
+    vi.advanceTimersByTime(18000);
+  });
+
+  expect(screen.getByRole('dialog', { name: /waking up the server/i })).toBeInTheDocument();
+});
+
+test('on the elapsed-only path the Close control dismisses the dialog and it stays closed for the rest of the same load', () => {
+  vi.useFakeTimers();
+  renderWithStatus('loading');
+
+  act(() => {
+    vi.advanceTimersByTime(18000);
+  });
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('button', { name: /close/i }));
   act(() => {
     vi.advanceTimersByTime(20000);
   });

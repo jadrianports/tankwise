@@ -19,14 +19,17 @@ import { useRoutePlanContext } from '../context/RoutePlanContext';
 // copy of JustificationPopup's dialog shell (Dialog/DialogTitle/
 // DialogContent/IconButton close pattern).
 //
-// `stage === 'waking'` is now the genuine "the server did not answer"
-// signal, not bare elapsed time: useColdStart.ts only ever returns
-// 'waking' once BOTH the same 4000ms threshold as before has passed AND
-// routeClient's shared boot signal (routeClient's own retry loop, or
-// readyClient's pre-warm ping) has actually fired. A request that is
-// merely slow but genuinely answering gets useColdStart's 'pricing'
-// stage instead -- this modal only ever opens for the former, never the
-// latter, so it can never claim a wake-up that isn't happening.
+// The modal opens on either of two paths into useColdStart's 'waking'
+// stage. The FAST path: a genuine "the server did not answer" signal
+// (routeClient's own retry loop, or readyClient's pre-warm ping) fired
+// past the 4-second escalation threshold. The ELAPSED-ONLY path: past 18
+// seconds with no such signal at all, for a request that is hanging
+// without ever erroring -- the free-tier hosting proxy holds the
+// connection open while a sleeping instance wakes, so the request never
+// rejects and never returns a 5xx, it simply takes roughly 50 seconds and
+// then returns 200. The 18-second figure is set far enough above the
+// slowest measured warm solve that the wake-up claim on that second path
+// stays well-founded (see useColdStart.ts for both measured figures).
 function ColdStartModal() {
   const { status } = useRoutePlanContext();
   const isLoading = status === 'loading';
