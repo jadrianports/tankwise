@@ -88,6 +88,16 @@ services:
         value: 20/min
       - key: ROUTE_THROTTLE_SUSTAINED_RATE
         value: 200/day
+      # The two rates above are AnonRateThrottle scopes, so they are
+      # counted PER CLIENT IP -- they bound one caller, not the total.
+      # These are the deployment-wide ceilings on outbound Mapbox calls
+      # (see routing/services/budget.py), well under the 100k/month free
+      # tiers for Directions and Geocoding. Tunable from the dashboard
+      # without a redeploy; 0 disables a window.
+      - key: MAPBOX_DAILY_CALL_CAP
+        value: "3000"
+      - key: MAPBOX_MONTHLY_CALL_CAP
+        value: "60000"
       # Measurement-backed against Render free's 512 MB limit -- see
       # entrypoint.sh's own comment on gunicorn worker sizing.
       - key: WEB_CONCURRENCY

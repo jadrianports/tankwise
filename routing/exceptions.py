@@ -14,6 +14,7 @@ from rest_framework.exceptions import Throttled
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_default_handler
 
+from routing.services.budget import UpstreamBudgetExhaustedError
 from routing.services.exceptions import InfeasibleRouteError, InvalidRouteInputError
 from routing.services.mapbox import MapboxRequestError, RouteNotFoundError
 
@@ -92,6 +93,20 @@ def custom_exception_handler(exc, context):
         result = Response(
             _envelope("upstream_error", "Upstream routing provider failed."),
             status=status.HTTP_502_BAD_GATEWAY,
+        )
+    elif isinstance(exc, UpstreamBudgetExhaustedError):
+        # 503, not 429: a throttle rejection means THIS caller was too
+        # chatty, while this means the service as a whole has spent its
+        # allowance for the window no matter who is asking. Already-cached
+        # routes are unaffected -- the view reads cache before calling out.
+        result = Response(
+            _envelope(
+                "upstream_budget_exhausted",
+                "Routing is temporarily unavailable: this deployment's "
+                "upstream request budget for the current window is used up.",
+                {"window": exc.window, "cap": exc.cap},
+            ),
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     elif isinstance(exc, InvalidRouteInputError):
         result = Response(

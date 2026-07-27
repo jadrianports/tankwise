@@ -182,6 +182,22 @@ else:
         }
     }
 
+# Global ceiling on outbound Mapbox calls, enforced in
+# routing/services/budget.py at the single seam every upstream call passes
+# through. The DRF throttles below are AnonRateThrottle subclasses and so
+# count PER CLIENT IP -- they bound one caller, not the total, which leaves
+# a rotating proxy or genuine viral traffic free to drain the token budget.
+# These are the totals.
+#
+# Defaults sit far under Mapbox's free tiers (Directions and Geocoding are
+# 100,000/month each), leaving room for the counter to fail open during a
+# cache outage without approaching a billable threshold. Both are
+# env-tunable from the Render dashboard without a redeploy, matching the
+# throttle rates below; set either to 0 to disable that window.
+MAPBOX_BUDGET_ENABLED = _env("MAPBOX_BUDGET_ENABLED", "true").lower() == "true"
+MAPBOX_DAILY_CALL_CAP = int(_env("MAPBOX_DAILY_CALL_CAP", "3000"))
+MAPBOX_MONTHLY_CALL_CAP = int(_env("MAPBOX_MONTHLY_CALL_CAP", "60000"))
+
 # Django REST Framework
 # Throttle rates are deliberately generous defaults -- a recruiter clicking
 # demo chips and the frontend's debounced what-if sliders must never trip

@@ -16,6 +16,8 @@ from requests.adapters import HTTPAdapter
 from shapely.geometry import LineString
 from urllib3.util.retry import Retry
 
+from routing.services import budget
+
 # Mapbox convention: longitude first in the path segment.
 DIRECTIONS_BASE_URL = "https://api.mapbox.com/directions/v5/mapbox/driving"
 
@@ -102,6 +104,10 @@ def get_routes(ordered_coords) -> list:
             "MAPBOX_TOKEN is not set -- cannot call the Mapbox Directions API"
         )
 
+    # Global ceiling, checked at the single seam every outbound Directions
+    # call passes through. The per-IP DRF throttles cannot bound the total.
+    budget.consume(budget.DIRECTIONS)
+
     coords_path = ";".join(f"{lng},{lat}" for lat, lng in ordered_coords)
     url = f"{DIRECTIONS_BASE_URL}/{coords_path}"
 
@@ -146,6 +152,8 @@ def geocode(address) -> tuple:
         raise ImproperlyConfigured(
             "MAPBOX_TOKEN is not set -- cannot call the Mapbox Geocoding API"
         )
+
+    budget.consume(budget.GEOCODING)
 
     try:
         response = _SESSION.get(
