@@ -140,3 +140,84 @@ class BaselineIsUpperBoundTests(SimpleTestCase):
         optimal_plan = solve(candidates, Decimal("900"))
 
         self.assertGreaterEqual(naive_plan.total_cost, optimal_plan.total_cost)
+
+
+class NeverBuysUnburnedFuelTests(SimpleTestCase):
+    """The baseline exists to isolate the value of price-awareness. If its
+    final stop tops the tank to capacity, the driver finishes holding fuel
+    they paid for and `compute_savings` books that leftover as savings --
+    which on a sub-tank trip is the entire reported delta. These pin the
+    endpoint rule that keeps the comparison like-for-like."""
+
+    def test_baseline_buys_exactly_what_the_route_burns(self):
+        candidates = [
+            make_candidate("4.00", "480", name="A", opis_id=1),
+            make_candidate("4.00", "900", name="B", opis_id=2),
+        ]
+        total = Decimal("1000")
+
+        plan = naive_baseline.solve(candidates, total)
+
+        # start tank is free; every purchased gallon must be burned
+        expected = (total - Decimal("500")) / Decimal("10")
+        self.assertEqual(plan.total_gallons, expected)
+
+    def test_baseline_and_optimal_buy_the_same_total_gallons(self):
+        candidates = [
+            make_candidate("5.00", "100", name="A", opis_id=1),
+            make_candidate("2.00", "300", name="B", opis_id=2),
+            make_candidate("4.50", "480", name="C", opis_id=3),
+            make_candidate("1.50", "700", name="D", opis_id=4),
+        ]
+        total = Decimal("900")
+
+        naive_plan = naive_baseline.solve(candidates, total)
+        optimal_plan = solve(candidates, total)
+
+        self.assertEqual(naive_plan.total_gallons, optimal_plan.total_gallons)
+
+    def test_savings_on_a_barely_over_tank_trip_is_near_zero(self):
+        """A 511-mile trip needs 1.1 gallons beyond the starting tank, so
+        there is almost nothing price-awareness can save. Before the
+        endpoint rule this case reported the price of a full 50-gallon
+        tank as savings."""
+        candidates = [
+            make_candidate("4.00", "300", name="A", opis_id=1),
+            make_candidate("4.10", "495", name="B", opis_id=2),
+        ]
+        total = Decimal("511")
+
+        naive_plan = naive_baseline.solve(candidates, total)
+        optimal_plan = solve(candidates, total)
+        savings = compute_savings(optimal_plan, naive_plan)
+
+        self.assertLess(savings.amount, Decimal("1"))
+        self.assertGreaterEqual(savings.amount, Decimal("0"))
+
+    def test_intermediate_stops_still_fill_to_capacity(self):
+        """Only the FINAL purchase is trimmed -- an intermediate stop is
+        fully burned before the next one, so it still tops off."""
+        candidates = [
+            make_candidate("4.00", "480", name="A", opis_id=1),
+            make_candidate("4.00", "960", name="B", opis_id=2),
+        ]
+
+        plan = naive_baseline.solve(candidates, Decimal("1400"))
+
+        self.assertGreaterEqual(len(plan.stops), 2)
+        fuel_on_arrival = Decimal("500") - plan.stops[0].distance_from_start_mi
+        self.assertEqual(
+            plan.stops[0].gallons * Decimal(10), Decimal("500") - fuel_on_arrival
+        )
+
+    def test_no_stop_ever_buys_more_than_the_tank_holds(self):
+        candidates = [
+            make_candidate("3.00", "400", name="A", opis_id=1),
+            make_candidate("3.00", "880", name="B", opis_id=2),
+        ]
+
+        plan = naive_baseline.solve(candidates, Decimal("1300"))
+
+        for stop in plan.stops:
+            self.assertLessEqual(stop.gallons * Decimal(10), Decimal("500"))
+            self.assertGreaterEqual(stop.gallons, Decimal("0"))

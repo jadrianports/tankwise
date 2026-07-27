@@ -8,12 +8,20 @@ at the HTTP response serialization boundary. This module mirrors
 in the fueling strategy, which never consults price.
 
 The strategy: run the tank down, stop at the farthest reachable station,
-fill completely, repeat -- never the nearest, never the cheapest. This is
+fill up, repeat -- never the nearest, never the cheapest. This is
 the realistic behavior of a driver who ignores price entirely, and it is
 the strategy that makes the savings delta (`compute_savings`) mean "the
 value of price-awareness" and nothing else. A naive driver stopping at the
 cheapest reachable station would already be price-aware, which would
 corrupt the comparison.
+
+"Fill up" means up to what the trip still needs: every intermediate stop
+tops the tank to capacity, but the FINAL purchase buys only enough to
+reach the finish -- the same endpoint rule `solver.py` applies. That keeps
+both plans buying exactly the fuel the route burns, so the delta is a pure
+price comparison. Topping the last tank to capacity instead leaves the
+baseline driver holding paid-for fuel at the finish and books its value as
+savings; on a sub-tank trip that artifact is the entire reported delta.
 
 The reachable set at any position is always bounded by the fuel actually on
 board (`fuel`), never by the tank's full capacity (`tank_range_mi`) -- this
@@ -74,10 +82,12 @@ def solve(
     ``total_route_mi`` miles, given an iterable of ``Candidate`` stations.
 
     Never inspects ``price_per_gallon`` when choosing where to stop -- only
-    when computing what a stop cost. Every stop tops the tank to capacity;
-    no stop ever buys a partial amount. Raises ``InvalidRouteInputError`` on
-    malformed input and ``InfeasibleRouteError`` when the tank runs dry with
-    no reachable station ahead.
+    when computing what a stop cost. Intermediate stops top the tank to
+    capacity; the final stop buys only enough to reach the finish, so the
+    plan never purchases fuel the route does not burn. Raises
+    ``InvalidRouteInputError`` on malformed input and
+    ``InfeasibleRouteError`` when the tank runs dry with no reachable
+    station ahead.
     """
     total_route_mi = _as_decimal(total_route_mi)
     tank_range_mi = _as_decimal(tank_range_mi)
@@ -127,7 +137,20 @@ def solve(
         fuel -= target.distance_from_start_mi - pos
         pos = target.distance_from_start_mi
 
-        buy_mi = tank_range_mi - fuel
+        # Endpoint rule, mirroring solver.py's own branch (b): never buy
+        # fuel the trip will not burn. Without it the FINAL stop tops the
+        # tank to capacity and the baseline driver finishes holding fuel
+        # they paid for -- `compute_savings` then books the value of that
+        # unburned inventory as savings, which on a short trip is the
+        # entire reported delta. Only the last purchase is ever affected;
+        # every intermediate fill still tops off, since the tank is fully
+        # burned before the next stop. Stop CHOICE is untouched: still the
+        # farthest reachable candidate, still never consulting price, so
+        # the delta remains "the value of price-awareness and nothing
+        # else" -- which is what this module claims and, before this rule,
+        # did not deliver.
+        remaining_mi = total_route_mi - pos
+        buy_mi = min(tank_range_mi - fuel, remaining_mi - fuel)
         gallons = buy_mi / mpg
         stops.append(
             FuelStop(
