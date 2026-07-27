@@ -38,8 +38,23 @@ const CHIP_SX = { color: 'text.secondary', borderColor: 'text.secondary' } as co
 // T-14-05: every chip value is Math.round + Number.isFinite guarded
 // before it reaches a label, so a degenerate all-null terrain response
 // can never render "NaN ft"/"Infinity ft".
+//
+// Values are additionally rounded to STAT_ROUNDING_FT and prefixed "~"
+// because they are a SAMPLED estimate, not a survey: the series comes
+// from `queryTerrainElevation` against whatever DEM tiles are decoded at
+// the map's current zoom, so its vertical resolution follows the view.
+// Measured on Denver->Salt Lake City, the overview-zoom sampling the app
+// actually runs at reports a route minimum ~600ft above the true
+// elevation of the finish, and understates total ascent by roughly a
+// quarter against a higher-zoom sample of the same geometry. Rendering
+// that as a to-the-foot figure implied a precision the number does not
+// have; the underlying series is unchanged, only its presentation.
+const STAT_ROUNDING_FT = 50;
+
 function feetLabel(value: number): string {
-  return Number.isFinite(value) ? Math.round(value).toLocaleString('en-US') : '0';
+  if (!Number.isFinite(value)) return '0';
+  const rounded = Math.round(value / STAT_ROUNDING_FT) * STAT_ROUNDING_FT;
+  return rounded.toLocaleString('en-US');
 }
 
 // Elevation-vs-distance chart mirroring TankChart.tsx's LineChart shape
@@ -104,23 +119,28 @@ function ElevationChart({ profile, waypoints = [], onHoverDistanceChange }: Elev
   return (
     <Box>
       <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ mb: 1 }}>
-        <Chip size="small" variant="outlined" label={`Min ${feetLabel(stats.minFt)} ft`} sx={CHIP_SX} />
-        <Chip size="small" variant="outlined" label={`Max ${feetLabel(stats.maxFt)} ft`} sx={CHIP_SX} />
+        <Chip size="small" variant="outlined" label={`Min ~${feetLabel(stats.minFt)} ft`} sx={CHIP_SX} />
+        <Chip size="small" variant="outlined" label={`Max ~${feetLabel(stats.maxFt)} ft`} sx={CHIP_SX} />
         <Chip
           size="small"
           variant="outlined"
           icon={<ArrowUpwardIcon fontSize="small" />}
-          label={`▲ ${feetLabel(stats.ascentFt)} ft climbed`}
+          label={`▲ ~${feetLabel(stats.ascentFt)} ft climbed`}
           sx={CHIP_SX}
         />
         <Chip
           size="small"
           variant="outlined"
           icon={<ArrowDownwardIcon fontSize="small" />}
-          label={`▼ ${feetLabel(stats.descentFt)} ft descended`}
+          label={`▼ ~${feetLabel(stats.descentFt)} ft descended`}
           sx={CHIP_SX}
         />
       </Stack>
+
+      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+        Sampled from map terrain at the current view — approximate, and it
+        understates climb on long routes.
+      </Typography>
 
       <LineChart
         height={220}

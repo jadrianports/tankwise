@@ -108,13 +108,36 @@ test('renders the mostly-flat note, with no chart or chips, when profile.status 
   expect(screen.queryByText(/descended/)).not.toBeInTheDocument();
 });
 
-test('renders a stat chip row with whole-number feet values for an ok profile', () => {
+test('renders a stat chip row with approximate feet values for an ok profile', () => {
   render(<ElevationChart profile={OK_PROFILE} onHoverDistanceChange={vi.fn()} />);
 
-  expect(screen.getByText('Min 300 ft')).toBeInTheDocument();
-  expect(screen.getByText('Max 950 ft')).toBeInTheDocument();
-  expect(screen.getByText('▲ 900 ft climbed')).toBeInTheDocument();
-  expect(screen.getByText('▼ 400 ft descended')).toBeInTheDocument();
+  // Values are marked approximate on purpose: the series is sampled from
+  // whatever DEM tiles the map has decoded at its current zoom, so a
+  // to-the-foot label overstated the precision actually available.
+  expect(screen.getByText('Min ~300 ft')).toBeInTheDocument();
+  expect(screen.getByText('Max ~950 ft')).toBeInTheDocument();
+  expect(screen.getByText('▲ ~900 ft climbed')).toBeInTheDocument();
+  expect(screen.getByText('▼ ~400 ft descended')).toBeInTheDocument();
+});
+
+test('rounds stat chips to the nearest 50 ft rather than implying survey precision', () => {
+  const profile = {
+    ...OK_PROFILE,
+    stats: { minFt: 4828.4, maxFt: 8002.1, ascentFt: 5959.7, descentFt: 4984.2 },
+  };
+
+  render(<ElevationChart profile={profile} onHoverDistanceChange={vi.fn()} />);
+
+  expect(screen.getByText('Min ~4,850 ft')).toBeInTheDocument();
+  expect(screen.getByText('Max ~8,000 ft')).toBeInTheDocument();
+  expect(screen.getByText('▲ ~5,950 ft climbed')).toBeInTheDocument();
+  expect(screen.getByText('▼ ~5,000 ft descended')).toBeInTheDocument();
+});
+
+test('tells the reader the elevation stats are sampled from the map view', () => {
+  render(<ElevationChart profile={OK_PROFILE} onHoverDistanceChange={vi.fn()} />);
+
+  expect(screen.getByText(/Sampled from map terrain/)).toBeInTheDocument();
 });
 
 test('renders a vertical reference marker labeled with the intermediate waypoint letter', () => {

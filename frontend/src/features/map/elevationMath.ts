@@ -96,6 +96,22 @@ export function metersToFeet(m: number): number {
   return m * METERS_TO_FEET;
 }
 
+// These are stats over a SAMPLED series, not a survey, and their accuracy
+// is bounded by the caller's input rather than by anything here:
+// `useElevationProfile` reads `queryTerrainElevation`, which only sees DEM
+// tiles already decoded at the map's current zoom. Sampling therefore
+// happens at the fitBounds overview zoom, where the terrain is smoothed.
+// Measured on Denver->Salt Lake City: overview-zoom sampling reported a
+// route minimum of ~4,615ft against ~4,231ft from a higher-zoom sample of
+// the identical geometry (the finish, downtown SLC, is ~4,226ft), and
+// total ascent of ~9,000ft against ~11,800ft. It is reproducible run to
+// run, so this is an accuracy limit, not instability -- ElevationChart
+// presents the result as approximate for that reason. Raising the
+// SAMPLE_COUNT above does NOT help: the limit is DEM resolution, not
+// sample density. Closing it properly means sourcing elevation
+// independently of the map camera (e.g. decoding Terrain-RGB tiles at a
+// fixed zoom), which trades accuracy against the project's
+// minimal-external-calls constraint.
 export function computeElevationStats(elevationsFt: number[]): ElevationStats {
   if (elevationsFt.length === 0) {
     return { minFt: 0, maxFt: 0, ascentFt: 0, descentFt: 0 };
