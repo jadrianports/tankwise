@@ -477,3 +477,49 @@ class IndexedStationAttributeNamesTest(CorridorTestCase):
                 "geocode_precision",
             ),
         )
+
+
+class ZeroLengthRouteTests(CorridorTestCase):
+    """A start and finish resolving to the same point yields a zero-length
+    route. The along-line fraction is a 0/0 `DivisionUndefined` there, which
+    is not part of the domain-exception hierarchy `custom_exception_handler`
+    maps -- so before this guard the request surfaced as a bare HTTP 500
+    rather than a clean 400. `_candidates_multi_leg` already guarded its own
+    per-leg equivalent; this pins the single-leg path to the same behavior."""
+
+    def _degenerate_route(self):
+        point = [-97.0, 35.0]
+        return Route(
+            total_route_mi=Decimal("0"),
+            geometry=LineString([point, point]),
+            raw_coordinates=[point, point],
+            duration_s=Decimal("0"),
+            annotation_durations=[],
+            annotation_distances=[],
+            leg_distances_mi=[Decimal("0")],
+            leg_annotation_lengths=[0],
+        )
+
+    def test_zero_length_route_returns_no_candidates_instead_of_raising(self):
+        _make_station(
+            1,
+            GeocodeStatus.OK,
+            latitude=Decimal("35.0"),
+            longitude=Decimal("-97.0"),
+            geocode_precision=GeocodePrecision.ROOFTOP,
+        )
+
+        self.assertEqual(candidates(self._degenerate_route()), [])
+
+    def test_zero_length_route_reaches_the_solver_s_own_input_guard(self):
+        """Returning [] must hand the degenerate route on to the solver,
+        whose `_validate` raises the properly-mapped
+        `InvalidRouteInputError` (-> HTTP 400)."""
+        from routing.services.exceptions import InvalidRouteInputError
+        from routing.services.solver import solve
+
+        route = self._degenerate_route()
+        cands = candidates(route)
+
+        with self.assertRaises(InvalidRouteInputError):
+            solve(cands, route.total_route_mi)

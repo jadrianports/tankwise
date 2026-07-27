@@ -1150,3 +1150,41 @@ class RouteViewMultiAlternativeTests(APITestCase):
         header = response["Server-Timing"]
         for token in ("route", "corridor", "solver", "baseline"):
             self.assertIn(token, header)
+
+
+class ZeroLengthRouteResponseTests(APITestCase):
+    """A start and finish that resolve to the same point produce a
+    zero-length route from Mapbox. The corridor's along-line fraction is a
+    0/0 there, and `decimal.InvalidOperation` is not part of the domain
+    hierarchy `custom_exception_handler` maps -- so the request escaped as
+    a bare HTTP 500 with an HTML body instead of the standard JSON error
+    envelope. This exercises the whole view, not just the corridor, so the
+    regression is pinned at the layer a client actually sees."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        reset_index()
+
+    def test_same_start_and_finish_returns_400_not_500(self):
+        point = [-87.6298, 41.8781]
+        degenerate = Route(
+            total_route_mi=Decimal("0"),
+            geometry=LineString([point, point]),
+            raw_coordinates=[point, point],
+            duration_s=Decimal("0"),
+            alternative_index=0,
+            leg_distances_mi=[Decimal("0")],
+            leg_annotation_lengths=[0],
+        )
+
+        with mock.patch("routing.views.get_routes", return_value=[degenerate]):
+            response = self.client.post(
+                ROUTE_URL,
+                {"start": START_COORD, "finish": START_COORD},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response["Content-Type"].split(";")[0], "application/json")
+        self.assertEqual(response.data["error"]["code"], "invalid_input")

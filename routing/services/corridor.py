@@ -317,6 +317,16 @@ def _candidates_single_leg(route, factor_for) -> list[Candidate]:
     route_length_mi = _as_decimal(planar_route.length)
     total_route_mi = route.total_route_mi
 
+    # A zero-length route (start and finish resolving to the same point)
+    # makes the along-line fraction below a 0/0 DivisionUndefined, which is
+    # not part of the domain-exception hierarchy the DRF handler maps and
+    # so surfaced as a bare 500. Returning no candidates instead hands the
+    # degenerate route to solver.solve(), whose own `_validate` raises the
+    # properly-mapped InvalidRouteInputError (-> 400). Mirrors the
+    # `leg_planar_length_mi == 0` guard `_candidates_multi_leg` already has.
+    if route_length_mi == 0:
+        return []
+
     planar_points = _planar_points_for_stations(stations, mean_lat)
     perpendicular_mi_raw = shapely.distance(planar_route, planar_points)
     along_line_mi_raw = shapely.line_locate_point(planar_route, planar_points)
