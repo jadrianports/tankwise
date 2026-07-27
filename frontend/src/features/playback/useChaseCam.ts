@@ -3,21 +3,7 @@ import type { Map as MapboxMap } from 'mapbox-gl';
 
 import type { CandidateStation, FuelStop, RouteResponse } from '../../types/routeContract';
 
-// Fixed ~20-30s total regardless of trip length -- a viewer's
-// patience is constant, not proportional to route distance. Per-stop
-// dwell is DERIVED from (budget / stop_count), never a hardcoded
-// constant: the demo hauls (LA->NYC, Dallas->Seattle) land ~6 stops at
-// the shipped vehicle presets, not the 2-3 originally assumed, so a
-// fixed per-stop beat sized for 2-3 stops would overrun a 6-stop trip
-// badly.
-const TOTAL_BUDGET_MS = 25_000;
-const DWELL_BUDGET_SHARE = 0.5;
-const MIN_DWELL_MS = 900;
-const MAX_DWELL_MS = 2_600;
-const MIN_TRAVEL_BUDGET_MS = 6_000;
-const MIN_LEG_MS = 500;
-const INITIAL_FLY_MS = 800;
-const EASE_OUT_MS = 500;
+import { INITIAL_FLY_MS, buildPlaybackTimeline, travelZoomForLeg } from './chaseCamMath';
 
 // Chase cam is low and pitched and stays pitched for the ENTIRE
 // playback regardless of zoom (see the `isPlayback` override MapView.tsx
@@ -25,7 +11,12 @@ const EASE_OUT_MS = 500;
 // (zoom) changes between the travel and ease-out beats, so neither beat
 // ever fights the map's own controlled `pitch` prop, which is otherwise
 // derived purely from zoom.
-const TRAVEL_ZOOM = 14;
+//
+// Travel altitude is no longer a single constant: it comes from
+// `travelZoomForLeg(legMi)` so a 500-mile leg is flown from high enough
+// that it reads as motion instead of a smear. Pacing likewise comes from
+// `buildPlaybackTimeline`, which counts every beat against a hard
+// ceiling -- see chaseCamMath.ts for why both moved out of this file.
 const TRAVEL_PITCH = 55;
 const STOP_ZOOM = 10;
 const STOP_PITCH = 55;
@@ -89,14 +80,6 @@ function clamp01(n: number): number {
 function wait(ms: number): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-// Per-stop dwell is derived from the fixed total budget, not a hardcoded
-// constant -- see the TOTAL_BUDGET_MS comment above.
-function computeDwellMs(stopCount: number): number {
-  if (stopCount <= 0) return 0;
-  const raw = (TOTAL_BUDGET_MS * DWELL_BUDGET_SHARE) / stopCount;
-  return Math.min(MAX_DWELL_MS, Math.max(MIN_DWELL_MS, raw));
 }
 
 // Local, unexported prefers-reduced-motion check. BottomSheet.tsx
@@ -221,17 +204,16 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
     setCurrentBeat(null);
     setTankFraction(clamp01(fuelMi / tankRangeMi));
 
-    // Dwell is derived from (budget / stop_count); travel gets whatever's
-    // left, distributed across legs proportional to each leg's own
-    // distance so a long leg doesn't feel rushed relative to a short one.
-    const dwellMs = computeDwellMs(stops.length);
-    const reservedDwellMs = dwellMs * stops.length;
-    const travelBudgetMs = Math.max(TOTAL_BUDGET_MS - reservedDwellMs, MIN_TRAVEL_BUDGET_MS);
+    // Dwell, ease-out and per-leg travel all come from one timeline that
+    // counts every beat against a hard ceiling -- travel is still
+    // distributed proportional to each leg's own distance so a long leg
+    // doesn't feel rushed relative to a short one.
     const legDistances = legs.map((leg) => Number(leg.distance_mi) || 0);
-    const totalDistance = legDistances.reduce((sum, d) => sum + d, 0) || 1;
-    const travelMsForLeg = legDistances.map((d) =>
-      Math.max(MIN_LEG_MS, (d / totalDistance) * travelBudgetMs)
-    );
+    const {
+      dwellMs,
+      easeMs,
+      travelMs: travelMsForLeg,
+    } = buildPlaybackTimeline(stops.length, legDistances);
 
     const startPoint = locationTuple(data.start);
     let previousPoint = startPoint;
@@ -239,7 +221,12 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
     if (startPoint) {
       await moveCamera(
         map,
-        { center: startPoint, zoom: TRAVEL_ZOOM, pitch: TRAVEL_PITCH, bearing: 0 },
+        {
+          center: startPoint,
+          zoom: travelZoomForLeg(legDistances[0] ?? 0),
+          pitch: TRAVEL_PITCH,
+          bearing: 0,
+        },
         reduced ? 0 : INITIAL_FLY_MS,
         reduced
       );
@@ -252,11 +239,17 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
       const stop = stops[i];
       const leg = legs[i];
       const stopPoint = locationTuple(stop.location);
-      const legMs = travelMsForLeg[i] ?? MIN_LEG_MS;
+      const legMi = legDistances[i] ?? 0;
+      const legMs = travelMsForLeg[i] ?? 0;
 
       if (stopPoint) {
         const bearing = previousPoint ? computeBearing(previousPoint, stopPoint) : 0;
-        await moveCamera(map, { center: stopPoint, zoom: TRAVEL_ZOOM, pitch: TRAVEL_PITCH, bearing }, legMs, reduced);
+        await moveCamera(
+          map,
+          { center: stopPoint, zoom: travelZoomForLeg(legMi), pitch: TRAVEL_PITCH, bearing },
+          legMs,
+          reduced
+        );
         previousPoint = stopPoint;
       }
       if (!isCurrent()) return;
@@ -275,7 +268,7 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
         await moveCamera(
           map,
           { center: stopPoint, zoom: STOP_ZOOM, pitch: STOP_PITCH, bearing: 0 },
-          reduced ? 0 : EASE_OUT_MS,
+          reduced ? 0 : easeMs,
           reduced
         );
       }
@@ -321,11 +314,18 @@ export function useChaseCam(map: MapboxMap | null, data: RouteResponse | null): 
 
     const finishPoint = locationTuple(data.finish);
     const finalLeg = legs[legs.length - 1];
-    const finalLegMs = travelMsForLeg[travelMsForLeg.length - 1] ?? MIN_LEG_MS;
+    const finalLegMs = travelMsForLeg[travelMsForLeg.length - 1] ?? 0;
+    const finalLegMi = legDistances[legDistances.length - 1] ?? 0;
+    const finalZoom = Math.min(FINISH_ZOOM, travelZoomForLeg(finalLegMi));
 
     if (finishPoint) {
       const bearing = previousPoint ? computeBearing(previousPoint, finishPoint) : 0;
-      await moveCamera(map, { center: finishPoint, zoom: FINISH_ZOOM, pitch: TRAVEL_PITCH, bearing }, finalLegMs, reduced);
+      await moveCamera(
+        map,
+        { center: finishPoint, zoom: finalZoom, pitch: TRAVEL_PITCH, bearing },
+        finalLegMs,
+        reduced
+      );
     }
     if (!isCurrent()) return;
 
