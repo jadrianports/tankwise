@@ -21,7 +21,18 @@ additionally ties a cached payload to the EIA week it was priced under --
 a week rollover produces a new key, so no plan priced under one EIA week
 is ever served under a newer week's disclaimer (EIA-01).
 
-It is now versioned `route:v4:` because the key shape itself changed:
+It is now versioned `route:v5:` because the meaning of a cached
+`savings` payload changed: the price-blind baseline no longer tops the
+tank on its final stop, so a plan cached under `v4` reports a materially
+larger saving (measured ~3.7x across 56 routes) than the same request
+computed today. The value is numerically wrong for a v5 consumer rather
+than merely old, and with `CACHE_TTL_SECONDS` at 24h a rollout without a
+bump would keep serving the pre-fix figure for a full day after deploy --
+including to anyone comparing the site against the fix. Same reasoning
+that drove the v3 -> v4 bump, applied to a changed value rather than a
+changed shape.
+
+It was versioned `route:v4:` because the key shape itself changed:
 `start`/`finish` are joined with any intermediate `waypoints[]` into one
 ordered N-token chain (still each token from the unchanged
 `_endpoint_token()`, joined `->`, never sorted or deduped) so a
@@ -133,4 +144,4 @@ def build_cache_key(validated_data, *, eia_vintage=None) -> str:
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
     vehicle_token = _vehicle_token(validated_data.get("vehicle"))
     eia_token = _eia_token(eia_vintage)
-    return f"route:v4:{stops_token}|{vehicle_token}|{eia_token}"
+    return f"route:v5:{stops_token}|{vehicle_token}|{eia_token}"

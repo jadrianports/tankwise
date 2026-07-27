@@ -111,7 +111,7 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v4: and contains exactly
+    """Every produced key starts with route:v5: and contains exactly
     two | separators (stops-chain|vehicle|eia)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
@@ -122,7 +122,7 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v4:"))
+        self.assertTrue(key.startswith("route:v5:"))
         self.assertEqual(key.count("|"), 2)
 
 
@@ -166,7 +166,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v4:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v5:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
