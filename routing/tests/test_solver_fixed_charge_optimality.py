@@ -57,6 +57,12 @@ COST_TOLERANCE = Decimal("0.0001")
 # convenience default for later test classes in this module.
 DEFAULT_PENALTY = Decimal("35")
 
+# D-10's sweep values: three strictly increasing penalties, the last being
+# the sourced $35 figure. Deliberately short -- every rung costs one more
+# full oracle solve per Hypothesis example, and FixedChargePenaltyConsistencyTests
+# already solves the same drawn route at every rung.
+PENALTY_LADDER = (Decimal(0), Decimal("10"), DEFAULT_PENALTY)
+
 
 @dataclass(frozen=True)
 class OraclePlan:
@@ -378,4 +384,186 @@ class FixedChargeOracleAnchorTests(SimpleTestCase):
                 COST_TOLERANCE,
                 f"oracle fuel_cost={oracle_plan.fuel_cost} vs greedy "
                 f"total_cost={greedy_fuel_cost} exceeds tolerance; {context}",
+            )
+
+
+class FixedChargePenaltyConsistencyTests(SimpleTestCase):
+    """D-10: non-zero penalties are exercised by oracle-vs-oracle self-
+    consistency properties, since the shipped greedy is penalty-blind and
+    no DP exists yet. Every assertion compares the oracle's own
+    recomputed values across PENALTY_LADDER on the SAME drawn route --
+    never an oracle result at one penalty against a solve() result at a
+    different penalty. solve() is fixed-objective (pure fuel dollars) and
+    is only a valid comparison point at penalty=0; that comparison is
+    FixedChargeOracleAnchorTests above.
+
+    max_examples=50 is a discretionary formulation choice for this class
+    only (16-CONTEXT.md grants the precise formulation of the D-10
+    properties beyond the two named): each example already performs
+    three full oracle solves (one per PENALTY_LADDER rung), so 50
+    examples is 150 oracle solves per test method, roughly three
+    quarters of one anchor class's cost. This is NOT a lowering of the
+    anchor classes' max_examples=200, which stays fixed by ROADMAP
+    criterion 1.
+
+    Inequality assertions need no tolerance band except in the fuel-cost
+    property below, because >= and <= already absorb summation-order
+    noise.
+    """
+
+    def _plans_by_rung(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        return {
+            penalty: optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            for penalty in PENALTY_LADDER
+        }
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_feasibility_is_penalty_invariant(self, drawn_route):
+        """Property 5: plan(p) is None iff plan(0) is None, for every
+        rung. Charging for stops can never make a reachable route
+        unreachable -- if this ever fails, the subset enumeration is
+        dropping feasible plans. Checked first and unconditionally (no
+        skip) so a silent skip in the other methods below can never hide
+        a genuine feasibility disagreement.
+        """
+        plans = self._plans_by_rung(drawn_route)
+        zero_feasible = plans[Decimal(0)] is not None
+        for penalty, plan in plans.items():
+            self.assertEqual(
+                plan is not None,
+                zero_feasible,
+                f"feasibility at penalty={penalty} disagrees with the "
+                f"penalty=0 verdict={zero_feasible}; drawn_route={drawn_route!r}",
+            )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_stop_count_non_increasing_as_penalty_rises(self, drawn_route):
+        """Property 1 (D-10, named): for consecutive rungs p_lo < p_hi,
+        plan(p_hi).stop_count <= plan(p_lo).stop_count. Raising the price
+        of a stop can never make the optimum want more stops."""
+        plans = self._plans_by_rung(drawn_route)
+        if plans[Decimal(0)] is None:
+            return  # feasibility invariant is asserted separately above
+        for p_lo, p_hi in zip(PENALTY_LADDER, PENALTY_LADDER[1:]):
+            self.assertLessEqual(
+                plans[p_hi].stop_count,
+                plans[p_lo].stop_count,
+                f"stop_count rose from penalty={p_lo} "
+                f"({plans[p_lo].stop_count}) to penalty={p_hi} "
+                f"({plans[p_hi].stop_count}); drawn_route={drawn_route!r}",
+            )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_objective_at_least_penalty_zero_objective(self, drawn_route):
+        """Property 2 (D-10, named): for every rung p,
+        plan(p).objective >= plan(0).objective."""
+        plans = self._plans_by_rung(drawn_route)
+        if plans[Decimal(0)] is None:
+            return
+        zero_objective = plans[Decimal(0)].objective
+        for penalty in PENALTY_LADDER:
+            self.assertGreaterEqual(
+                plans[penalty].objective,
+                zero_objective,
+                f"objective at penalty={penalty} "
+                f"({plans[penalty].objective}) fell below the penalty=0 "
+                f"objective ({zero_objective}); drawn_route={drawn_route!r}",
+            )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_objective_non_decreasing_across_ladder(self, drawn_route):
+        """Property 3 (discretionary generalization of property 2): for
+        consecutive rungs, plan(p_hi).objective >= plan(p_lo).objective."""
+        plans = self._plans_by_rung(drawn_route)
+        if plans[Decimal(0)] is None:
+            return
+        for p_lo, p_hi in zip(PENALTY_LADDER, PENALTY_LADDER[1:]):
+            self.assertGreaterEqual(
+                plans[p_hi].objective,
+                plans[p_lo].objective,
+                f"objective fell from penalty={p_lo} "
+                f"({plans[p_lo].objective}) to penalty={p_hi} "
+                f"({plans[p_hi].objective}); drawn_route={drawn_route!r}",
+            )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_fuel_cost_non_decreasing_as_penalty_rises(self, drawn_route):
+        """Property 4 (discretionary): for consecutive rungs,
+        plan(p_hi).fuel_cost >= plan(p_lo).fuel_cost - COST_TOLERANCE. The
+        penalty=0 plan minimizes fuel alone, so trading stops away for a
+        higher penalty can only ever cost more fuel. The tolerance band
+        absorbs summation-order noise only; it is not slack in the claim."""
+        plans = self._plans_by_rung(drawn_route)
+        if plans[Decimal(0)] is None:
+            return
+        for p_lo, p_hi in zip(PENALTY_LADDER, PENALTY_LADDER[1:]):
+            self.assertGreaterEqual(
+                plans[p_hi].fuel_cost,
+                plans[p_lo].fuel_cost - COST_TOLERANCE,
+                f"fuel_cost fell from penalty={p_lo} "
+                f"({plans[p_lo].fuel_cost}) to penalty={p_hi} "
+                f"({plans[p_hi].fuel_cost}) beyond the summation-order "
+                f"tolerance band; drawn_route={drawn_route!r}",
+            )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_plan_internal_consistency_across_ladder(self, drawn_route):
+        """Property 6 (discretionary, direct guard on D-04 and D-07): for
+        every rung with a feasible plan: objective == fuel_cost +
+        penalty*stop_count exactly (no tolerance -- Decimal times int is
+        exact); len(gallons) == len(stop_opis_ids); every gallons entry
+        is strictly positive (D-04's nonzero-purchase rule); and
+        stop_opis_ids has no duplicates and is in increasing distance
+        order."""
+        candidates = drawn_route[0]
+        candidate_by_id = {c.opis_id: c for c in candidates}
+        plans = self._plans_by_rung(drawn_route)
+        if plans[Decimal(0)] is None:
+            return
+        for penalty, plan in plans.items():
+            self.assertEqual(
+                plan.objective,
+                plan.fuel_cost + penalty * plan.stop_count,
+                f"objective does not equal fuel_cost + penalty*stop_count "
+                f"at penalty={penalty}; plan={plan!r}; drawn_route={drawn_route!r}",
+            )
+            self.assertEqual(
+                len(plan.gallons),
+                len(plan.stop_opis_ids),
+                f"gallons/stop_opis_ids length mismatch at penalty={penalty}; "
+                f"plan={plan!r}; drawn_route={drawn_route!r}",
+            )
+            for gallons in plan.gallons:
+                self.assertGreater(
+                    gallons,
+                    Decimal(0),
+                    f"a stop purchased zero gallons at penalty={penalty}; "
+                    f"plan={plan!r}; drawn_route={drawn_route!r}",
+                )
+            self.assertEqual(
+                len(set(plan.stop_opis_ids)),
+                len(plan.stop_opis_ids),
+                f"stop_opis_ids has duplicates at penalty={penalty}; "
+                f"plan={plan!r}; drawn_route={drawn_route!r}",
+            )
+            distances_mi = [candidate_by_id[opis_id].distance_from_start_mi for opis_id in plan.stop_opis_ids]
+            self.assertEqual(
+                distances_mi,
+                sorted(distances_mi),
+                f"stop_opis_ids not in increasing distance order at "
+                f"penalty={penalty}; plan={plan!r}; drawn_route={drawn_route!r}",
             )
