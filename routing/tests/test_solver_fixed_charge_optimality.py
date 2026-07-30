@@ -71,7 +71,7 @@ the whole subset before ever computing a purchase amount. The
 comparison surfaced no correctness bug in this module.
 """
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from itertools import chain, combinations
 
@@ -192,12 +192,32 @@ class OraclePlan:
     is index-aligned with it. Deliberately does not mirror solver.py's
     FuelPlan/FuelStop shape -- those dataclasses are Phase 18's to change,
     and the oracle must not be coupled to them.
+
+    is_unique_optimum (Phase 17, additive, declared last so it carries a
+    default and no existing construction site breaks) reports whether
+    exactly one distinct station set (one distinct stop_opis_ids tuple)
+    achieves the winning objective, within COST_TOLERANCE. It is computed
+    free inside the enumeration this dataclass's producing function
+    already performs -- the loop visits every feasible subset regardless,
+    so counting how many distinct station sets tie for the winning
+    objective costs nothing extra beyond bookkeeping.
+
+    A tied optimum is not a defect: two different station sets can
+    legitimately cost the same. It exists so Phase 17's prune property can
+    assert the pruned and unpruned station sets match only where "the
+    plan" is well-defined -- i.e. where there is exactly one winning
+    station set to compare against. Asserting the station set
+    unconditionally, even when the optimum is tied, would produce exactly
+    the flake the Phase 16 D-09 tolerance decision already rejected:
+    pruning can legitimately flip which tied optimum the total order
+    returns, without the prune being unsound.
     """
 
     objective: Decimal
     fuel_cost: Decimal
     stop_opis_ids: tuple[int, ...]
     gallons: tuple[Decimal, ...]
+    is_unique_optimum: bool = True
 
     @property
     def stop_count(self) -> int:
@@ -373,9 +393,22 @@ def optimal_fixed_charge_plan(
     (already the natural order of a subset from _subsets_by_distance),
     then the tuple of opis_id. Deterministic across Hypothesis seeds and
     repeat runs -- there is no last-writer-wins path.
+
+    Uniqueness (Phase 17): alongside best_plan/best_key, one
+    (objective, stop_opis_ids) entry is accumulated per feasible subset --
+    at MAX_STATIONS=6 that is at most 64 entries, so the memory cost is
+    nil. After the loop, with the winning objective known, the distinct
+    stop_opis_ids values whose objective is within COST_TOLERANCE of it
+    are counted; OraclePlan.is_unique_optimum is set to whether that count
+    is exactly one. COST_TOLERANCE -- never exact equality -- is used for
+    the same reason it is used everywhere else in this module: both sides
+    accumulate purchases in a different order and Decimal division at the
+    default context is inexact, so exact equality would report spurious
+    non-uniqueness for what is really the same tied optimum.
     """
     best_plan = None
     best_key = None
+    feasible_entries = []
     for subset in _subsets_by_distance(candidates):
         result = _cheapest_fuel_cost_for_subset(subset, total_route_mi, tank_range_mi, mpg, starting_fuel)
         if result is None:
@@ -384,6 +417,7 @@ def optimal_fixed_charge_plan(
         stop_opis_ids = tuple(station.opis_id for station in subset)
         distances_mi = tuple(station.distance_from_start_mi for station in subset)
         objective = fuel_cost + penalty * len(subset)
+        feasible_entries.append((objective, stop_opis_ids))
         key = (objective, len(subset), distances_mi, stop_opis_ids)
         if best_key is None or key < best_key:
             best_key = key
@@ -393,6 +427,14 @@ def optimal_fixed_charge_plan(
                 stop_opis_ids=stop_opis_ids,
                 gallons=gallons,
             )
+    if best_plan is not None:
+        winning_objective = best_plan.objective
+        tied_station_sets = {
+            stop_opis_ids
+            for objective, stop_opis_ids in feasible_entries
+            if abs(objective - winning_objective) <= COST_TOLERANCE
+        }
+        best_plan = replace(best_plan, is_unique_optimum=len(tied_station_sets) == 1)
     return best_plan
 
 
