@@ -225,3 +225,99 @@ def load_corridor_route(slug):
         raw = json.load(f)
     routes = _parse_directions_response(raw)
     return routes[0]
+
+
+# CONUS coordinate bounds (RESEARCH.md Pitfall 3's corruption/alteration
+# guard) -- catches a lat/lng swap or a truncated array. Loose enough to
+# cover Maine/Florida/California/Washington without false positives.
+_CONUS_LNG_RANGE = (Decimal("-125"), Decimal("-66"))
+_CONUS_LAT_RANGE = (Decimal("24"), Decimal("50"))
+
+# A genuine overview=full Mapbox response for a multi-hundred-mile
+# interstate route is not a few dozen points -- the shortest committed
+# corridor (sacramento_ca-salt_lake_city_ut, ~635 mi measured) still
+# carries thousands. 500 is a loose floor well under every measured
+# count, catching a hand-thinned or re-encoded fixture (RESEARCH.md
+# Pitfall 3) without being tuned to any one corridor's exact count.
+_MIN_COORDINATE_COUNT = 500
+
+# D-05/RESEARCH.md: the pinned estimated_driving_mi is a great-circle x
+# 1.2 ESTIMATE for ten of the twelve corridors (measured only for the two
+# mandatory survivors historically), so this is a loose sanity band
+# catching a wrong-endpoint capture, not a precision claim. The pinned
+# estimates are NOT updated to match what was measured here -- the
+# measured mileages are reported in this plan's SUMMARY and by plan
+# 17-05's command instead.
+_MILEAGE_TOLERANCE_FRACTION = Decimal("0.25")
+
+
+class CorridorFixtureTests(SimpleTestCase):
+    """CI-side guard that the twelve committed corridor fixtures (D-15)
+    stay valid: present, parseable, single-leg, geometrically plausible,
+    and CONUS-bounded. Does NOT re-verify the corridor set itself is
+    exactly the D-16 table (that is a code-review concern, confirmed by
+    inspection when this plan's tasks were written) -- it verifies the
+    committed *fixtures* have not silently drifted from what a live
+    Mapbox call would return.
+    """
+
+    def test_corridors_has_exactly_twelve_unique_slugs_including_mandatory_two(self):
+        self.assertEqual(len(CORRIDORS), 12)
+        slugs = [c.slug for c in CORRIDORS]
+        self.assertEqual(len(slugs), len(set(slugs)))
+        self.assertIn("dallas_tx-seattle_wa", slugs)
+        self.assertIn("toronto_oh-hillsboro_or", slugs)
+
+    def test_every_corridor_fixture_file_exists(self):
+        for corridor in CORRIDORS:
+            with self.subTest(slug=corridor.slug):
+                fixture_path = CORRIDOR_GEOMETRY_DIR / f"{corridor.slug}.json"
+                self.assertTrue(
+                    fixture_path.exists(),
+                    f"Missing committed fixture for {corridor.slug!r} at "
+                    f"{fixture_path}",
+                )
+
+    def test_every_corridor_loads_and_parses_without_raising(self):
+        for corridor in CORRIDORS:
+            with self.subTest(slug=corridor.slug):
+                route = load_corridor_route(corridor.slug)
+                self.assertIsNotNone(route)
+
+    def test_every_corridor_is_single_leg_feasible_geometry(self):
+        for corridor in CORRIDORS:
+            with self.subTest(slug=corridor.slug):
+                route = load_corridor_route(corridor.slug)
+                self.assertLessEqual(len(route.leg_distances_mi), 1)
+                self.assertGreater(route.total_route_mi, 0)
+                self.assertGreaterEqual(
+                    len(route.raw_coordinates), _MIN_COORDINATE_COUNT
+                )
+
+    def test_every_coordinate_is_a_conus_bounded_pair(self):
+        min_lng, max_lng = _CONUS_LNG_RANGE
+        min_lat, max_lat = _CONUS_LAT_RANGE
+        for corridor in CORRIDORS:
+            with self.subTest(slug=corridor.slug):
+                route = load_corridor_route(corridor.slug)
+                for coord in route.raw_coordinates:
+                    self.assertEqual(len(coord), 2)
+                    lng, lat = Decimal(str(coord[0])), Decimal(str(coord[1]))
+                    self.assertGreaterEqual(lng, min_lng)
+                    self.assertLessEqual(lng, max_lng)
+                    self.assertGreaterEqual(lat, min_lat)
+                    self.assertLessEqual(lat, max_lat)
+
+    def test_every_corridor_measured_mileage_within_loose_sanity_band(self):
+        for corridor in CORRIDORS:
+            with self.subTest(slug=corridor.slug):
+                route = load_corridor_route(corridor.slug)
+                pinned = Decimal(corridor.estimated_driving_mi)
+                tolerance = pinned * _MILEAGE_TOLERANCE_FRACTION
+                self.assertLessEqual(
+                    abs(route.total_route_mi - pinned),
+                    tolerance,
+                    f"{corridor.slug}: measured {route.total_route_mi} mi vs "
+                    f"pinned estimate {pinned} mi exceeds the "
+                    f"{_MILEAGE_TOLERANCE_FRACTION:.0%} sanity band",
+                )
