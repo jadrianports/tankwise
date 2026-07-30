@@ -9,6 +9,7 @@ FORBIDDEN_PREFIX = "routing.pipeline"
 SOLVER_FILES = [
     SERVICES_DIR / "solver.py",
     SERVICES_DIR / "exceptions.py",
+    SERVICES_DIR / "prune.py",
 ]
 SOLVER_FORBIDDEN_PREFIXES = (
     "django",
@@ -77,12 +78,12 @@ class ImportBoundaryTest(SimpleTestCase):
 
 
 class SolverPurityTest(SimpleTestCase):
-    """Statically enforces that the solver (routing/services/solver.py
-    and routing/services/exceptions.py) must stay free of Django, the ORM,
-    the offline geocoding pipeline, and any HTTP client. Scoped to just
-    these two files -- not all of services/ -- so a later Station ->
-    Candidate adapter is free to import routing.models elsewhere in
-    services/ without tripping this gate.
+    """Statically enforces that the solver (routing/services/solver.py,
+    routing/services/exceptions.py, and routing/services/prune.py) must
+    stay free of Django, the ORM, the offline geocoding pipeline, and any
+    HTTP client. Scoped to just these three files -- not all of services/
+    -- so a later Station -> Candidate adapter is free to import
+    routing.models elsewhere in services/ without tripping this gate.
     """
 
     def test_solver_files_never_import_django_orm_pipeline_or_http(self):
@@ -95,5 +96,5 @@ class SolverPurityTest(SimpleTestCase):
         self.assertEqual(
             violations,
             [],
-            f"solver.py/exceptions.py must never import django/ORM/pipeline/HTTP: {violations}",
+            f"solver.py/exceptions.py/prune.py must never import django/ORM/pipeline/HTTP: {violations}",
         )
