@@ -28,6 +28,7 @@ on the real ~508-candidate Dallas-Seattle corridor, subset enumeration is
 2**508. It terminates in this test suite only because MAX_STATIONS bounds
 how many candidate stations a single example may generate.
 """
+import random
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import chain, combinations
@@ -62,6 +63,75 @@ DEFAULT_PENALTY = Decimal("35")
 # full oracle solve per Hypothesis example, and FixedChargePenaltyConsistencyTests
 # already solves the same drawn route at every rung.
 PENALTY_LADDER = (Decimal(0), Decimal("10"), DEFAULT_PENALTY)
+
+
+@dataclass(frozen=True)
+class CorpusParams:
+    """The D-16 single source of truth for the disagreement-evidence corpus.
+
+    Deliberately a separate distribution from single_leg_routes() and
+    flattened_multi_leg_routes() above (D-14). Those Hypothesis strategies
+    prove optimality across many small, varied landscapes -- short routes,
+    small tanks, cheap and expensive fuel all mixed together -- because
+    that variety is what exercises edge cases. This corpus has a different
+    job: demonstrate that the fuel-only and penalty-aware objectives
+    genuinely diverge on the real product's shape, not on an arbitrary one.
+
+    So its parameters are fixed to the UI-default loaded semi (6.5 mpg,
+    1,050-mile tank) and to routes well past 1,400 miles, because
+    REQUIREMENTS.md's Evidence Base records that the problem concentrates
+    above ~1,400 mi -- at or under ~800 mi with a large tank, most routes
+    need zero or one stop, where both objectives trivially agree and a
+    corpus built there would show near-zero disagreement regardless of
+    whether the penalty path works.
+
+    stations_per_route is bounded (independent of MAX_STATIONS, which is
+    the property tests' own knob above -- the two happen to share a value
+    here, but neither is derived from the other) purely so the oracle's
+    subset enumeration terminates quickly across a corpus of hundreds of
+    routes; it is not tuned toward any particular disagreement rate.
+    """
+
+    seed: int
+    mpg: Decimal
+    tank_range_mi: Decimal
+    starting_fuel: Decimal
+    min_route_mi: Decimal
+    max_route_mi: Decimal
+    stations_per_route: int
+    min_price: Decimal
+    max_price: Decimal
+    penalty: Decimal
+
+
+# The D-16 single shared instance. Every field was chosen before the first
+# disagreement measurement was taken, derived from REQUIREMENTS.md's
+# Evidence Base and the UI-default vehicle -- never from a desired rate.
+CORPUS_PARAMS = CorpusParams(
+    seed=20260730,
+    mpg=Decimal("6.5"),
+    tank_range_mi=Decimal("1050"),
+    starting_fuel=Decimal("1"),
+    min_route_mi=Decimal("1400"),
+    max_route_mi=Decimal("2600"),
+    stations_per_route=6,
+    min_price=Decimal("3.00"),
+    max_price=Decimal("5.50"),
+    penalty=Decimal("35"),
+)
+
+# In-suite guard corpus size -- a CONTEXT-sanctioned discretionary knob,
+# chosen to keep PenaltyDisagreementFloorTests inside the D-12 runtime
+# ceiling. It is a prefix of any larger corpus built from CORPUS_PARAMS
+# (build_corpus consumes its seeded RNG strictly sequentially), so the
+# guard can never cherry-pick a favorable subset of routes.
+GUARD_ROUTES = 25
+
+# D-15: a loose floor at roughly a third of the expected ~55% disagreement
+# rate -- wide enough that ordinary distribution drift never flakes this
+# guard, while a silently no-op penalty path (which would score exactly
+# 0%) fails it instantly.
+DISAGREEMENT_FLOOR = Decimal("0.20")
 
 
 @dataclass(frozen=True)
@@ -305,6 +375,181 @@ def _candidates_from_tuples(station_tuples, total_route_mi):
                 )
             )
     return candidates
+
+
+def build_corpus(n_routes, *, params=CORPUS_PARAMS):
+    """Deterministically build n_routes long-haul (candidates, total_route_mi)
+    pairs from a single random.Random(params.seed), consumed strictly
+    sequentially one route at a time.
+
+    Sequential consumption is what makes the corpus prefix-stable: the
+    first N routes of build_corpus(200) are byte-identical to
+    build_corpus(N) for any N <= 200, because nothing about drawing route
+    N+1 can affect what was already drawn for route N. This is what makes
+    GUARD_ROUTES a structural prefix of the management command's larger
+    corpus rather than an independently-sampled, potentially
+    cherry-picked, subset.
+
+    Each route: total_route_mi is a whole number of miles drawn uniformly
+    from [min_route_mi, max_route_mi]. stations_per_route stations are
+    placed by partitioning the route into stations_per_route + 1 equal
+    slots and putting station j (1-indexed) at j * slot_width, jittered by
+    a uniform offset in [-0.35, +0.35] * slot_width and clamped strictly
+    inside (0, total_route_mi). With slots this even and jitter bounded
+    well under half a slot width, the largest possible gap between two
+    consecutive nodes (including START and FINISH) is 1.7 * slot_width,
+    which stays comfortably under tank_range_mi across the whole
+    [min_route_mi, max_route_mi] band -- every drawn route is feasible by
+    construction, not by rejection sampling. Prices are drawn uniformly
+    from [min_price, max_price], quantized to whole cents.
+
+    All arithmetic is int/Decimal throughout -- the RNG's own randint()
+    calls are the only place an integer is drawn, and every mile/price
+    value derived from them is built as a Decimal, never a float.
+    """
+    rng = random.Random(params.seed)
+    slots = params.stations_per_route + 1
+    min_price_cents = int(params.min_price * 100)
+    max_price_cents = int(params.max_price * 100)
+
+    routes = []
+    for _ in range(n_routes):
+        total_route_mi = Decimal(rng.randint(int(params.min_route_mi), int(params.max_route_mi)))
+        slot_width_mi = total_route_mi / Decimal(slots)
+
+        candidates = []
+        for j in range(1, params.stations_per_route + 1):
+            base_mi = Decimal(j) * slot_width_mi
+            # Jitter as thousandths of a slot width, in [-0.35, +0.35].
+            jitter_thousandths = Decimal(rng.randint(-350, 350))
+            jitter_mi = jitter_thousandths * slot_width_mi / Decimal(1000)
+            position_mi = base_mi + jitter_mi
+            position_mi = max(Decimal("0.01"), min(position_mi, total_route_mi - Decimal("0.01")))
+
+            price_cents = rng.randint(min_price_cents, max_price_cents)
+            price = Decimal(price_cents) / Decimal(100)
+
+            candidates.append(
+                Candidate(
+                    name=f"S{j}",
+                    opis_id=j - 1,
+                    price_per_gallon=price,
+                    distance_from_start_mi=position_mi,
+                )
+            )
+        routes.append((candidates, total_route_mi))
+    return routes
+
+
+@dataclass(frozen=True)
+class DisagreementReport:
+    """The result of one measure_disagreement() run: how often, and out of
+    how many comparable routes, the shipped greedy's penalised objective
+    was beaten by the penalty-aware oracle's true optimum.
+
+    n_compared excludes n_infeasible routes from its denominator --
+    infeasibility is not a disagreement, and counting it as one would
+    understate the rate for reasons having nothing to do with the penalty
+    objective. rate is Decimal(n_disagree) / Decimal(n_compared), or
+    Decimal(0) if n_compared is 0.
+    """
+
+    n_routes: int
+    n_compared: int
+    n_disagree: int
+    n_infeasible: int
+    rate: Decimal
+    params: CorpusParams
+    penalty: Decimal
+
+
+def measure_disagreement(n_routes, *, params=CORPUS_PARAMS, penalty=None):
+    """Build a corpus of n_routes routes from params (via build_corpus) and
+    measure how often the shipped greedy's penalised objective
+    (plan.total_cost + penalty * len(plan.stops)) is strictly beaten by
+    optimal_fixed_charge_plan()'s true optimum at the same penalty.
+
+    penalty defaults to params.penalty -- exposed as a separate argument
+    so both the penalty=0 sanity check and Phase 18's re-measurement
+    against a real DP can vary it without touching the corpus itself.
+
+    Both sides are solved on the SAME drawn route at the SAME vehicle
+    parameters. A feasibility disagreement between the two is a bug --
+    not a disagreement to be counted -- and raises AssertionError naming
+    the offending route index. A negative (greedy_objective -
+    oracle.objective) beyond -COST_TOLERANCE is also a bug: the oracle is
+    optimal by construction over every subset the greedy could have
+    chosen, so it can never be beaten.
+    """
+    if penalty is None:
+        penalty = params.penalty
+
+    corpus = build_corpus(n_routes, params=params)
+    n_disagree = 0
+    n_infeasible = 0
+    n_compared = 0
+
+    for idx, (candidates, total_route_mi) in enumerate(corpus):
+        try:
+            greedy_plan = solve(
+                candidates,
+                total_route_mi,
+                tank_range_mi=params.tank_range_mi,
+                mpg=params.mpg,
+                starting_fuel=params.starting_fuel,
+            )
+            greedy_feasible = True
+        except InfeasibleRouteError:
+            greedy_plan = None
+            greedy_feasible = False
+
+        oracle_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=penalty,
+            tank_range_mi=params.tank_range_mi,
+            mpg=params.mpg,
+            starting_fuel=params.starting_fuel,
+        )
+        oracle_feasible = oracle_plan is not None
+
+        if greedy_feasible != oracle_feasible:
+            raise AssertionError(
+                f"route {idx}: feasibility verdicts disagree "
+                f"(greedy={greedy_feasible}, oracle={oracle_feasible}) -- "
+                f"a feasibility split is a bug in the corpus or the oracle, "
+                f"not a disagreement to count; total_route_mi={total_route_mi}, "
+                f"candidates={candidates!r}"
+            )
+
+        if not greedy_feasible:
+            n_infeasible += 1
+            continue
+
+        n_compared += 1
+        greedy_objective = greedy_plan.total_cost + penalty * len(greedy_plan.stops)
+        diff = greedy_objective - oracle_plan.objective
+        if diff < -COST_TOLERANCE:
+            raise AssertionError(
+                f"route {idx}: oracle objective ({oracle_plan.objective}) exceeds "
+                f"the greedy's penalised objective ({greedy_objective}) by "
+                f"{-diff} -- the oracle is optimal by construction and must never "
+                f"be beaten; this means it is missing feasible plans. "
+                f"total_route_mi={total_route_mi}, candidates={candidates!r}"
+            )
+        if diff > COST_TOLERANCE:
+            n_disagree += 1
+
+    rate = Decimal(n_disagree) / Decimal(n_compared) if n_compared else Decimal(0)
+    return DisagreementReport(
+        n_routes=n_routes,
+        n_compared=n_compared,
+        n_disagree=n_disagree,
+        n_infeasible=n_infeasible,
+        rate=rate,
+        params=params,
+        penalty=penalty,
+    )
 
 
 @st.composite
@@ -776,3 +1021,105 @@ class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
             f"penalty={DEFAULT_PENALTY} ({penalty_plan.objective}) on "
             f"flattened multi-leg input; {context}",
         )
+
+
+class PenaltyDisagreementFloorTests(SimpleTestCase):
+    """D-13/D-15/D-16: a plain SimpleTestCase (deliberately not a
+    Hypothesis property-based test) so it runs identically -- same corpus,
+    same result -- on every commit, asserting only the loose > 20% floor from
+    DISAGREEMENT_FLOOR. This class is the CI-enforcing half of the D-16
+    pair; `measure_penalty_disagreement` (a management command, not run in
+    CI) reports the precise headline figure that this floor merely
+    guards.
+
+    The exact measured rate at the sourced $35 penalty, over the
+    management command's larger corpus, is recorded in the module
+    docstring above and in 16-03-SUMMARY.md -- not here. This floor is
+    deliberately loose: wide enough that ordinary distribution drift can
+    never flake it, tight enough that a silently no-op penalty path
+    (which would score exactly 0% disagreement) fails it instantly.
+    """
+
+    def test_disagreement_rate_exceeds_floor(self):
+        report = measure_disagreement(GUARD_ROUTES)
+        self.assertGreater(
+            report.rate,
+            DISAGREEMENT_FLOOR,
+            f"measured disagreement rate {report.rate} over "
+            f"GUARD_ROUTES={GUARD_ROUTES} routes (seed={CORPUS_PARAMS.seed}, "
+            f"penalty={report.penalty}) did not exceed the "
+            f"DISAGREEMENT_FLOOR={DISAGREEMENT_FLOOR}. This floor sits at "
+            f"roughly a third of the expected ~55% rate -- wide enough that "
+            f"distribution drift alone should never trip it. If it trips, "
+            f"first check whether optimal_fixed_charge_plan's penalty "
+            f"argument is silently being ignored (a no-op penalty path "
+            f"scores exactly 0% here) -- do not adjust GUARD_ROUTES, the "
+            f"seed, or any CORPUS_PARAMS field to make this pass (D-17).",
+        )
+
+    def test_disagreement_measurement_is_deterministic_and_prefix_stable(self):
+        """Two independent calls to measure_disagreement(GUARD_ROUTES)
+        must return identical n_disagree/rate (determinism), and that
+        result must be unchanged even after build_corpus has since been
+        called for a larger n_routes (the seeded-prefix property: a larger
+        corpus's first GUARD_ROUTES routes are byte-identical to the
+        guard's own GUARD_ROUTES routes, so nothing about a bigger
+        corpus can retroactively change what the guard measured)."""
+        first = measure_disagreement(GUARD_ROUTES)
+        second = measure_disagreement(GUARD_ROUTES)
+        self.assertEqual(
+            first.n_disagree,
+            second.n_disagree,
+            "measure_disagreement(GUARD_ROUTES) returned a different "
+            "n_disagree across two consecutive calls -- the corpus RNG "
+            "must be freshly seeded from CORPUS_PARAMS.seed on every call.",
+        )
+        self.assertEqual(
+            first.rate,
+            second.rate,
+            "measure_disagreement(GUARD_ROUTES) returned a different rate "
+            "across two consecutive calls.",
+        )
+
+        # Build a corpus larger than the guard's own, then re-measure the
+        # guard: the earlier result must be unaffected.
+        build_corpus(GUARD_ROUTES + 50)
+        third = measure_disagreement(GUARD_ROUTES)
+        self.assertEqual(
+            third.n_disagree,
+            first.n_disagree,
+            "measure_disagreement(GUARD_ROUTES)'s n_disagree changed after "
+            "build_corpus was called for a larger n_routes -- the corpus "
+            "RNG is freshly seeded per call, so this should be impossible "
+            "unless the guard's routes are not a true prefix of the larger "
+            "corpus.",
+        )
+
+        guard_corpus = build_corpus(GUARD_ROUTES)
+        larger_corpus = build_corpus(GUARD_ROUTES + 50)
+        for i, ((guard_candidates, guard_total), (larger_candidates, larger_total)) in enumerate(
+            zip(guard_corpus, larger_corpus[:GUARD_ROUTES])
+        ):
+            self.assertEqual(
+                guard_total,
+                larger_total,
+                f"route {i}: total_route_mi differs between build_corpus("
+                f"{GUARD_ROUTES}) and the first {GUARD_ROUTES} routes of "
+                f"build_corpus({GUARD_ROUTES + 50}) -- the corpus is not "
+                f"prefix-stable.",
+            )
+            guard_shape = [
+                (c.opis_id, c.price_per_gallon, c.distance_from_start_mi) for c in guard_candidates
+            ]
+            larger_shape = [
+                (c.opis_id, c.price_per_gallon, c.distance_from_start_mi) for c in larger_candidates
+            ]
+            self.assertEqual(
+                guard_shape,
+                larger_shape,
+                f"route {i}: candidates differ (opis_id, price_per_gallon, "
+                f"distance_from_start_mi) between build_corpus({GUARD_ROUTES}) "
+                f"and the first {GUARD_ROUTES} routes of "
+                f"build_corpus({GUARD_ROUTES + 50}) -- the corpus is not "
+                f"prefix-stable.",
+            )
