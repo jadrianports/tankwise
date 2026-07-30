@@ -330,6 +330,72 @@ def single_leg_routes(draw):
     return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
 
 
+@st.composite
+def flattened_multi_leg_routes(draw):
+    """Draw a flattened multi-leg route: a candidate list, the flattened
+    total_route_mi, the leg boundary offsets, and the four scalar
+    solve()/optimal_fixed_charge_plan() arguments.
+
+    Mirrors the production flattening rule in routing/services/multi_leg.py
+    (permitted read for this rule; the shipped oracle in
+    test_solver_optimality.py is not, per D-05/D-18): each leg gets its
+    own local (price, local_distance) station tuples, and every leg's
+    local distances are offset-summed onto one continuous scale by
+    adding the cumulative length of all prior legs -- never a merged
+    multi-leg line, never solved leg by leg. The oracle and the shipped
+    greedy both see exactly one flattened candidate list on one
+    continuous distance scale.
+
+    Uses @st.composite rather than chained flatmap calls: each leg's
+    offset depends on values drawn for prior legs, and composite keeps
+    the whole flattened structure as one strategy Hypothesis can shrink
+    holistically -- disconnected per-leg lists summed in the test body
+    would forfeit shrinking across the leg boundary.
+
+    The flattened candidate count is bounded to MAX_STATIONS by dividing
+    across legs (max(1, MAX_STATIONS // num_legs) per leg) and by
+    truncating the flattened list to MAX_STATIONS entries before
+    returning -- never by adding. The oracle's cost is a function of
+    total candidate count, not leg count, so three legs of MAX_STATIONS
+    stations each would be MAX_STATIONS=18 in disguise and blow the
+    D-12 runtime budget by orders of magnitude.
+    """
+    num_legs = draw(st.integers(min_value=2, max_value=3))
+    per_leg_cap = max(1, MAX_STATIONS // num_legs)
+
+    offset_mi = Decimal(0)
+    leg_boundaries_mi = [offset_mi]
+    flattened_tuples = []
+    for _ in range(num_legs):
+        leg_len_mi = draw(st.integers(min_value=200, max_value=800))
+        local_tuples = draw(
+            st.lists(
+                st.tuples(
+                    st.decimals(min_value=Decimal("1.00"), max_value=Decimal("6.00"), places=2),
+                    # strictly inside this leg -- never on or past its far boundary
+                    st.integers(min_value=1, max_value=leg_len_mi - 1),
+                ),
+                max_size=per_leg_cap,
+                unique_by=lambda t: t[1],
+            )
+        )
+        for price, local_dist_mi in local_tuples:
+            flattened_tuples.append((price, offset_mi + Decimal(local_dist_mi)))
+        offset_mi += Decimal(leg_len_mi)
+        leg_boundaries_mi.append(offset_mi)
+
+    total_route_mi = offset_mi
+    # Truncate to MAX_STATIONS -- the flattened total, not the per-leg
+    # caps alone, is the bound the oracle's subset enumeration must obey.
+    flattened_tuples = flattened_tuples[:MAX_STATIONS]
+    candidates = _candidates_from_tuples(flattened_tuples, total_route_mi)
+
+    tank_range_mi = Decimal(draw(st.integers(min_value=20, max_value=800)))
+    mpg = Decimal(draw(st.integers(min_value=1, max_value=50)))
+    starting_fuel = draw(st.decimals(min_value=Decimal("0.00"), max_value=Decimal("1.00"), places=2))
+    return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel, leg_boundaries_mi
+
+
 class FixedChargeOracleAnchorTests(SimpleTestCase):
     """The D-09 / ROADMAP-criterion-1 anchor: at penalty=0, this oracle
     must agree with the shipped greedy solve() on feasibility and on fuel
@@ -567,3 +633,146 @@ class FixedChargePenaltyConsistencyTests(SimpleTestCase):
                 f"stop_opis_ids not in increasing distance order at "
                 f"penalty={penalty}; plan={plan!r}; drawn_route={drawn_route!r}",
             )
+
+
+class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
+    """D-11: a penalty-aware twin of the multi-leg flattened optimality
+    class, built from offset-summed per-leg candidate lists on one
+    continuous distance scale -- never a merged multi-leg line and never
+    solved leg by leg. The oracle is leg-agnostic (it only ever sees one
+    flattened candidate list), which is what makes this twin cheap and
+    what Phase 18's PROOF-04 will build on.
+    """
+
+    @given(flattened_multi_leg_routes())
+    @settings(deadline=None, max_examples=200)
+    def test_penalty_zero_anchors_to_shipped_greedy_on_flattened_multi_leg(self, drawn_route):
+        """The D-11 / D-09 anchor on flattened multi-leg input: same
+        assertion shape as FixedChargeOracleAnchorTests above -- matching
+        feasibility verdicts, and fuel cost within COST_TOLERANCE of
+        solve()'s total_cost. Also asserts the drawn route really is
+        multi-leg (at least two leg boundaries, flattened total equal to
+        the sum of leg lengths) and that the flattened candidate count
+        never exceeds MAX_STATIONS, so a strategy regression that
+        silently collapses to one leg or over-generates stations fails
+        loudly instead of quietly retesting the single-leg case."""
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel, leg_boundaries_mi = drawn_route
+
+        self.assertGreaterEqual(
+            len(leg_boundaries_mi),
+            3,
+            f"expected at least two leg boundaries beyond the start "
+            f"(>=3 boundary points for >=2 legs), got "
+            f"{leg_boundaries_mi!r} -- a strategy regression may have "
+            f"collapsed to one leg",
+        )
+        self.assertEqual(
+            leg_boundaries_mi[-1],
+            total_route_mi,
+            f"flattened total_route_mi={total_route_mi} does not equal "
+            f"the sum of leg lengths (final boundary "
+            f"{leg_boundaries_mi[-1]}); leg_boundaries_mi={leg_boundaries_mi!r}",
+        )
+        self.assertLessEqual(
+            len(candidates),
+            MAX_STATIONS,
+            f"flattened candidate count {len(candidates)} exceeds "
+            f"MAX_STATIONS={MAX_STATIONS}; candidates={candidates!r}",
+        )
+
+        try:
+            greedy_plan = solve(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            greedy_feasible, greedy_fuel_cost = True, greedy_plan.total_cost
+        except InfeasibleRouteError:
+            greedy_feasible, greedy_fuel_cost = False, None
+
+        oracle_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=Decimal(0),
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+        oracle_feasible = oracle_plan is not None
+
+        context = (
+            f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+            f"leg_boundaries_mi={leg_boundaries_mi!r}, "
+            f"tank_range_mi={tank_range_mi}, mpg={mpg}, starting_fuel={starting_fuel}"
+        )
+        self.assertEqual(
+            greedy_feasible,
+            oracle_feasible,
+            f"feasibility verdicts disagree on flattened multi-leg "
+            f"input: greedy={greedy_feasible}, oracle={oracle_feasible}; {context}",
+        )
+        if greedy_feasible:
+            self.assertLessEqual(
+                abs(oracle_plan.fuel_cost - greedy_fuel_cost),
+                COST_TOLERANCE,
+                f"oracle fuel_cost={oracle_plan.fuel_cost} vs greedy "
+                f"total_cost={greedy_fuel_cost} exceeds tolerance on "
+                f"flattened multi-leg input; {context}",
+            )
+
+    @given(flattened_multi_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_penalty_aware_invariant_on_flattened_multi_leg(self, drawn_route):
+        """What makes this twin penalty-aware rather than a second copy
+        of the pure-fuel proof: at DEFAULT_PENALTY versus Decimal(0) on
+        the same flattened multi-leg route, stop count is non-increasing
+        and objective is non-decreasing -- the same D-10 shape as
+        FixedChargePenaltyConsistencyTests, exercised on flattened
+        multi-leg input."""
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel, leg_boundaries_mi = drawn_route
+
+        zero_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=Decimal(0),
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+        penalty_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=DEFAULT_PENALTY,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+
+        context = (
+            f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+            f"leg_boundaries_mi={leg_boundaries_mi!r}"
+        )
+        self.assertEqual(
+            zero_plan is None,
+            penalty_plan is None,
+            f"feasibility at penalty={DEFAULT_PENALTY} disagrees with "
+            f"the penalty=0 verdict on flattened multi-leg input; {context}",
+        )
+        if zero_plan is None:
+            return
+        self.assertLessEqual(
+            penalty_plan.stop_count,
+            zero_plan.stop_count,
+            f"stop_count rose from penalty=0 ({zero_plan.stop_count}) to "
+            f"penalty={DEFAULT_PENALTY} ({penalty_plan.stop_count}) on "
+            f"flattened multi-leg input; {context}",
+        )
+        self.assertGreaterEqual(
+            penalty_plan.objective,
+            zero_plan.objective,
+            f"objective fell from penalty=0 ({zero_plan.objective}) to "
+            f"penalty={DEFAULT_PENALTY} ({penalty_plan.objective}) on "
+            f"flattened multi-leg input; {context}",
+        )
