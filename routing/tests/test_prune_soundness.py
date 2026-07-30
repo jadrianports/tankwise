@@ -28,10 +28,19 @@ call.
 from decimal import Decimal
 
 from django.test import SimpleTestCase
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 
 from routing.services import Candidate, solve
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
+from routing.tests.test_solver_fixed_charge_optimality import (
+    COST_TOLERANCE,
+    MAX_STATIONS,
+    OraclePlan,
+    optimal_fixed_charge_plan,
+    single_leg_routes,
+)
 
 
 def _candidate(opis_id, price, position, name=None):
@@ -265,3 +274,214 @@ class PruneRetainedSetTests(SimpleTestCase):
         self.assertEqual(len(result), len({id(c) for c in result}))
 
         self.assertEqual(result, sorted(result, key=_sort_key))
+
+
+# D-03: the shipping default of $35 (ATRI operating-cost sourced, see
+# STATE.md / CLAUDE.md) is one anchor point, not the only value exercised --
+# the differential property below sweeps a continuous penalty range and
+# additionally pins both boundary values as @example anchors.
+PENALTY_ANCHORS = (Decimal("0"), Decimal("35"))
+
+
+class PruneOracleDifferentialTests(SimpleTestCase):
+    """The oracle arm of D-01's two-referee design: prune-then-solve with
+    the Phase 16 fixed-charge oracle must return the same objective and
+    the same feasibility verdict as solving over the unpruned set, for
+    every swept penalty (PROOF-03, ROADMAP criterion 2). Wherever the
+    unpruned oracle's optimum is strictly unique, the station set and fuel
+    cost must additionally match.
+
+    The oracle, its Hypothesis route strategy, and its tolerance constant
+    are imported from routing.tests.test_solver_fixed_charge_optimality,
+    never re-derived here (D-06) -- this class consumes that referee, it
+    does not build a second one.
+    """
+
+    @given(single_leg_routes(), st.decimals(min_value=Decimal("0.00"), max_value=Decimal("60.00"), places=2))
+    @settings(deadline=None, max_examples=200)
+    # D-03 boundary anchors, on a representative multi-station route
+    # (four stations spanning an 800-mile route with a 300-mile tank, so
+    # more than one stop is generally needed):
+    @example(
+        drawn_route=(
+            [
+                _candidate(opis_id=1, price="3.20", position=200),
+                _candidate(opis_id=2, price="2.90", position=350),
+                _candidate(opis_id=3, price="3.50", position=500),
+                _candidate(opis_id=4, price="3.00", position=650),
+            ],
+            Decimal(800),
+            Decimal(300),
+            Decimal(10),
+            Decimal("1.00"),
+        ),
+        penalty=Decimal("0"),
+    )
+    @example(
+        drawn_route=(
+            [
+                _candidate(opis_id=1, price="3.20", position=200),
+                _candidate(opis_id=2, price="2.90", position=350),
+                _candidate(opis_id=3, price="3.50", position=500),
+                _candidate(opis_id=4, price="3.00", position=650),
+            ],
+            Decimal(800),
+            Decimal(300),
+            Decimal(10),
+            Decimal("1.00"),
+        ),
+        penalty=Decimal("35"),
+    )
+    # D-05 boundary shape: zero candidates.
+    @example(
+        drawn_route=([], Decimal(2000), Decimal(1050), Decimal(10), Decimal("1.00")),
+        penalty=Decimal("35"),
+    )
+    # D-05 boundary shape: exactly one candidate.
+    @example(
+        drawn_route=(
+            [_candidate(opis_id=1, price="3.50", position=100)],
+            Decimal(1000),
+            Decimal(500),
+            Decimal(10),
+            Decimal("1.00"),
+        ),
+        penalty=Decimal("0"),
+    )
+    # D-05 boundary shape: all-identical prices. Bounded to MAX_STATIONS
+    # (unlike plan 17-01's 101-station retained-set version, which the
+    # oracle's 2**n subset enumeration could never run) -- six stations at
+    # ten-mile spacing, all priced identically.
+    @example(
+        drawn_route=(
+            [_candidate(opis_id=i, price="3.499", position=i * 10) for i in range(6)],
+            Decimal(2000),
+            Decimal(1050),
+            Decimal(10),
+            Decimal("1.00"),
+        ),
+        penalty=Decimal("35"),
+    )
+    # D-05 boundary shape: a route shorter than the tank range -- the same
+    # six-candidate mixed-price shape PruneRetainedSetTests uses for its
+    # own route-shorter-than-tank-range test.
+    @example(
+        drawn_route=(
+            [
+                _candidate(opis_id=1, price="5.00", position=10),
+                _candidate(opis_id=2, price="4.00", position=20),
+                _candidate(opis_id=3, price="4.50", position=30),
+                _candidate(opis_id=4, price="3.00", position=40),
+                _candidate(opis_id=5, price="3.00", position=50),
+                _candidate(opis_id=6, price="2.50", position=60),
+            ],
+            Decimal(100),
+            Decimal(200),
+            Decimal(10),
+            Decimal("1.00"),
+        ),
+        penalty=Decimal("0"),
+    )
+    # D-05 boundary shape: the starting_fuel=0 sole-reachable origin -- one
+    # station at distance_from_start_mi == 0, made the MOST EXPENSIVE
+    # station in the set, the rest farther out.
+    @example(
+        drawn_route=(
+            [
+                _candidate(opis_id=1, price="9.99", position=0),
+                _candidate(opis_id=2, price="3.00", position=100),
+                _candidate(opis_id=3, price="2.50", position=300),
+                _candidate(opis_id=4, price="4.00", position=500),
+            ],
+            Decimal(1000),
+            Decimal(500),
+            Decimal(10),
+            Decimal("0.00"),
+        ),
+        penalty=Decimal("35"),
+    )
+    def test_prune_then_oracle_matches_oracle_over_full_set(self, drawn_route, penalty):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        self.assertLessEqual(
+            len(candidates),
+            MAX_STATIONS,
+            f"single_leg_routes() drew more than MAX_STATIONS candidates: "
+            f"{candidates!r} -- the oracle's subset enumeration cannot "
+            f"terminate over this input.",
+        )
+
+        retained = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        unpruned_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=penalty,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+        pruned_plan = optimal_fixed_charge_plan(
+            retained,
+            total_route_mi,
+            penalty=penalty,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+
+        context = (
+            f"candidates={candidates!r}, retained={retained!r}, "
+            f"total_route_mi={total_route_mi}, tank_range_mi={tank_range_mi}, "
+            f"mpg={mpg}, starting_fuel={starting_fuel}, penalty={penalty}"
+        )
+
+        # Containment: every retained candidate is one of the inputs, and
+        # pruning never grows the set.
+        candidate_ids = {id(c) for c in candidates}
+        for element in retained:
+            self.assertIn(id(element), candidate_ids, f"retained a non-input candidate; {context}")
+        self.assertLessEqual(len(retained), len(candidates), f"prune grew the candidate set; {context}")
+
+        # Feasibility, always -- the oracle returns None exactly when no
+        # subset is feasible, so this is the feasibility verdict.
+        self.assertEqual(
+            unpruned_plan is None,
+            pruned_plan is None,
+            f"feasibility verdicts disagree between pruned and unpruned "
+            f"solves: unpruned_feasible={unpruned_plan is not None}, "
+            f"pruned_feasible={pruned_plan is not None}; {context}",
+        )
+        if unpruned_plan is None:
+            return
+
+        self.assertIsInstance(unpruned_plan, OraclePlan)
+        self.assertIsInstance(pruned_plan, OraclePlan)
+
+        # Objective, always -- within the same summation-order tolerance
+        # band the rest of the oracle's own tests use.
+        self.assertLessEqual(
+            abs(unpruned_plan.objective - pruned_plan.objective),
+            COST_TOLERANCE,
+            f"pruned objective ({pruned_plan.objective}) differs from the "
+            f"unpruned objective ({unpruned_plan.objective}) beyond "
+            f"COST_TOLERANCE; {context}",
+        )
+
+        # Station set and fuel cost, conditionally -- only where the
+        # unpruned optimum is strictly unique, so a legitimately tied
+        # optimum flipping under pruning can never flake this property.
+        if unpruned_plan.is_unique_optimum:
+            self.assertEqual(
+                unpruned_plan.stop_opis_ids,
+                pruned_plan.stop_opis_ids,
+                f"station set differs though the unpruned optimum is "
+                f"strictly unique; {context}",
+            )
+            self.assertLessEqual(
+                abs(unpruned_plan.fuel_cost - pruned_plan.fuel_cost),
+                COST_TOLERANCE,
+                f"fuel_cost differs beyond COST_TOLERANCE though the "
+                f"unpruned optimum is strictly unique; {context}",
+            )
