@@ -48,6 +48,27 @@ above: the two corpora, harnesses, and route distributions are different,
 and reverse-engineering the old harness to make the numbers converge
 would recreate exactly the shared-mental-model contamination the
 Phase 16/18 split exists to prevent (D-17).
+
+Independence check (D-05): after this module was written and its full
+test suite passed, a one-time structural comparison was performed
+against the shipped pure-fuel oracle in
+routing/tests/test_solver_optimality.py. That module finds its optimum
+via a memoized recursive search over (node_index, fuel_miles_remaining)
+states, with an explicit memo dict collapsing partial searches that
+reach the same state; this module instead loops itertools.combinations
+over station subsets and, within each fixed subset, expands an iterative
+frontier of complete partial purchase assignments that is never merged
+or keyed by state. Nothing here originated from the shipped module: no
+function name, signature, docstring sentence, or line of logic was
+copied or adapted from it, and no memo table, cache, or state-keyed
+dictionary was introduced as a result of this comparison. The two
+modules' finite-purchase-amounts lemmas both rest on the same
+fill-exactly-or-fill-to-capacity perturbation argument but are scoped
+differently -- the shipped lemma ranges over every remaining candidate
+in a shared recursion, while this module's lemma ranges only over a
+fixed subset's own remaining members, because this module pre-selects
+the whole subset before ever computing a purchase amount. The
+comparison surfaced no correctness bug in this module.
 """
 import random
 from dataclasses import dataclass
