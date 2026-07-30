@@ -25,6 +25,7 @@ origin") rather than a claim about plan equality -- so the assertions
 below are on the retained set directly (D-05), not on a downstream solve()
 call.
 """
+import inspect
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -485,3 +486,110 @@ class PruneOracleDifferentialTests(SimpleTestCase):
                 f"fuel_cost differs beyond COST_TOLERANCE though the "
                 f"unpruned optimum is strictly unique; {context}",
             )
+
+
+class PrunePenaltyInvarianceTests(SimpleTestCase):
+    """D-04: prune_dominated_candidates takes no penalty argument, and its
+    retained set is byte-identical across penalties. Both claims are
+    written so they can actually fail -- the structural test breaks the
+    build the moment someone threads a penalty through the prune's
+    signature, and the behavioral property re-invokes the prune separately
+    per penalty rather than comparing a single result to itself, so a
+    future penalty-dependent prune has somewhere real to disagree.
+    """
+
+    def test_signature_has_no_penalty_and_no_undeclared_knobs(self):
+        """This test exists to break the build the moment someone threads
+        a penalty parameter through prune_dominated_candidates. It pins
+        three claims at once: no `penalty` parameter (D-04); no
+        `gap <= W` window or prefilter-width parameter (D-09 -- the exact
+        rule is the whole rule, and shipping a tunable constant alongside
+        the theorem would leave exactly one unproven number in the
+        deliverable); and no other undeclared knob, since the parameter
+        tuple must equal exactly three names, not merely contain them.
+        """
+        self.assertEqual(
+            tuple(inspect.signature(prune_dominated_candidates).parameters),
+            ("candidates", "tank_range_mi", "total_route_mi"),
+        )
+        with self.assertRaises(TypeError):
+            prune_dominated_candidates(
+                [],
+                tank_range_mi=Decimal(500),
+                total_route_mi=Decimal(1000),
+                penalty=Decimal("35"),
+            )
+
+    @given(
+        single_leg_routes(),
+        st.lists(
+            st.decimals(min_value=Decimal("0.00"), max_value=Decimal("60.00"), places=2),
+            min_size=2,
+            max_size=4,
+            unique=True,
+        ),
+    )
+    # Discretionary and deliberately distinct from the differential
+    # property's fixed max_examples=200 (PruneOracleDifferentialTests
+    # above), following the Phase 16 precedent where the discretionary
+    # consistency class ran at 50 while the anchor classes stayed at 200.
+    @settings(deadline=None, max_examples=100)
+    def test_retained_set_is_byte_identical_across_penalties(self, drawn_route, penalties):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+
+        retained_opis_ids_by_penalty = {}
+        for penalty in penalties:
+            # Called fresh inside the loop, once per penalty -- never
+            # computed once outside it and compared to itself, since that
+            # would have nothing real to disagree with.
+            retained = prune_dominated_candidates(
+                candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+            )
+            retained_opis_ids_by_penalty[penalty] = tuple(c.opis_id for c in retained)
+
+            unpruned_plan = optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            pruned_plan = optimal_fixed_charge_plan(
+                retained,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            context = (
+                f"candidates={candidates!r}, retained={retained!r}, "
+                f"total_route_mi={total_route_mi}, tank_range_mi={tank_range_mi}, "
+                f"mpg={mpg}, starting_fuel={starting_fuel}, penalty={penalty}"
+            )
+            self.assertEqual(
+                unpruned_plan is None,
+                pruned_plan is None,
+                f"feasibility verdicts disagree between pruned and "
+                f"unpruned solves at penalty={penalty}; {context}",
+            )
+            if unpruned_plan is not None:
+                self.assertLessEqual(
+                    abs(unpruned_plan.objective - pruned_plan.objective),
+                    COST_TOLERANCE,
+                    f"pruned objective ({pruned_plan.objective}) differs "
+                    f"from the unpruned objective "
+                    f"({unpruned_plan.objective}) beyond COST_TOLERANCE "
+                    f"at penalty={penalty}; {context}",
+                )
+
+        distinct_retained_sets = set(retained_opis_ids_by_penalty.values())
+        self.assertEqual(
+            len(distinct_retained_sets),
+            1,
+            f"retained opis_id tuple was not byte-identical across "
+            f"penalties (D-04): {retained_opis_ids_by_penalty!r}; "
+            f"candidates={candidates!r}, tank_range_mi={tank_range_mi}, "
+            f"total_route_mi={total_route_mi}",
+        )
