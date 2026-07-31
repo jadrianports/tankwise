@@ -9,9 +9,13 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
-from routing.services.dp import preflight_gap_check, useful_fill_levels_mi
+from routing.services.dp import (
+    preflight_gap_check,
+    solve_fixed_charge,
+    useful_fill_levels_mi,
+)
 from routing.services.exceptions import InfeasibleRouteError
-from routing.services.solver import Candidate
+from routing.services.solver import Candidate, PurchaseReason
 
 
 def _candidate(name, opis_id, price, distance):
@@ -135,3 +139,142 @@ class UsefulFillLevelsMiTests(SimpleTestCase):
         self.assertIn(Decimal(150), levels)
         # Nothing below the arrival level.
         self.assertTrue(all(level >= Decimal(20) for level in levels))
+
+
+class SolveFixedChargeTests(SimpleTestCase):
+    def test_single_reachable_candidate_costs_nothing_when_route_fits_on_starting_tank(
+        self,
+    ):
+        candidates = [_candidate("Cheap", 1, "2.00", 200)]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(300),
+            tank_range_mi=Decimal(500),
+            mpg=Decimal(10),
+            starting_fuel=Decimal(1),
+            penalty=Decimal(0),
+        )
+        self.assertEqual(plan.stops, [])
+        self.assertEqual(plan.total_cost, Decimal(0))
+
+    def test_reaches_cheaper_stop_buying_only_enough_to_get_there(self):
+        candidates = [
+            _candidate("A", 1, "4.00", 100),
+            _candidate("B", 2, "3.00", 300),
+        ]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(600),
+            tank_range_mi=Decimal(400),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.25"),
+            penalty=Decimal(0),
+        )
+        self.assertEqual([s.opis_id for s in plan.stops], [1, 2])
+        self.assertEqual(plan.stops[0].purchase_reason, PurchaseReason.REACH_CHEAPER_STOP)
+        # Bought only enough to reach B (200 mi), not a full tank (400 mi).
+        self.assertEqual(plan.stops[0].gallons, Decimal("20.00"))
+
+    def test_last_stop_buys_exactly_enough_to_finish_never_a_full_tank(self):
+        candidates = [
+            _candidate("A", 1, "4.00", 100),
+            _candidate("B", 2, "3.00", 300),
+        ]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(600),
+            tank_range_mi=Decimal(400),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.25"),
+            penalty=Decimal(0),
+        )
+        last_stop = plan.stops[-1]
+        self.assertEqual(last_stop.purchase_reason, PurchaseReason.REACH_FINISH)
+        # 300 mi remaining to FINISH (600 - 300), not a full 400 mi tank.
+        self.assertEqual(last_stop.gallons, Decimal("30"))
+
+    def test_bypass_cheaper_not_worth_stop_at_high_penalty(self):
+        candidates = [
+            _candidate("A", 1, "3.50", 250),
+            _candidate("B", 2, "3.00", 500),
+            _candidate("C", 3, "3.55", 700),
+        ]
+        params = dict(
+            total_route_mi=Decimal(1050),
+            tank_range_mi=Decimal(500),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.5"),
+        )
+
+        cheap_plan = solve_fixed_charge(candidates, penalty=Decimal(0), **params)
+        self.assertIn(2, [s.opis_id for s in cheap_plan.stops])
+
+        expensive_plan = solve_fixed_charge(candidates, penalty=Decimal(35), **params)
+        self.assertNotIn(2, [s.opis_id for s in expensive_plan.stops])
+        first_stop = expensive_plan.stops[0]
+        self.assertEqual(
+            first_stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+        )
+        self.assertGreaterEqual(first_stop.bypassed_cheaper_count, 1)
+        self.assertGreater(first_stop.bypassed_saving_forgone, Decimal(0))
+
+    def test_co_located_candidates_are_both_visitable_cheaper_one_wins(self):
+        candidates = [
+            _candidate("Pricier", 1, "4.00", 50),
+            _candidate("Cheaper", 2, "3.00", 50),
+        ]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(100),
+            tank_range_mi=Decimal(200),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.25"),
+            penalty=Decimal(0),
+        )
+        # Neither candidate silently collapsed: the strictly cheaper
+        # co-located twin is the one actually visited.
+        self.assertEqual([s.opis_id for s in plan.stops], [2])
+
+    def test_penalised_objective_equals_total_cost_plus_penalty_times_stops(self):
+        candidates = [
+            _candidate("A", 1, "3.50", 250),
+            _candidate("B", 2, "3.00", 500),
+            _candidate("C", 3, "3.55", 700),
+        ]
+        for penalty in (Decimal(0), Decimal(10), Decimal(35)):
+            plan = solve_fixed_charge(
+                candidates,
+                total_route_mi=Decimal(1050),
+                tank_range_mi=Decimal(500),
+                mpg=Decimal(10),
+                starting_fuel=Decimal("0.5"),
+                penalty=penalty,
+            )
+            self.assertEqual(
+                plan.penalised_objective,
+                plan.total_cost + plan.penalty_applied * len(plan.stops),
+            )
+            self.assertEqual(plan.penalty_applied, penalty)
+            if penalty == Decimal(0):
+                self.assertEqual(plan.penalised_objective, plan.total_cost)
+
+    def test_deterministic_across_ten_repeat_solves(self):
+        candidates = [
+            _candidate(chr(65 + i), i, f"3.{i:02d}", 100 * (i + 1)) for i in range(6)
+        ]
+        params = dict(
+            total_route_mi=Decimal(900),
+            tank_range_mi=Decimal(400),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.5"),
+            penalty=Decimal(35),
+        )
+
+        def _key(plan):
+            return [
+                (s.opis_id, s.gallons, s.cost, s.purchase_reason) for s in plan.stops
+            ]
+
+        baseline = _key(solve_fixed_charge(candidates, **params))
+        for _ in range(10):
+            self.assertEqual(_key(solve_fixed_charge(candidates, **params)), baseline)
