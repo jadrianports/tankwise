@@ -112,6 +112,7 @@ can supply the floor amount, and it would break the optimality proof this
 milestone is built on -- the finite-fill lemma above assumes every useful
 purchase amount stays reachable, not artificially excluded.
 """
+import bisect
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -329,6 +330,40 @@ def solve_fixed_charge(
     (INTG-02); `penalised_objective` is `total_cost + penalty * len(stops)`,
     computed fresh from the reconstructed stops rather than reused from
     internal DP bookkeeping.
+
+    ## Implementation note: the fuel/position domain runs on exact integer
+    ## ticks, never on `Decimal` arithmetic, in the O(states x levels x
+    ## targets) inner loop
+
+    Every quantity in the *position* domain -- station positions,
+    `tank_range_mi`, `total_route_mi`, `starting_fuel * tank_range_mi`, and
+    every fuel level `useful_fill_levels_mi` can ever return -- is a sum or
+    difference of a small, fixed set of input `Decimal`s. This function
+    picks one common exponent (`_pos_exponent`, the finest -- most
+    negative -- exponent already present among those inputs) once, up
+    front, and re-expresses every position-domain value at that exponent as
+    a plain Python `int` ("ticks"): `_to_ticks`/`_from_ticks` convert via
+    `Decimal.as_tuple()`'s exact `(sign, digits, exponent)` triple, never
+    via `Decimal` division or `scaleb` (both of which are, in general,
+    subject to context-precision rounding) -- so the conversion is a exact
+    change of representation, not an approximation. Addition and
+    subtraction are closed under a fixed exponent (the sum/difference of
+    two values exactly representable at exponent E is itself exactly
+    representable at exponent E), so every arrival-fuel level, every
+    reachable-target position, and every DP state key computed by walking
+    that arithmetic in `int` space is bit-for-bit the same value the
+    original all-`Decimal` recurrence would have produced -- just computed
+    without `Decimal`'s per-operation object overhead, and with the
+    (already position-sorted) reachable-target scan replaced by
+    `bisect.bisect_right` instead of a linear filter. Nothing in the
+    *money* domain (`gallons`, `cost`, the objective, the D-12 tie-break)
+    is touched by this -- `buy_mi = level - fuel_on_arrival` is still
+    computed from the original `Decimal` `level` (`useful_fill_levels_mi`'s
+    own unmodified return value) and the original `Decimal`
+    `fuel_on_arrival` reconstructed via `_from_ticks`, so `gallons = buy_mi
+    / mpg` and everything downstream of it runs through the exact same
+    `Decimal` division/multiplication/comparison sequence, in the exact
+    same order, as before this optimization existed.
     """
     total_route_mi = _as_decimal(total_route_mi)
     tank_range_mi = _as_decimal(tank_range_mi)
@@ -362,38 +397,135 @@ def solve_fixed_charge(
         silently discards that state, which can be strictly optimal (e.g.
         filling to capacity at the cheapest station on the route, then
         topping off only the small remainder at a pricier one, rather than
-        buying that remainder's full distance at the pricier price)."""
+        buying that remainder's full distance at the pricier price).
+
+        Retained for START's own one-time reachability computation below
+        (never on the O(states x levels) hot path -- see `_reachable_ticks`
+        for that)."""
         max_pos = pos + level
         return [entry for entry in ahead if entry[0] <= max_pos]
 
+    # --- Exact integer-tick domain for positions/fuel levels (see the
+    # "Implementation note" in this function's docstring). Chosen once,
+    # covering every position-domain Decimal this run can ever produce:
+    # candidate positions, tank_range_mi, total_route_mi, and
+    # starting_fuel * tank_range_mi (the one position-domain multiplication
+    # in this function -- every other position-domain value is a sum or
+    # difference of these, so its own exponent is never finer than
+    # min() of the four categories below).
+    start_fuel = starting_fuel * tank_range_mi
+
+    _pos_exponent = min(
+        value.as_tuple().exponent
+        for value in (total_route_mi, tank_range_mi, start_fuel, *positions)
+    )
+
+    def _to_ticks(value):
+        sign, digits, exponent = value.as_tuple()
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        if sign:
+            coefficient = -coefficient
+        shift = exponent - _pos_exponent
+        if shift < 0:
+            # Unreachable given _pos_exponent is the min over every
+            # position-domain value this function ever converts (see
+            # docstring) -- surfaced loudly rather than silently truncated
+            # if that invariant is ever broken by a future edit.
+            raise AssertionError(
+                f"position-domain value {value!r} needs more precision "
+                f"than the derived tick scale (exponent {exponent} < "
+                f"{_pos_exponent})"
+            )
+        return coefficient * (10**shift) if shift else coefficient
+
+    def _from_ticks(ticks):
+        sign = 1 if ticks < 0 else 0
+        magnitude = -ticks if sign else ticks
+        digit_str = str(magnitude) if magnitude else "0"
+        return Decimal((sign, tuple(int(d) for d in digit_str), _pos_exponent))
+
+    positions_ticks = [_to_ticks(p) for p in positions]
+    total_route_ticks = _to_ticks(total_route_mi)
+    start_fuel_ticks = _to_ticks(start_fuel)
+    # full_ticks[i] is node i's position in ticks, for i in [0, node_count]
+    # -- station nodes at their own index, FINISH (index node_count) at
+    # total_route_ticks. Ascending by construction: positions is already
+    # sorted, and `solver._validate` guarantees every candidate's
+    # distance_from_start_mi <= total_route_mi, so total_route_ticks is
+    # always >= the last station tick.
+    full_ticks = positions_ticks + [total_route_ticks]
+
+    def _reachable_ticks(node_index, max_pos_ticks):
+        """Every node index in (node_index, node_count] (stations, then
+        FINISH) whose tick position is <= max_pos_ticks, as a `range` in
+        increasing-position order -- the tick-domain, O(log n) equivalent
+        of `reachable_targets` above (binary search over the already
+        position-sorted `full_ticks`, replacing its O(n) linear scan)."""
+        lo = node_index + 1
+        hi_bound = node_count + 1
+        hi = bisect.bisect_right(full_ticks, max_pos_ticks, lo, hi_bound)
+        return range(lo, hi)
+
     states = {i: {} for i in range(-1, node_count + 1)}
     start_key = (Decimal(0), 0, (), ())
-    start_fuel = starting_fuel * tank_range_mi
-    states[-1][start_fuel] = _StateRecord(key=start_key, predecessor=None, edge=None)
+    states[-1][start_fuel_ticks] = _StateRecord(
+        key=start_key, predecessor=None, edge=None
+    )
 
-    def relax(target_index, arrival_fuel, new_key, predecessor, edge):
-        existing = states[target_index].get(arrival_fuel)
-        if existing is None or _key_less(new_key, existing.key):
-            states[target_index][arrival_fuel] = _StateRecord(
+    def _wins(target_index, arrival_fuel_ticks, new_key):
+        """Cheap winner-check only -- no state mutation, no `_EdgeInfo`
+        construction. Split out from `relax` (below) so the *expensive*
+        per-target purchase-reason computation (a `reachable_cheaper` scan
+        plus several `Decimal` operations per bypassed candidate) can be
+        skipped entirely for the many candidate transitions that lose this
+        check, rather than built eagerly for every transition and then
+        thrown away. Reason computation only ever happens for a
+        transition already confirmed to win -- the reasons themselves are
+        unaffected, only *when* they are computed."""
+        existing = states[target_index].get(arrival_fuel_ticks)
+        if existing is None:
+            return True
+        if new_key is existing.key:
+            # The overwhelmingly common "buy nothing" pass-through: several
+            # levels/targets from the same predecessor propagate the exact
+            # same key tuple object onward. Object identity trivially
+            # implies "not strictly less" -- skip the Decimal-comparing
+            # `_key_less` call entirely rather than re-deriving the same
+            # answer from scratch.
+            return False
+        return _key_less(new_key, existing.key)
+
+    def relax(target_index, arrival_fuel_ticks, new_key, predecessor, edge):
+        """Unconditionally re-checks and commits -- used only where the
+        caller has not already called `_wins` itself (the "buy nothing"
+        pass-through path and START's one-time setup, both of which pass
+        `edge=None` and have nothing expensive to defer)."""
+        if _wins(target_index, arrival_fuel_ticks, new_key):
+            states[target_index][arrival_fuel_ticks] = _StateRecord(
                 key=new_key, predecessor=predecessor, edge=edge
             )
 
     # START is non-purchasable: exactly one fixed departure level. Every
     # node within that fixed range -- not just the farthest -- gets its
-    # own state (see reachable_targets' docstring above).
+    # own state (see reachable_targets' docstring above). One-time, not on
+    # the hot path, so it stays in the original Decimal `reachable_targets`
+    # form -- only the resulting arrival level is stored as ticks.
     start_ahead = nodes_ahead_of(-1)
     for target_pos, target_index in reachable_targets(start_ahead, Decimal(0), start_fuel):
         relax(
             target_index,
-            start_fuel - target_pos,
+            start_fuel_ticks - full_ticks[target_index],
             start_key,
-            (-1, start_fuel),
+            (-1, start_fuel_ticks),
             None,
         )
 
     for node_index in range(node_count):
         station = ordered[node_index]
         pos = positions[node_index]
+        pos_ticks = positions_ticks[node_index]
         ahead = nodes_ahead_of(node_index)
 
         reachable_cheaper = [
@@ -408,7 +540,8 @@ def solve_fixed_charge(
             for (p, idx) in ahead
         )
 
-        for fuel_on_arrival, record in list(states[node_index].items()):
+        for fuel_on_arrival_ticks, record in list(states[node_index].items()):
+            fuel_on_arrival = _from_ticks(fuel_on_arrival_ticks)
             levels = useful_fill_levels_mi(
                 pos,
                 fuel_on_arrival,
@@ -416,19 +549,20 @@ def solve_fixed_charge(
                 nodes_ahead_mi=[p for (p, idx) in ahead],
             )
             for level in levels:
-                targets = reachable_targets(ahead, pos, level)
-                if not targets:
+                level_ticks = _to_ticks(level)
+                target_range = _reachable_ticks(node_index, pos_ticks + level_ticks)
+                if not target_range:
                     continue
 
                 buy_mi = level - fuel_on_arrival
                 is_purchase = buy_mi > 0
-                predecessor = (node_index, fuel_on_arrival)
+                predecessor = (node_index, fuel_on_arrival_ticks)
 
                 if not is_purchase:
-                    for target_pos, target_index in targets:
+                    for target_index in target_range:
                         relax(
                             target_index,
-                            level - (target_pos - pos),
+                            level_ticks - (full_ticks[target_index] - pos_ticks),
                             record.key,
                             predecessor,
                             None,
@@ -454,7 +588,31 @@ def solve_fixed_charge(
                 # coincidentally lands exactly on a reachable-cheaper
                 # station) can have a genuinely different reason for each
                 # target it reaches.
-                for target_pos, target_index in targets:
+                for target_index in target_range:
+                    arrival_fuel_ticks = level_ticks - (
+                        full_ticks[target_index] - pos_ticks
+                    )
+                    # Inlined `_wins` (same three checks, same order, same
+                    # meaning -- see its docstring) to shave one Python
+                    # function-call layer off this loop's dominant share
+                    # (~97%) of every purchase-transition attempt. Losing
+                    # transitions are never on the winning path, so their
+                    # purchase-reason story is never observed by any
+                    # caller -- skip computing it. Values are unaffected
+                    # either way, only whether this attempt's own reason
+                    # is ever built.
+                    existing = states[target_index].get(arrival_fuel_ticks)
+                    if existing is not None:
+                        if new_key is existing.key:
+                            continue
+                        if not _key_less(new_key, existing.key):
+                            continue
+
+                    target_pos = (
+                        positions[target_index]
+                        if target_index < node_count
+                        else total_route_mi
+                    )
                     bypassed_count = 0
                     bypassed_saving = None
 
@@ -532,12 +690,12 @@ def solve_fixed_charge(
                         bypassed_cheaper_count=bypassed_count,
                         bypassed_saving_forgone=bypassed_saving,
                     )
-                    relax(
-                        target_index,
-                        level - (target_pos - pos),
-                        new_key,
-                        predecessor,
-                        edge,
+                    # Already confirmed a winner by `_wins` above, with
+                    # nothing else touching this exact (target_index,
+                    # arrival_fuel_ticks) state in between -- commit
+                    # directly rather than re-checking through `relax`.
+                    states[target_index][arrival_fuel_ticks] = _StateRecord(
+                        key=new_key, predecessor=predecessor, edge=edge
                     )
 
     winner = None
