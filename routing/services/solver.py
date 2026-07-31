@@ -13,15 +13,22 @@ from routing.services.exceptions import InfeasibleRouteError, InvalidRouteInputE
 class PurchaseReason:
     """String-enum constants for `FuelStop.purchase_reason`.
 
-    Each value names the exact solver branch that produced the stop --
-    recorded at the moment the branch fires, never re-derived afterward by
+    Each value names the exact edge that was chosen -- recorded at the
+    moment that decision was made, never re-derived afterward by
     inspecting the finished plan. Wire values are the lowercase strings.
+
+    `BYPASS_CHEAPER_NOT_WORTH_STOP` names the case the greedy structurally
+    could not produce: a stop taken here while a strictly cheaper station
+    was reachable, because routing through that station would have cost
+    more in stop penalty than it saved in fuel. The greedy never emits
+    this value.
     """
 
     REACH_CHEAPER_STOP = "reach_cheaper_stop"
     FILL_TO_CONTINUE = "fill_to_continue"
     REACH_FINISH = "reach_finish"
     TOP_UP_AT_CHEAPEST = "top_up_at_cheapest"
+    BYPASS_CHEAPER_NOT_WORTH_STOP = "bypass_cheaper_not_worth_stop"
 
 
 @dataclass(frozen=True)
@@ -41,6 +48,14 @@ class FuelStop:
     The rationale fields (`purchase_reason` onward) are additive and
     default to `None`/`0` so callers constructing a `FuelStop` with only
     the original six fields keep working unchanged.
+
+    `bypassed_cheaper_count` and `bypassed_saving_forgone` are also
+    additive and default to `0`/`None`. `bypassed_cheaper_count` is how
+    many strictly-cheaper reachable stations the recurrence evaluated as
+    successors from this stop and did not take; `bypassed_saving_forgone`
+    is the fuel-dollar saving those rejections gave up. They carry the
+    quantitative half of `BYPASS_CHEAPER_NOT_WORTH_STOP`'s story, while
+    the backend emits no prose.
     """
 
     name: str
@@ -56,15 +71,28 @@ class FuelStop:
     skipped_avg_price: Decimal | None = None
     price_percentile: Decimal | None = None
     corridor_avg_price: Decimal | None = None
+    bypassed_cheaper_count: int = 0
+    bypassed_saving_forgone: Decimal | None = None
 
 
 @dataclass(frozen=True)
 class FuelPlan:
-    """The cheapest feasible fueling plan for a route."""
+    """The cheapest feasible fueling plan for a route.
+
+    `penalised_objective` and `penalty_applied` are additive and default
+    to `None`. `total_cost` remains fuel dollars only (INTG-02) and never
+    includes the penalty; `penalised_objective` is
+    `total_cost + penalty_applied * len(stops)`, the quantity the DP
+    actually minimises. Both are internal-only and deliberately not
+    serialized this phase -- exposing them is a product decision that
+    belongs to Phase 19.
+    """
 
     stops: list[FuelStop]
     total_cost: Decimal
     total_gallons: Decimal
+    penalised_objective: Decimal | None = None
+    penalty_applied: Decimal | None = None
 
 
 def _as_decimal(value):
