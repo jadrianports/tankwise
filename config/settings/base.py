@@ -3,6 +3,7 @@ Django settings for the Fuel Route Optimizer project.
 """
 
 import os
+from decimal import Decimal
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -134,6 +135,21 @@ MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
 EIA_API_KEY = _env("EIA_API_KEY")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
+
+# Flat per-stop penalty (dollars) the fixed-charge solver charges for each
+# station it buys at, on top of fuel cost -- this is the first
+# `Decimal`-typed setting in this file (`_env()` performs no type coercion
+# itself, so every typed setting coerces at its own call site, never wrapped
+# in `float(...)`). Derivation chain: ATRI's "An Analysis of the Operational
+# Costs of Trucking" (2021 update) reports $66.87/hour all-in marginal
+# operating cost; TruckerPath inflation-adjusts that to $70/hour and applies
+# an independently-derived 30-minute average fuel-stop duration; 30 min x
+# $70/hr = $35 per stop. Re-deriving with ATRI's 2024 figure ($90.89/hr) at
+# the same 30-minute assumption yields roughly $45, which is why $20-$45 is
+# the defensible band -- $20/$35/$45 were measured to select identical stop
+# counts on all twelve surveyed corridors, so this is a citation choice with
+# no behavioural risk.
+FUEL_STOP_PENALTY_USD = Decimal(_env("FUEL_STOP_PENALTY_USD", "35"))
 
 # Fuel price dataset vintage. A constant, not a Station column
 # -- the source CSV has one vintage and no per-row dates, so a column

@@ -756,6 +756,7 @@ class RouteView(APIView):
                         tank_range_mi=vehicle["tank_range_mi"],
                         mpg=vehicle["mpg"],
                         starting_fuel=vehicle["starting_fuel"],
+                        penalty=settings.FUEL_STOP_PENALTY_USD,
                     )
             except InfeasibleRouteError as exc:
                 results.append(

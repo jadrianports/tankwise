@@ -3,8 +3,17 @@ import pathlib
 
 from django.test import SimpleTestCase
 
-SERVICES_DIR = pathlib.Path(__file__).resolve().parent.parent / "services"
+ROUTING_DIR = pathlib.Path(__file__).resolve().parent.parent
+SERVICES_DIR = ROUTING_DIR / "services"
 FORBIDDEN_PREFIX = "routing.pipeline"
+
+# `naive_baseline.solve()` is a completely different function (the
+# deliberately price-blind baseline solver, unchanged this phase per
+# STATE.md's v3.1 decision log) that has no `penalty` parameter at all and
+# must never be flagged by `SolvePenaltyKwargGateTest` below; only the
+# fixed-charge solver's own `solve()` (called as bare `solve(...)` or
+# `solver.solve(...)`) is in scope for that gate.
+_NON_TARGET_SOLVE_BASES = {"naive_baseline"}
 
 SOLVER_FILES = [
     SERVICES_DIR / "solver.py",
@@ -99,4 +108,67 @@ class SolverPurityTest(SimpleTestCase):
             violations,
             [],
             f"solver.py/exceptions.py/prune.py/dp.py must never import django/ORM/pipeline/HTTP: {violations}",
+        )
+
+
+def _collect_solve_calls_missing_penalty(path):
+    """Find every fixed-charge `solve(...)` call site in `path` missing an
+    explicit `penalty=` keyword. Treats a node as a `solve()` call when
+    `func` is a bare `ast.Name` with `id == "solve"`, or an
+    `ast.Attribute` with `attr == "solve"` whose base object name is not
+    in `_NON_TARGET_SOLVE_BASES` -- `naive_baseline.solve()` has no
+    `penalty` parameter at all (it is a different function entirely, the
+    deliberately price-blind baseline) and must never be flagged here.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        is_target = False
+        if isinstance(func, ast.Name) and func.id == "solve":
+            is_target = True
+        elif (
+            isinstance(func, ast.Attribute)
+            and func.attr == "solve"
+            and not (
+                isinstance(func.value, ast.Name)
+                and func.value.id in _NON_TARGET_SOLVE_BASES
+            )
+        ):
+            is_target = True
+        if not is_target:
+            continue
+        has_penalty_kwarg = any(kw.arg == "penalty" for kw in node.keywords)
+        if not has_penalty_kwarg:
+            violations.append(f"{path}:{node.lineno}: solve() call missing penalty=")
+    return violations
+
+
+class SolvePenaltyKwargGateTest(SimpleTestCase):
+    """Statically enforces that every production call to the fixed-charge
+    solver's `solve()` (`routing/services/solver.py`) passes an explicit
+    `penalty=` keyword. A future production code path calling `solve()`
+    without an explicit `penalty=` would silently default to `Decimal(0)`
+    and revert to pre-v3.1 behaviour undetected -- this gate recovers the
+    only property a required keyword-only parameter would have bought,
+    without forcing 27 mechanical edits to `routing/tests/test_solver.py`
+    (which deliberately omits `penalty=` on every call to exercise the
+    documented penalty=0 default, greedy-identical behaviour).
+
+    Scoped to every `.py` file under `routing/` excluding `routing/tests/`
+    -- a fixed `SOLVER_FILES`-style list would need updating every time a
+    new caller file appears, defeating the gate's purpose.
+    """
+
+    def test_every_production_solve_call_passes_penalty(self):
+        violations = []
+        for path in ROUTING_DIR.rglob("*.py"):
+            if "tests" in path.relative_to(ROUTING_DIR).parts:
+                continue
+            violations.extend(_collect_solve_calls_missing_penalty(path))
+
+        self.assertEqual(
+            violations, [], f"solve() call(s) missing penalty=: {violations}"
         )
