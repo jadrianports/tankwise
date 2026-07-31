@@ -278,3 +278,47 @@ class SolveFixedChargeTests(SimpleTestCase):
         baseline = _key(solve_fixed_charge(candidates, **params))
         for _ in range(10):
             self.assertEqual(_key(solve_fixed_charge(candidates, **params)), baseline)
+
+
+class ReasonReconstructionRegressionTests(SimpleTestCase):
+    """Anchors a rationale-reconstruction defect found by the
+    orchestrator's independent verification of plan 18-03: a fabricated
+    `BYPASS_CHEAPER_NOT_WORTH_STOP` reason at `penalty=0`, where the DP's
+    own reconstructed plan ALSO stopped at the station it claimed to have
+    bypassed."""
+
+    def test_full_fill_landing_exactly_on_the_bypassed_station_is_not_a_bypass(self):
+        # Defect A. S1 (pricier, mile 1) full-fills to a level that
+        # coincides exactly with S0 (cheaper, mile 479) -- the tank range
+        # (478 mi) is exactly S0's distance from S1. The DP used to label
+        # this purchase BYPASS_CHEAPER_NOT_WORTH_STOP targeting S0 while
+        # its own reconstructed plan ALSO stopped at S0 immediately after
+        # -- nothing was bypassed. At penalty=0 this reason is also
+        # structurally impossible (no penalty exists to outweigh a
+        # saving), which is a second, independent reason the old label
+        # was wrong here.
+        candidates = [
+            _candidate("S0", 0, "1.00", 479),
+            _candidate("S1", 1, "1.01", 1),
+        ]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(480),
+            tank_range_mi=Decimal(478),
+            mpg=Decimal(1),
+            starting_fuel=Decimal("0.01"),
+            penalty=Decimal(0),
+        )
+        self.assertEqual([s.opis_id for s in plan.stops], [1, 0])
+        s1_stop = plan.stops[0]
+        self.assertEqual(s1_stop.purchase_reason, PurchaseReason.REACH_CHEAPER_STOP)
+        self.assertEqual(s1_stop.reason_target_opis_id, 0)
+        self.assertEqual(s1_stop.bypassed_cheaper_count, 0)
+        self.assertIsNone(s1_stop.bypassed_saving_forgone)
+        self.assertEqual(plan.total_cost, Decimal("479.9622"))
+        # The D-09 invariant this defect violated: the fifth reason must
+        # never appear at penalty=0, on any stop.
+        for stop in plan.stops:
+            self.assertNotEqual(
+                stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+            )

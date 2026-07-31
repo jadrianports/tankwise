@@ -299,15 +299,25 @@ def solve_fixed_charge(
     price-ahead tests the greedy uses, so the reasons agree with the
     frozen greedy at `penalty=0`) plus `bypassed_cheaper_count` and
     `bypassed_saving_forgone` -- how many strictly-cheaper stations
-    reachable within one full tank from this node were evaluated and not
-    routed through, and the fuel-dollar saving that gave up.
+    reachable within one full tank from this node were evaluated, sit
+    strictly before THIS edge's own target, and were not routed through,
+    and the fuel-dollar saving that gave up. A reachable-cheaper station
+    that this edge's own target coincides with was not bypassed -- it was
+    reached -- so it is excluded from that count (a full-tank fill's exact
+    reach amount can coincide with a cheaper station's position, and
+    landing there is `REACH_CHEAPER_STOP`, never a bypass of itself).
     `BYPASS_CHEAPER_NOT_WORTH_STOP` is the reason exactly when a full-tank
-    fill's farthest target is not one of those reachable cheaper stations
-    -- structurally unreachable as a *winning* edge at `penalty=0`,
-    because the standard fuel-cost exchange argument always prefers
-    buying only enough to reach a strictly cheaper station over
-    overpaying at the current one, until a nonzero penalty makes the
-    extra stop's cost outweigh the saving.
+    fill flies past at least one such station (strictly before its own
+    target) AND the flat per-stop `penalty` strictly outweighs the summed
+    fuel-dollar saving those stations would have offered -- both
+    conditions together, never bypass-count alone. Because that saving
+    total is never negative and `penalty` is never negative, the
+    penalty-outweighs-saving test can never hold at `penalty=0`, so this
+    reason is structurally unreachable as a *winning* edge there -- the
+    standard fuel-cost exchange argument always prefers buying only enough
+    to reach a strictly cheaper station over overpaying at the current
+    one, until a nonzero penalty makes the extra stop's cost outweigh the
+    saving.
 
     Reconstruction walks predecessor pointers from the winning FINISH
     state back to START, emitting one `FuelStop` per strictly-positive
@@ -434,53 +444,81 @@ def solve_fixed_charge(
                     record.key[2] + (pos,),
                     record.key[3] + (station.opis_id,),
                 )
+                reachable_cheaper_idx = {idx for (_p, idx) in reachable_cheaper}
 
                 # The reason and its bypassed-cheaper counters explain THIS
-                # purchase decision -- they depend on whether the full-fill
-                # branch fires (level-dependent, shared across every target
-                # this purchase can reach) and on reachable_cheaper/
-                # ahead_has_cheaper (station-dependent, likewise shared).
-                # Only the REACH_FINISH override is target-specific: a
-                # purchase that reaches multiple nodes at this level (e.g.
-                # a full tank that both tops past an intermediate candidate
-                # AND reaches FINISH) is REACH_FINISH only for the edge
-                # that actually lands on FINISH.
-                bypassed_count = 0
-                bypassed_saving = None
-                if not is_full_fill:
-                    base_reason = PurchaseReason.REACH_CHEAPER_STOP
-                elif reachable_cheaper:
-                    base_reason = PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
-                    bypassed_count = len(reachable_cheaper)
-                    saving_total = Decimal(0)
-                    for cheaper_pos, cheaper_idx in reachable_cheaper:
-                        cheaper_gap = cheaper_pos - pos
-                        cheaper_buy_mi = max(Decimal(0), cheaper_gap - fuel_on_arrival)
-                        cheaper_gallons = cheaper_buy_mi / mpg
-                        saving_total += cheaper_gallons * (
-                            station.price_per_gallon
-                            - ordered[cheaper_idx].price_per_gallon
-                        )
-                    bypassed_saving = saving_total
-                elif ahead_has_cheaper:
-                    base_reason = PurchaseReason.FILL_TO_CONTINUE
-                else:
-                    base_reason = PurchaseReason.TOP_UP_AT_CHEAPEST
-
+                # purchase decision, computed PER TARGET (not once per
+                # level): a purchase that reaches multiple simultaneous
+                # nodes (e.g. a full tank that both tops past an
+                # intermediate candidate AND reaches FINISH, or that
+                # coincidentally lands exactly on a reachable-cheaper
+                # station) can have a genuinely different reason for each
+                # target it reaches.
                 for target_pos, target_index in targets:
-                    reason = (
-                        PurchaseReason.REACH_FINISH
-                        if target_index == finish
-                        else base_reason
-                    )
-                    reason_target_opis_id = (
-                        ordered[target_index].opis_id
-                        if target_index != finish
-                        else None
-                    )
-                    reason_target_name = (
-                        ordered[target_index].name if target_index != finish else None
-                    )
+                    bypassed_count = 0
+                    bypassed_saving = None
+
+                    if target_index == finish:
+                        # REACH_FINISH always overrides -- this edge's
+                        # purpose is completing the trip, not routing
+                        # toward a named station.
+                        reason = PurchaseReason.REACH_FINISH
+                        reason_target_opis_id = None
+                        reason_target_name = None
+                    elif not is_full_fill:
+                        reason = PurchaseReason.REACH_CHEAPER_STOP
+                        reason_target_opis_id = ordered[target_index].opis_id
+                        reason_target_name = ordered[target_index].name
+                    elif target_index in reachable_cheaper_idx:
+                        # The full-fill's exact-reach amount coincides
+                        # with a reachable-cheaper station's own position
+                        # (e.g. that station sits exactly one tank away).
+                        # Landing there is REACHING that cheaper station,
+                        # not bypassing it -- nothing was flown past.
+                        reason = PurchaseReason.REACH_CHEAPER_STOP
+                        reason_target_opis_id = ordered[target_index].opis_id
+                        reason_target_name = ordered[target_index].name
+                    else:
+                        # Full fill, target is not itself a reachable
+                        # cheaper station. Only stations strictly BEFORE
+                        # this target were actually flown past by this
+                        # specific edge -- a reachable-cheaper station at
+                        # or beyond the target was never bypassed here.
+                        truly_bypassed = [
+                            (p, idx)
+                            for (p, idx) in reachable_cheaper
+                            if p < target_pos
+                        ]
+                        saving_total = Decimal(0)
+                        for cheaper_pos, cheaper_idx in truly_bypassed:
+                            cheaper_gap = cheaper_pos - pos
+                            cheaper_buy_mi = max(
+                                Decimal(0), cheaper_gap - fuel_on_arrival
+                            )
+                            cheaper_gallons = cheaper_buy_mi / mpg
+                            saving_total += cheaper_gallons * (
+                                station.price_per_gallon
+                                - ordered[cheaper_idx].price_per_gallon
+                            )
+                        if truly_bypassed and penalty > saving_total:
+                            # A genuine bypass AND the flat per-stop
+                            # penalty strictly outweighs the fuel-dollar
+                            # saving those bypassed stations offered --
+                            # both conditions, never bypass-count alone.
+                            # saving_total is never negative (each term is
+                            # a nonnegative gallon count times a strictly
+                            # positive price difference), so this branch
+                            # can never fire at penalty=0.
+                            reason = PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+                            bypassed_count = len(truly_bypassed)
+                            bypassed_saving = saving_total
+                        elif ahead_has_cheaper:
+                            reason = PurchaseReason.FILL_TO_CONTINUE
+                        else:
+                            reason = PurchaseReason.TOP_UP_AT_CHEAPEST
+                        reason_target_opis_id = ordered[target_index].opis_id
+                        reason_target_name = ordered[target_index].name
+
                     edge = _EdgeInfo(
                         name=station.name,
                         opis_id=station.opis_id,
