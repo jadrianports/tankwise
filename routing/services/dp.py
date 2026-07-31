@@ -339,13 +339,22 @@ def solve_fixed_charge(
         ahead.append((total_route_mi, finish))
         return ahead
 
-    def farthest_reachable(ahead, pos, level):
+    def reachable_targets(ahead, pos, level):
+        """Every node in `ahead` within `level` miles of `pos`, in
+        increasing-position order -- not merely the farthest one. A node
+        strictly closer than the farthest reachable one is a genuinely
+        distinct, non-dominated (node, fuel_on_arrival) state: it carries
+        MORE leftover fuel than any smaller, exact-reach-to-that-node
+        level would (which arrives with zero fuel to spare), at the cost
+        of having paid for that extra range at the CURRENT station's
+        price rather than a possibly cheaper later one. Collapsing to only
+        the farthest node -- as an earlier version of this function did --
+        silently discards that state, which can be strictly optimal (e.g.
+        filling to capacity at the cheapest station on the route, then
+        topping off only the small remainder at a pricier one, rather than
+        buying that remainder's full distance at the pricier price)."""
         max_pos = pos + level
-        in_range = [entry for entry in ahead if entry[0] <= max_pos]
-        if not in_range:
-            return []
-        farthest_pos = in_range[-1][0]
-        return [entry for entry in in_range if entry[0] == farthest_pos]
+        return [entry for entry in ahead if entry[0] <= max_pos]
 
     states = {i: {} for i in range(-1, node_count + 1)}
     start_key = (Decimal(0), 0, (), ())
@@ -359,11 +368,11 @@ def solve_fixed_charge(
                 key=new_key, predecessor=predecessor, edge=edge
             )
 
-    # START is non-purchasable: exactly one fixed departure level.
+    # START is non-purchasable: exactly one fixed departure level. Every
+    # node within that fixed range -- not just the farthest -- gets its
+    # own state (see reachable_targets' docstring above).
     start_ahead = nodes_ahead_of(-1)
-    for target_pos, target_index in farthest_reachable(
-        start_ahead, Decimal(0), start_fuel
-    ):
+    for target_pos, target_index in reachable_targets(start_ahead, Decimal(0), start_fuel):
         relax(
             target_index,
             start_fuel - target_pos,
@@ -397,45 +406,73 @@ def solve_fixed_charge(
                 nodes_ahead_mi=[p for (p, idx) in ahead],
             )
             for level in levels:
-                targets = farthest_reachable(ahead, pos, level)
+                targets = reachable_targets(ahead, pos, level)
                 if not targets:
                     continue
 
                 buy_mi = level - fuel_on_arrival
                 is_purchase = buy_mi > 0
+                predecessor = (node_index, fuel_on_arrival)
 
-                if is_purchase:
-                    gallons = buy_mi / mpg
-                    cost = gallons * station.price_per_gallon
-                    target_index = targets[0][1]
-                    is_full_fill = level == tank_range_mi
-                    bypassed_count = 0
-                    bypassed_saving = None
+                if not is_purchase:
+                    for target_pos, target_index in targets:
+                        relax(
+                            target_index,
+                            level - (target_pos - pos),
+                            record.key,
+                            predecessor,
+                            None,
+                        )
+                    continue
 
-                    if target_index == finish:
-                        reason = PurchaseReason.REACH_FINISH
-                    elif not is_full_fill:
-                        reason = PurchaseReason.REACH_CHEAPER_STOP
-                    elif reachable_cheaper:
-                        reason = PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
-                        bypassed_count = len(reachable_cheaper)
-                        saving_total = Decimal(0)
-                        for cheaper_pos, cheaper_idx in reachable_cheaper:
-                            cheaper_gap = cheaper_pos - pos
-                            cheaper_buy_mi = max(
-                                Decimal(0), cheaper_gap - fuel_on_arrival
-                            )
-                            cheaper_gallons = cheaper_buy_mi / mpg
-                            saving_total += cheaper_gallons * (
-                                station.price_per_gallon
-                                - ordered[cheaper_idx].price_per_gallon
-                            )
-                        bypassed_saving = saving_total
-                    elif ahead_has_cheaper:
-                        reason = PurchaseReason.FILL_TO_CONTINUE
-                    else:
-                        reason = PurchaseReason.TOP_UP_AT_CHEAPEST
+                gallons = buy_mi / mpg
+                cost = gallons * station.price_per_gallon
+                is_full_fill = level == tank_range_mi
+                new_key = (
+                    record.key[0] + cost + penalty,
+                    record.key[1] + 1,
+                    record.key[2] + (pos,),
+                    record.key[3] + (station.opis_id,),
+                )
 
+                # The reason and its bypassed-cheaper counters explain THIS
+                # purchase decision -- they depend on whether the full-fill
+                # branch fires (level-dependent, shared across every target
+                # this purchase can reach) and on reachable_cheaper/
+                # ahead_has_cheaper (station-dependent, likewise shared).
+                # Only the REACH_FINISH override is target-specific: a
+                # purchase that reaches multiple nodes at this level (e.g.
+                # a full tank that both tops past an intermediate candidate
+                # AND reaches FINISH) is REACH_FINISH only for the edge
+                # that actually lands on FINISH.
+                bypassed_count = 0
+                bypassed_saving = None
+                if not is_full_fill:
+                    base_reason = PurchaseReason.REACH_CHEAPER_STOP
+                elif reachable_cheaper:
+                    base_reason = PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+                    bypassed_count = len(reachable_cheaper)
+                    saving_total = Decimal(0)
+                    for cheaper_pos, cheaper_idx in reachable_cheaper:
+                        cheaper_gap = cheaper_pos - pos
+                        cheaper_buy_mi = max(Decimal(0), cheaper_gap - fuel_on_arrival)
+                        cheaper_gallons = cheaper_buy_mi / mpg
+                        saving_total += cheaper_gallons * (
+                            station.price_per_gallon
+                            - ordered[cheaper_idx].price_per_gallon
+                        )
+                    bypassed_saving = saving_total
+                elif ahead_has_cheaper:
+                    base_reason = PurchaseReason.FILL_TO_CONTINUE
+                else:
+                    base_reason = PurchaseReason.TOP_UP_AT_CHEAPEST
+
+                for target_pos, target_index in targets:
+                    reason = (
+                        PurchaseReason.REACH_FINISH
+                        if target_index == finish
+                        else base_reason
+                    )
                     reason_target_opis_id = (
                         ordered[target_index].opis_id
                         if target_index != finish
@@ -443,13 +480,6 @@ def solve_fixed_charge(
                     )
                     reason_target_name = (
                         ordered[target_index].name if target_index != finish else None
-                    )
-
-                    new_key = (
-                        record.key[0] + cost + penalty,
-                        record.key[1] + 1,
-                        record.key[2] + (pos,),
-                        record.key[3] + (station.opis_id,),
                     )
                     edge = _EdgeInfo(
                         name=station.name,
@@ -464,12 +494,6 @@ def solve_fixed_charge(
                         bypassed_cheaper_count=bypassed_count,
                         bypassed_saving_forgone=bypassed_saving,
                     )
-                else:
-                    new_key = record.key
-                    edge = None
-
-                predecessor = (node_index, fuel_on_arrival)
-                for target_pos, target_index in targets:
                     relax(
                         target_index,
                         level - (target_pos - pos),
