@@ -1,15 +1,34 @@
-"""Property-based proof that the solver's greedy is a true cost optimum.
+"""Property-based proof that the solver is a true cost optimum.
 
-Compares `routing.services.solver.solve()` against an independent,
-deliberately dumb, exhaustive oracle across randomized price/position
-landscapes. The oracle lives here only -- it is a memoized recursive
-search over `(node, fuel-remaining)` states, and it never imports or
-calls any solver helper beyond the `Candidate` dataclass, so a passing
-test is evidence about the solver's actual behavior, not about
+Compares `routing.services.dp.solve_fixed_charge(..., penalty=Decimal(0))`
+against an independent, deliberately dumb, exhaustive oracle across
+randomized price/position landscapes. The oracle lives here only -- it is
+a memoized recursive search over `(node, fuel-remaining)` states, and it
+never imports or calls any solver helper beyond the `Candidate` dataclass,
+so a passing test is evidence about the DP's actual behavior, not about
 assumptions shared between the two implementations.
 
+D-10/D-21 retarget: this module originally judged
+`routing.services.solver.solve()`. Phase 18 (SOLV-01..05) points it at the
+DP instead, with `penalty=Decimal(0)` passed explicitly at every call
+site, making this memoized `(node, fuel)` pure-fuel oracle -- derivation
+#1 of the finite-fill lemma, kept specifically to be retargeted here per
+Phase 16 D-21 -- a SECOND, independently derived referee for the
+production DP, alongside the fixed-charge subset-enumeration oracle in
+test_solver_fixed_charge_optimality.py and the frozen-greedy behavioural
+twin in test_dp_differential.py. Its recursion shape is deliberately
+distinct from the DP's own table-filling shape (a memoized top-down
+search here versus a bottom-up `(node, fuel)` state table in `dp.py`), and
+`dp.py` re-derives the finite-fill lemma independently for the THIRD time
+in the codebase rather than importing this module's version -- see
+`dp.py`'s own "The finite-fill lemma" docstring section for the count.
+`solve_fixed_charge` is called directly, without a preceding
+`preflight_gap_check`, exactly as `solve()` was called directly before:
+`solve_fixed_charge` raises `InfeasibleRouteError` on its own when no
+state reaches FINISH, so the try/except shape below needs no change.
+
 Plain `django.test.SimpleTestCase` + `@given` -- not
-`hypothesis.extra.django.TestCase`. The solver is a pure function with
+`hypothesis.extra.django.TestCase`. The DP is a pure function with
 no ORM/DB access, so the Django Hypothesis integration would only add a
 per-example database transaction for nothing.
 """
@@ -18,7 +37,8 @@ from decimal import Decimal
 from django.test import SimpleTestCase
 from hypothesis import given, settings, strategies as st
 
-from routing.services import Candidate, solve
+from routing.services import Candidate
+from routing.services.dp import solve_fixed_charge
 from routing.services.exceptions import InfeasibleRouteError
 
 # Bounds the exhaustive oracle's state space: with this many stations the
@@ -183,12 +203,13 @@ class SolverOptimalityTests(SimpleTestCase):
         ]
 
         try:
-            plan = solve(
+            plan = solve_fixed_charge(
                 candidates,
-                total_route_mi,
+                total_route_mi=total_route_mi,
                 tank_range_mi=tank_range_mi,
                 mpg=mpg,
                 starting_fuel=starting_fuel,
+                penalty=Decimal(0),
             )
         except InfeasibleRouteError:
             solver_feasible, solver_cost = False, None
@@ -270,12 +291,13 @@ class MultiLegFlattenedOptimalityTests(SimpleTestCase):
                 opis_id += 1
 
         try:
-            plan = solve(
+            plan = solve_fixed_charge(
                 candidates,
-                total_route_mi,
+                total_route_mi=total_route_mi,
                 tank_range_mi=tank_range_mi,
                 mpg=mpg,
                 starting_fuel=starting_fuel,
+                penalty=Decimal(0),
             )
         except InfeasibleRouteError:
             solver_feasible, solver_cost = False, None

@@ -1239,6 +1239,125 @@ class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
             f"flattened multi-leg input; {context}",
         )
 
+    @given(flattened_multi_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_dp_matches_oracle_across_penalty_ladder_on_flattened_multi_leg(self, drawn_route):
+        """PROOF-04/D-38: the DP is leg-agnostic -- it only ever receives
+        ONE flattened candidate list on one continuous distance scale, the
+        same shape single_leg_routes() already produces; it never sees a
+        leg boundary. So this property proves the flattening contract
+        still holds under the new fixed-charge objective, NOT new solver
+        logic -- DpOracleDifferentialTests above already proves the DP
+        correct on single-leg input; this method reuses the identical
+        comparison shape on flattened multi-leg input instead of
+        re-deriving it.
+
+        Arguing leg-agnosticism without a test arm was considered and
+        rejected: PROOF-04 asks for coverage, and "the code cannot tell
+        the difference" is not the same as a test confirming it.
+
+        Same D-10/D-13 shape as DpOracleDifferentialTests: the penalised
+        objective is asserted unconditionally at every rung of
+        PENALTY_LADDER, and the station set only when the oracle's
+        optimum at that rung is strictly unique.
+        """
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel, leg_boundaries_mi = drawn_route
+
+        self.assertGreaterEqual(
+            len(leg_boundaries_mi),
+            3,
+            f"expected at least two leg boundaries beyond the start "
+            f"(>=3 boundary points for >=2 legs), got "
+            f"{leg_boundaries_mi!r} -- a strategy regression may have "
+            f"collapsed to one leg",
+        )
+        self.assertEqual(
+            leg_boundaries_mi[-1],
+            total_route_mi,
+            f"flattened total_route_mi={total_route_mi} does not equal "
+            f"the sum of leg lengths (final boundary "
+            f"{leg_boundaries_mi[-1]}); leg_boundaries_mi={leg_boundaries_mi!r}",
+        )
+        self.assertLessEqual(
+            len(candidates),
+            MAX_STATIONS,
+            f"flattened candidate count {len(candidates)} exceeds "
+            f"MAX_STATIONS={MAX_STATIONS}; candidates={candidates!r}",
+        )
+
+        for penalty in PENALTY_LADDER:
+            oracle_plan = optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+
+            try:
+                preflight_gap_check(
+                    candidates,
+                    total_route_mi=total_route_mi,
+                    tank_range_mi=tank_range_mi,
+                    starting_fuel=starting_fuel,
+                )
+                dp_feasible = True
+            except InfeasibleRouteError:
+                dp_feasible = False
+
+            context = (
+                f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+                f"leg_boundaries_mi={leg_boundaries_mi!r}, "
+                f"tank_range_mi={tank_range_mi}, mpg={mpg}, "
+                f"starting_fuel={starting_fuel}, penalty={penalty}"
+            )
+
+            self.assertEqual(
+                oracle_plan is not None,
+                dp_feasible,
+                f"feasibility verdicts disagree on flattened multi-leg "
+                f"input: oracle_feasible={oracle_plan is not None}, "
+                f"dp_feasible={dp_feasible}; {context}",
+            )
+            if oracle_plan is None:
+                continue
+
+            dp_plan = solve_fixed_charge(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=penalty,
+            )
+
+            self.assertLessEqual(
+                abs(dp_plan.penalised_objective - oracle_plan.objective),
+                COST_TOLERANCE,
+                f"dp penalised_objective ({dp_plan.penalised_objective}) "
+                f"differs from oracle objective ({oracle_plan.objective}) "
+                f"beyond COST_TOLERANCE on flattened multi-leg input; {context}",
+            )
+
+            if oracle_plan.is_unique_optimum:
+                dp_stop_opis_ids = tuple(stop.opis_id for stop in dp_plan.stops)
+                self.assertEqual(
+                    dp_stop_opis_ids,
+                    oracle_plan.stop_opis_ids,
+                    f"station set differs though the oracle optimum is "
+                    f"strictly unique on flattened multi-leg input; "
+                    f"dp_stop_opis_ids={dp_stop_opis_ids!r}; {context}",
+                )
+                self.assertLessEqual(
+                    abs(dp_plan.total_cost - oracle_plan.fuel_cost),
+                    COST_TOLERANCE,
+                    f"dp total_cost ({dp_plan.total_cost}) differs from "
+                    f"oracle fuel_cost ({oracle_plan.fuel_cost}) beyond "
+                    f"COST_TOLERANCE on flattened multi-leg input though "
+                    f"the oracle optimum is strictly unique; {context}",
+                )
+
 
 class PenaltyDisagreementFloorTests(SimpleTestCase):
     """D-13/D-15/D-16: a plain SimpleTestCase (deliberately not a
