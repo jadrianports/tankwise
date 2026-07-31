@@ -343,7 +343,26 @@ class RationaleTests(SimpleTestCase):
         self.assertEqual(stop2.purchase_reason, PurchaseReason.REACH_FINISH)
         self.assertIsNone(stop2.reason_target_opis_id)
 
-    def test_skipped_count_and_avg_price_between_stops(self):
+    def test_skipped_count_and_avg_price_reflect_genuinely_rejected_candidates(self):
+        """D-04 (phase 18) redefined `skipped_count`/`skipped_avg_price`
+        away from the old positional meaning -- "every candidate sitting
+        between the previous stop and this one, regardless of price" --
+        to "candidates the recurrence genuinely rejected as a successor
+        from this stop": strictly ahead of the stop's own position,
+        strictly cheaper than the price actually paid here, reachable
+        within one tank of the stop, and strictly before wherever this
+        stop's own purchase carried the vehicle next (`solver.py`'s
+        `_rejected_context`). This assertion originally read
+        `skipped_count == 1` for X1 under the OLD definition, which held
+        regardless of price since X1 sits between START and X2; X1
+        ($4.00) is pricier than X2 ($2.00), never a cheaper alternative,
+        so no reading of the NEW definition can reproduce that count --
+        see 18-04-SUMMARY.md's Deviations section for the full derivation
+        of why this is an unavoidable, intentional behavioural break, not
+        a bug.
+        """
+        # A nearer-but-pricier candidate no longer counts merely for
+        # sitting between START and the purchased stop.
         x1 = make_candidate("4.00", "200", name="X1", opis_id=1)
         x2 = make_candidate("2.00", "450", name="X2", opis_id=2)
 
@@ -362,10 +381,42 @@ class RationaleTests(SimpleTestCase):
 
         self.assertEqual(stop.opis_id, 2)
         self.assertEqual(stop.purchase_reason, PurchaseReason.REACH_FINISH)
-        self.assertEqual(stop.skipped_count, 1)
-        self.assertEqual(stop.skipped_avg_price, Decimal("4.00"))
+        self.assertEqual(stop.skipped_count, 0)
+        self.assertIsNone(stop.skipped_avg_price)
         self.assertEqual(stop.price_percentile, Decimal(0))
         self.assertEqual(stop.corridor_avg_price, Decimal("3.00"))
+
+        # A genuinely-rejected candidate DOES count. At a nonzero
+        # per-stop penalty, the DP fills past reachable-cheaper B ($2.50
+        # @ 495mi) straight to cheaper-still C ($1.00 @ 505mi) rather
+        # than pay an extra stop fee for B: B is strictly ahead of A's
+        # own position (10mi), strictly cheaper than A's own $3.00,
+        # reachable within one tank of A (485mi <= 500mi), and strictly
+        # before A's own purchase's next stop (C @ 505mi) -- exactly
+        # `_rejected_context`'s new, forward-looking definition.
+        a = make_candidate("3.00", "10", name="A", opis_id=3)
+        b = make_candidate("2.50", "495", name="B", opis_id=4)
+        c = make_candidate("1.00", "505", name="C", opis_id=5)
+
+        bypass_plan = solve(
+            [a, b, c],
+            Decimal("900"),
+            tank_range_mi=Decimal("500"),
+            mpg=Decimal("10"),
+            starting_fuel=Decimal("0.02"),
+            penalty=Decimal("35"),
+        )
+
+        self.assertEqual(len(bypass_plan.stops), 2)
+        stop_a, stop_c = bypass_plan.stops
+
+        self.assertEqual(stop_a.opis_id, 3)
+        self.assertEqual(stop_a.skipped_count, 1)
+        self.assertEqual(stop_a.skipped_avg_price, Decimal("2.50"))
+
+        self.assertEqual(stop_c.opis_id, 5)
+        self.assertEqual(stop_c.skipped_count, 0)
+        self.assertIsNone(stop_c.skipped_avg_price)
 
     def test_fuel_stop_rationale_fields_default(self):
         from routing.services.solver import FuelStop
