@@ -16,123 +16,189 @@ explores may be pruned. The prune must be invisible in the API response;
 that is what "sound" means for a search-space reduction: it changes
 nothing about the answer, only how much work finding the answer costs.
 
-## The sliver
+## The supply-interval lemma
 
-For two candidates A and B with positions ``pos_A``, ``pos_B`` (miles from
-START) and a tank range ``T``, define B's "reach sliver relative to A" as
-the half-open interval
+For a station ``S`` with position ``pos_S`` (miles from START), tank range
+``T``, and route length ``L``, define ``S``'s supply interval as
 
-    sliver(A, B) = (pos_B + T, pos_A + T]        width = pos_A - pos_B
+    supply(S) = [pos_S, min(pos_S + T, L)]
 
-This is exactly the set of positions a full tank taken on at A can reach
-that a full tank taken on at B cannot -- A's unique downstream contribution
-over B. If nothing needs that sliver, A contributes nothing B does not
-already cover.
+the contiguous stretch of route mile a single full tank taken on at ``S``
+can, by itself, ever deliver fuel to. The lemma: **a set of route miles has
+a feasible fueling plan buying only at stations in some set {S_1, ..., S_k}
+if and only if every one of those miles lies in the union of their supply
+intervals** (miles covered by the fuel already carried at the origin --
+the initial on-board fuel a route starts with -- are assigned to no
+station and excluded from this accounting; the origin is not a purchasable
+node).
 
-## The Domination Theorem (three conditions, D-11 total order applied)
+*Forward.* Any feasible fueling plan induces an assignment of each
+(non-origin-covered) route mile to the station it was reached on: whichever
+station's fill last had that mile ahead of it when the vehicle passed it.
+That mile lies within ``T`` miles downstream of the station (the tank
+cannot carry fuel past its own range), so it lies in that station's supply
+interval by construction.
 
-Station A is safely removable from the candidate set -- its removal
-changes neither the optimal cost nor feasibility, for the pure-fuel
-objective or the fixed-charge (per-stop penalty) objective -- if there
-exists a station B, ranked strictly before A under the total order
-``(distance_from_start_mi, price_per_gallon, opis_id)``, with:
+*Backward.* Any such assignment induces a feasible plan that never
+overflows the tank. Buy, at each station ``S_i`` in the assignment, exactly
+enough fuel to cover the miles assigned to it. At any position ``x`` along
+the route, the fuel on board equals the total miles assigned to stations at
+``pos_i <= x`` that lie beyond ``x`` (fuel already spent reaching ``x`` is
+gone; fuel not yet needed is still in the tank). Every such mile is, by the
+assignment's own definition, at most ``pos_i + T``, and ``pos_i <= x``
+implies ``pos_i + T <= x + T``. So the fuel on board at ``x`` can never
+exceed ``T`` -- the tank never overflows and the plan is feasible. Both
+directions matter: the backward direction is what makes "the miles are
+covered" a *sufficient* condition for feasibility, not merely a necessary
+one -- an unproven reformulation is exactly what sank the theorem this
+rule replaces (see "Why the reach-sliver rule is wrong" below).
 
-  1. ``pos_B <= pos_A`` (non-strict)
-  2. ``price_B <= price_A``
-  3. ``sliver(A, B)`` contains no other candidate station, and does not
-     contain ``total_route_mi`` (FINISH)
+## The domination rule
 
-The total order is load-bearing, not cosmetic (D-11): two candidates at the
-identical position with the identical price have a zero-width sliver
-between them, which is trivially empty and satisfies condition 3 for both
-directions at once. Without a tiebreak, each would see the other as a valid
-dominator under a naive "pos_B <= pos_A" test and *both* would be judged
-removable, silently deleting the only station at that position. The
-``opis_id`` tiebreak breaks that symmetry: under the total order, exactly
-one of the pair sorts first, so only the later one ever looks backward and
-finds a dominator -- the earlier twin is never examined as removable
-relative to a later one it precedes. Exactly one of any co-located,
-identically priced pair survives.
+Sort by the total order ``(distance_from_start_mi, price_per_gallon,
+opis_id)`` (D-11, unchanged from before -- see the total-order note below).
+Write ``T`` for ``tank_range_mi``, ``L`` for ``total_route_mi``, ``pos_S``
+for a station's ``distance_from_start_mi``.
 
-## Cost argument (condition 1 + 2)
+**Station A is removable if and only if some station B, ranked strictly
+before A under the total order, satisfies both:**
 
-If B is reachable everywhere A is (condition 3 guarantees this: nothing was
-uniquely reachable via A) and B's price is no higher, then substituting a
-purchase at B for an equal purchase at A is never worse. Any plan that
-bought fuel at A can instead buy the same gallons at B and reach every node
-that plan reached via A, at a cost no higher than before.
+  1. ``price_B <= price_A``
+  2. ``pos_B == pos_A``  **OR**  ``pos_B + T >= L``
 
-## Fixed-charge generalization
+(``pos_B <= pos_A`` is implied by the total order and needs no separate
+check.) This is exactly interval containment: ``supply(B) = [pos_B,
+min(pos_B + T, L)]`` **contains** ``supply(A) = [pos_A, min(pos_A + T,
+L)]`` under precisely those two alternatives -- co-located (``pos_B ==
+pos_A``, so the two intervals start together and ``B``'s price is no
+higher) or B's own interval already reaches FINISH (``pos_B + T >= L``, so
+``supply(B) = [pos_B, L]`` contains any downstream station's interval
+automatically, since ``pos_B <= pos_A`` and any interval's right edge is
+``<= L``).
 
-The above argument holds for pure fuel dollars; the fixed-charge objective
-(fuel dollars plus a flat penalty per station actually purchased at) is
-also unharmed, because folding a purchase from A into B has exactly two
-possible shapes:
+**Total order and co-located pairs (D-11), carried forward.** The total
+order is load-bearing, not cosmetic: two stations at the identical position
+with the identical price, without a tiebreak, would each see the other as
+a valid dominator (condition 2's ``pos_B == pos_A`` holds both ways) and
+both would be judged removable, silently deleting the only station at that
+position. The ``opis_id`` tiebreak breaks that symmetry -- under the total
+order exactly one of the pair sorts first, so only the later one ever looks
+backward and finds a dominator. Exactly one of any co-located, identically
+priced pair survives.
 
-  (a) B already has a purchase in the optimal plan being modified -- the
-      substituted gallons merge into B's existing stop, so the station
-      count is unchanged and the objective strictly improves by the price
-      difference alone (never worse, since ``price_B <= price_A``).
-  (b) B has no purchase in that plan -- the substitution adds a new stop at
-      B in place of the one it removes at A. The number of stops is
-      unchanged; one purchase simply moves to an earlier position on the
-      route. The fixed-charge term of the objective is identical either
-      way, and the fuel-dollar term is no higher by the cost argument
-      above.
+The rule ships zero tuned constants -- no distance window, no prefilter
+width, no empirical threshold of any kind. This is the surviving principle
+of the now-void old completeness argument, restated for this rule: the
+admission test reads only ``(pos_B, price_B)`` of one other station plus
+``T`` and ``L``, nothing more.
 
-Either way the fixed-charge objective is never made worse by removing A, so
-the theorem holds for both objectives this milestone's solvers need, not
-just the pure-fuel one the underlying paper analyzes.
+## Soundness
+
+Soundness follows directly from the lemma, for both objectives this
+milestone's solvers need.
+
+**Pure-fuel objective.** If ``B`` dominates ``A`` (``supply(B)`` contains
+``supply(A)``), then any feasible plan that buys gallons at ``A`` can
+instead buy the same gallons at ``B``: every mile ``A``'s purchase could
+supply, ``B``'s purchase can also supply (containment), at a price no
+higher (``price_B <= price_A``). Removing ``A`` from the candidate set
+therefore never raises the optimal fuel cost and never turns a feasible
+route infeasible -- whatever ``A`` could do, ``B`` alone can already do at
+least as cheaply.
+
+**Fixed-charge objective (fuel dollars plus a flat penalty per station
+actually purchased at).** This is the one line the old proof got wrong.
+With a uniform per-stop charge, folding ``A``'s purchase into ``B`` costs
+
+    cost_B(q) = penalty + price_B * q  <=  penalty + price_A * q = cost_A(q)
+
+**pointwise in q** -- for any quantity ``q`` of gallons, buying it at ``B``
+instead of ``A`` is never more expensive, and it costs **zero extra
+stops**: a single station absorbs ``A``'s entire role, whether that
+station already had a purchase in the plan (the gallons merge into an
+existing stop) or not (one purchase simply relocates to an earlier
+position; the stop count is unchanged). This single-station substitution is
+exactly what condition 2 guarantees is always available.
+
+This does **not** extend to two stations jointly covering ``A``: with a
+per-stop charge, splitting ``A``'s purchase across ``B1`` and ``B2`` costs
+``2 * penalty + price_B1 * q1 + price_B2 * q2``, which is not
+pointwise-comparable to ``penalty + price_A * q`` -- the ``2 * penalty``
+term can dominate an arbitrarily small fuel saving. That is why this rule
+admits single-station covers only, never multi-station ones.
 
 ## Feasibility corollary
 
-Condition 3's emptiness is also the exact statement needed to guarantee
-removing A cannot create a new "gap exceeds tank range" infeasibility: if
-the sliver holds no other candidate and does not hold FINISH, then nothing
-was reachable *only* via A's specific position -- B (or whatever candidate
-or FINISH sits beyond the sliver) already bridges the same gap. A sound
-domination prune, by this theorem, can therefore never be the cause of a
-false ``infeasible_route``; that guarantee falls directly out of condition
-3, not a separate check.
+Removal can never manufacture a new infeasibility, and this falls
+structurally out of the rule -- no branch is keyed on how much fuel the
+route starts with, and no station is special-cased. Any dominating ``B``
+sits at or before ``A`` in position (``pos_B <= pos_A``, from the total
+order), so ``B`` is reachable everywhere ``A`` is; and ``B``'s supply
+interval contains ``A``'s, so ``B`` reaches at least as far downstream as
+``A`` ever could. A station that is the *sole* station reachable from a
+short initial fuel load at the origin has, by definition, nothing ranked
+before it in the total order (nothing sorts before ``pos == 0`` unless it
+too sits at ``pos == 0``), so it can never have a dominator and can never
+be removed -- asserted structurally, not special-cased.
 
-## Completeness of checking exactly one dominator (D-09)
+## Maximality within single-station domination
 
-Every candidate is tested against exactly one dominator -- the nearest
-qualifying B (largest ``pos_B <= pos_A`` with ``price_B <= price_A``) --
-never every possible B. This is complete, not merely convenient: for any
-two candidates B1, B2 both satisfying conditions 1 and 2 for A, with B1
-nearer to A than B2 (``pos_B2 <= pos_B1 <= pos_A``),
-``sliver(A, B1) = (pos_B1 + T, pos_A + T]`` is a *subset* of
-``sliver(A, B2) = (pos_B2 + T, pos_A + T]`` -- both share the same right
-edge ``pos_A + T`` and the nearer dominator's left edge is only larger.
-So if the nearest dominator's sliver is non-empty, every farther
-dominator's sliver is a superset and is also non-empty; the nearest
-dominator is therefore always the hardest (most likely to be non-empty)
-case, and checking it alone is complete. This is also what collapses the
-rule to an O(m) monotonic-stack scan (the "previous smaller-or-equal
-element" problem) plus one O(log m) bisection per candidate, with no
-distance-window prefilter of any kind: a farther-back dominator can only
-ever produce a wider, harder-to-empty sliver, so a window can only ever
-prune *less* than the exact rule -- it buys no speed and no correctness,
-only an unproven constant. For the same reason, no
-``pos_B + tank_range_mi >= total_route_mi`` early-exit branch is added
-either: the general sliver/FINISH test above already yields that exact
-result (when ``sliver_lo >= total_route_mi`` no candidate can be inside the
-sliver and the FINISH test is false by construction), so a separate branch
-would add proof surface for zero behavioral change.
+Because every station's supply interval has the same length ``T``,
+containment of ``supply(A)`` inside ``supply(B)`` holds **if and only if**
+``pos_B == pos_A`` or ``pos_B + T >= L`` -- there is no third geometric
+case a single dominator could exploit. Nothing stronger is reachable from
+**single-station** domination: this claim is scoped explicitly to a single
+dominating station and does not extend to a broader claim that
+multi-station covers are unsound or unreachable -- that is a different,
+harder question this phase does not answer (see "Soundness" above for
+exactly why a per-stop charge breaks the multi-station case, and why this
+phase declines to prove anything about it).
 
-## No cascade (D-10)
+A dominator that is itself later found removable is harmless, because
+containment is transitive: if ``B`` dominates ``A`` and ``B`` is itself
+dominated by ``B'``, then ``supply(B')`` contains ``supply(B)`` which
+contains ``supply(A)``, so ``supply(B')`` contains ``supply(A)`` too, and
+``price_B' <= price_B <= price_A``. ``B'`` covers everything ``B`` covered,
+at a price no higher -- removing a removable dominator changes nothing
+about which stations the surviving set can still stand in for.
 
-Every sliver-emptiness test in this module is evaluated against the
-original, unpruned candidate list -- a candidate that this pass judges
-removable still participates as a potential dominator for later candidates
-and still occupies its position in the occupancy check for earlier ones.
-There is no fixed-point iteration that re-runs emptiness tests against a
-shrinking set. A cascading version could in principle prune more, but it
-would need an inductive argument about evaluation order that this
-single-pass rule does not, and this phase's entire premise is
-provable-over-effective: a subtle ordering induction is exactly the kind of
-mistake a "prove it, don't just measure it" prune must not risk.
+## Why the reach-sliver rule is wrong
+
+The rule this module implemented before this rewrite -- "a cheaper-or-equal
+station B leaves a provably empty reach *sliver*, `(pos_B + T, pos_A + T]`,
+containing no other candidate and not FINISH" -- is **false**. It was
+disproven by two independent, hand-verified witnesses, both at
+``penalty=0`` (a pure-fuel objective, not only the fixed-charge one):
+
+**Witness 1, equal prices.** Stations ``$1.00 @ 1 mi``, ``$1.00 @ 2 mi``,
+``$1.01 @ 3 mi``; ``tank_range_mi=100``, ``total_route_mi=103``, ``mpg=1``,
+initial on-board fuel worth one mile of range, ``penalty=0``. The
+reach-sliver rule removed the middle ($1.00 @ 2 mi) station -- its sliver
+relative to the first station held no other candidate and did not hold
+FINISH. The true optimum rose from **$102.0100 to $102.0200** once that
+station was gone (100x the suite's ``COST_TOLERANCE``).
+
+**Witness 2, strict inequality.** Stations ``$1.00 @ 0 mi``, ``$1.01 @ 1
+mi``, ``$2.00 @ 2 mi``; ``tank_range_mi=100``, ``total_route_mi=102``,
+``mpg=1``, zero initial on-board fuel, ``penalty=0``. The reach-sliver rule
+removed the middle ($1.01 @ 1 mi) station. The true optimum rose from
+**$103.01 to $104.00** -- a $0.99 error, 99x tolerance.
+
+Witness 2 matters more than witness 1: it proves the failure is **not** a
+tie-breaking artifact of equal prices and cannot be patched by tightening
+the price comparison to a strict inequality -- the relay effect that breaks
+the old rule is general.
+
+**Root cause, one sentence:** the old test asked whether A unlocks new
+*reach* (does anything sit in the sliver only A could get to); the
+objective is decided by which miles each station can *supply*, and a
+capacity-bound B, anchored earlier, cannot supply the miles A can, because
+two stations in sequence relay a full tank further down the route than
+either single station's own capacity-bounded interval ever could. The old
+proof's cost argument implicitly assumed the dominator had unlimited
+remaining capacity to absorb the dominated station's purchase; it does not
+-- its capacity is bounded by ``T``, exactly the bound the supply-interval
+lemma above makes explicit and the reach-sliver formulation never stated.
 
 ## Why there is no flattened multi-leg variant (D-07)
 
@@ -145,7 +211,6 @@ same flattened-list input shape via a longer single axis (see
 variant" of this module to do differently. The absence of one is a derived
 consequence of the input shape, not an oversight.
 """
-from bisect import bisect_right
 from decimal import Decimal
 
 from routing.services.solver import Candidate
@@ -158,12 +223,29 @@ def _as_decimal(value):
 def prune_dominated_candidates(
     candidates, *, tank_range_mi, total_route_mi
 ) -> list[Candidate]:
-    """Return the subset of ``candidates`` that survive the Domination
-    Theorem above, as a new list sorted by the total order
+    """Return the subset of ``candidates`` that survive the domination rule
+    above, as a new list sorted by the total order
     ``(distance_from_start_mi, price_per_gallon, opis_id)`` -- byte-for-byte
     the key ``solver.solve()`` already sorts its own working copy by. Every
     returned element is one of the input objects, never a reconstruction.
     An empty input returns an empty list.
+
+    Implementation shape (a plain sort plus one linear pass, no tuned
+    constants): first keep only the first-ranked (cheapest, lowest
+    ``opis_id``) station at each distinct position -- this alone resolves
+    every co-located-pair case, because the total order already places the
+    dominating station first among ties at a shared position. Then, among
+    the survivors whose own supply interval reaches FINISH
+    (``pos + T >= L``), keep only the strict price prefix-minima in total
+    order -- a later such station is removable exactly when an earlier one
+    is no more expensive, per condition 2's ``pos_B + T >= L`` branch.
+    Stations whose own interval does not reach FINISH are never dominators
+    under that branch (their own condition 2 fails), and any B that could
+    remove one of them there would already have to sit at or before it in
+    position with `pos_B + T >= L`, which -- since B ranks first in the
+    total order -- means B is at least as cheap as any co-located duplicate
+    already removed in the first pass; nothing is lost by resolving the two
+    passes in this order.
     """
     tank_range_mi = _as_decimal(tank_range_mi)
     total_route_mi = _as_decimal(total_route_mi)
@@ -172,42 +254,26 @@ def prune_dominated_candidates(
         candidates,
         key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
     )
-    positions = [c.distance_from_start_mi for c in ordered]
 
-    # Single left-to-right monotonic-stack pass: for each i, the nearest
-    # earlier index j with price_j <= price_i is i's dominator. The stack
-    # holds indices with non-decreasing price bottom-to-top; the pop
-    # condition below is STRICT (">"), never ">=" -- see the D-11 co-located
-    # note in the module docstring above for why a non-strict pop would
-    # remove both halves of an identical-position, identical-price pair.
-    dominator = [None] * len(ordered)
-    stack = []
-    for i, candidate in enumerate(ordered):
-        while stack and ordered[stack[-1]].price_per_gallon > candidate.price_per_gallon:
-            stack.pop()
-        dominator[i] = stack[-1] if stack else None
-        # Pushed unconditionally -- every index joins the stack whether or
-        # not it will later be judged removable (D-10 no-cascade).
-        stack.append(i)
-
-    removable = [False] * len(ordered)
-    for i, j in enumerate(dominator):
-        if j is None:
+    # Pass 1: keep only the first-ranked station at each distinct position.
+    deduped = []
+    seen_positions = set()
+    for candidate in ordered:
+        if candidate.distance_from_start_mi in seen_positions:
             continue
+        seen_positions.add(candidate.distance_from_start_mi)
+        deduped.append(candidate)
 
-        sliver_lo = positions[j] + tank_range_mi
-        sliver_hi = positions[i] + tank_range_mi
+    # Pass 2: among stations whose own supply interval reaches FINISH,
+    # keep only the strict price prefix-minima in total order.
+    survivors = []
+    running_min_price = None
+    for candidate in deduped:
+        reaches_finish = candidate.distance_from_start_mi + tank_range_mi >= total_route_mi
+        if reaches_finish:
+            if running_min_price is not None and candidate.price_per_gallon >= running_min_price:
+                continue
+            running_min_price = candidate.price_per_gallon
+        survivors.append(candidate)
 
-        occupied = bisect_right(positions, sliver_hi) - bisect_right(positions, sliver_lo)
-        if positions[i] > sliver_lo:
-            # i's own position falls inside (sliver_lo, sliver_hi] -- this
-            # happens exactly when B cannot reach A on a full tank. The
-            # theorem's condition 3 asks about *other* candidates only, so
-            # i must not count as its own blocker.
-            occupied -= 1
-
-        finish_in_sliver = sliver_lo < total_route_mi <= sliver_hi
-
-        removable[i] = occupied == 0 and not finish_in_sliver
-
-    return [ordered[i] for i in range(len(ordered)) if not removable[i]]
+    return survivors
