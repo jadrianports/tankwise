@@ -10,13 +10,30 @@ no memo table, no state-keyed dictionary, and no (node, fuel) recurrence
 anywhere in this module. A reviewer checking this module's independence
 from the DP it will later judge can do so by reading that loop.
 
-The only symbols this module imports from the routing.services package are
-Candidate and solve, plus InfeasibleRouteError from
-routing.services.exceptions, needed only to turn an infeasible route into a
-boolean feasibility verdict for the penalty=0 anchor property below. Every
-other solver helper -- the plan and stop dataclasses, the purchase-reason
-constants, and the solver's own private helpers -- is deliberately not
-imported here.
+The only symbol this module imports from the routing.services package is
+Candidate, plus InfeasibleRouteError from routing.services.exceptions,
+needed only to turn an infeasible route into a boolean feasibility verdict.
+Every other solver helper -- the plan and stop dataclasses, the
+purchase-reason constants, and the solver's own private helpers -- is
+deliberately not imported here.
+
+D-10 retarget: every "shipped greedy" comparison in this module (the
+penalty=0 anchor property, the flattened multi-leg anchor, and
+measure_disagreement's greedy arm) calls routing.tests.frozen_greedy.solve
+rather than routing.services.solver.solve. This is a call-target
+substitution only -- at the point in Phase 18 this module was retargeted,
+solve()'s body was still byte-unchanged, so no assertion moved. It matters
+once Phase 18's later plan rewrites solve() to delegate to the DP: without
+this retarget, ROADMAP criterion 1's "agrees with the shipped greedy on
+every case at penalty=0 across the full 200-case Hypothesis run" would
+silently become "agrees with itself". "Shipped greedy" now names the
+pre-Phase-18 greedy, preserved verbatim under routing/tests/frozen_greedy.py,
+whose provenance git-show SHA is recorded in that module's own docstring.
+
+D-10 also adds a DP arm, DpOracleDifferentialTests below, comparing
+routing.services.dp.solve_fixed_charge against this module's own oracle
+across the full PENALTY_LADDER sweep -- imported from routing.services.dp,
+never copied or re-derived here.
 
 Tests use django.test.SimpleTestCase together with Hypothesis's @given,
 never hypothesis.extra.django.TestCase: the solver under comparison is pure
@@ -79,8 +96,10 @@ from django.test import SimpleTestCase
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from routing.services import Candidate, solve
+from routing.services import Candidate
+from routing.services.dp import preflight_gap_check, solve_fixed_charge
 from routing.services.exceptions import InfeasibleRouteError
+from routing.tests import frozen_greedy
 
 # The D-12 tuning knob. Pre-authorized to step 6 -> 5 -> 4 if a measured
 # runtime breaches the ~30s ceiling for the oracle test classes. The
@@ -575,7 +594,7 @@ def measure_disagreement(n_routes, *, params=CORPUS_PARAMS, penalty=None):
 
     for idx, (candidates, total_route_mi) in enumerate(corpus):
         try:
-            greedy_plan = solve(
+            greedy_plan = frozen_greedy.solve(
                 candidates,
                 total_route_mi,
                 tank_range_mi=params.tank_range_mi,
@@ -727,8 +746,16 @@ def flattened_multi_leg_routes(draw):
 
 class FixedChargeOracleAnchorTests(SimpleTestCase):
     """The D-09 / ROADMAP-criterion-1 anchor: at penalty=0, this oracle
-    must agree with the shipped greedy solve() on feasibility and on fuel
-    cost, across the full fixed 200-example Hypothesis run.
+    must agree with the shipped greedy on feasibility and on fuel cost,
+    across the full fixed 200-example Hypothesis run.
+
+    D-10: "the shipped greedy" means routing.tests.frozen_greedy.solve, a
+    byte-verbatim, provenance-recorded copy of the pre-Phase-18
+    routing.services.solver.solve -- not the live solve() import, which
+    Phase 18's later plan rewrites to delegate to the DP. Retargeting this
+    anchor at the frozen referee is what keeps ROADMAP criterion 1's
+    "agrees with the shipped greedy on the full 200-case Hypothesis run"
+    claim reproducible verbatim once solve() stops being the greedy.
     """
 
     @given(single_leg_routes())
@@ -737,7 +764,7 @@ class FixedChargeOracleAnchorTests(SimpleTestCase):
         candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
 
         try:
-            greedy_plan = solve(
+            greedy_plan = frozen_greedy.solve(
                 candidates,
                 total_route_mi,
                 tank_range_mi=tank_range_mi,
@@ -964,6 +991,112 @@ class FixedChargePenaltyConsistencyTests(SimpleTestCase):
             )
 
 
+class DpOracleDifferentialTests(SimpleTestCase):
+    """D-10/D-13: the DP arm of the three-referee design. For every drawn
+    route, at each rung of PENALTY_LADDER, routing.services.dp's
+    solve_fixed_charge is compared against this module's own independent
+    subset-enumeration oracle -- the SAME oracle FixedChargeOracleAnchorTests
+    and FixedChargePenaltyConsistencyTests already answer to, never a
+    second, re-derived judge.
+
+    The comparison is structured exactly as PruneOracleDifferentialTests
+    (routing/tests/test_prune_soundness.py) already established for D-13:
+    the penalised objective is asserted unconditionally, and the station
+    set plus total_cost are asserted only when the oracle's optimum is
+    strictly unique (OraclePlan.is_unique_optimum) -- asserting the
+    station set unconditionally would ride a second, unproven claim (that
+    two independent implementations resolve ties identically) on top of
+    the first.
+
+    Feasibility is checked via preflight_gap_check, the DP's own
+    documented precondition (D-17) -- passing it is exactly the DP's
+    feasibility condition, so this is the DP-side analog of the try/except
+    InfeasibleRouteError pattern used against the frozen greedy elsewhere
+    in this module.
+
+    The oracle enumeration for a drawn route is computed exactly once per
+    PENALTY_LADDER rung and reused for both the unconditional objective
+    comparison and the conditional station-set/total_cost comparison at
+    that rung -- never recomputed.
+    """
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200)
+    def test_dp_matches_oracle_across_penalty_ladder(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+
+        for penalty in PENALTY_LADDER:
+            oracle_plan = optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+
+            try:
+                preflight_gap_check(
+                    candidates,
+                    total_route_mi=total_route_mi,
+                    tank_range_mi=tank_range_mi,
+                    starting_fuel=starting_fuel,
+                )
+                dp_feasible = True
+            except InfeasibleRouteError:
+                dp_feasible = False
+
+            context = (
+                f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+                f"tank_range_mi={tank_range_mi}, mpg={mpg}, "
+                f"starting_fuel={starting_fuel}, penalty={penalty}"
+            )
+
+            self.assertEqual(
+                oracle_plan is not None,
+                dp_feasible,
+                f"feasibility verdicts disagree: oracle_feasible="
+                f"{oracle_plan is not None}, dp_feasible={dp_feasible}; {context}",
+            )
+            if oracle_plan is None:
+                continue
+
+            dp_plan = solve_fixed_charge(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=penalty,
+            )
+
+            self.assertLessEqual(
+                abs(dp_plan.penalised_objective - oracle_plan.objective),
+                COST_TOLERANCE,
+                f"dp penalised_objective ({dp_plan.penalised_objective}) "
+                f"differs from oracle objective ({oracle_plan.objective}) "
+                f"beyond COST_TOLERANCE; {context}",
+            )
+
+            if oracle_plan.is_unique_optimum:
+                dp_stop_opis_ids = tuple(stop.opis_id for stop in dp_plan.stops)
+                self.assertEqual(
+                    dp_stop_opis_ids,
+                    oracle_plan.stop_opis_ids,
+                    f"station set differs though the oracle optimum is "
+                    f"strictly unique; dp_stop_opis_ids={dp_stop_opis_ids!r}; "
+                    f"{context}",
+                )
+                self.assertLessEqual(
+                    abs(dp_plan.total_cost - oracle_plan.fuel_cost),
+                    COST_TOLERANCE,
+                    f"dp total_cost ({dp_plan.total_cost}) differs from "
+                    f"oracle fuel_cost ({oracle_plan.fuel_cost}) beyond "
+                    f"COST_TOLERANCE though the oracle optimum is strictly "
+                    f"unique; {context}",
+                )
+
+
 class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
     """D-11: a penalty-aware twin of the multi-leg flattened optimality
     class, built from offset-summed per-leg candidate lists on one
@@ -1010,7 +1143,7 @@ class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
         )
 
         try:
-            greedy_plan = solve(
+            greedy_plan = frozen_greedy.solve(
                 candidates,
                 total_route_mi,
                 tank_range_mi=tank_range_mi,
