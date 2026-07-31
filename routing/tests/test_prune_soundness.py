@@ -327,6 +327,36 @@ class PruneRetainedSetTests(SimpleTestCase):
 PENALTY_ANCHORS = (Decimal("0"), Decimal("35"))
 
 
+# D-27/D-28: the two hand-verified witnesses that disproved the reach-sliver
+# rule, recorded verbatim to match routing/services/prune.py's "Why the
+# reach-sliver rule is wrong" docstring section. Each tuple is a
+# ``drawn_route`` shape -- (candidates, total_route_mi, tank_range_mi, mpg,
+# starting_fuel) -- built through _candidate() so every value is a Decimal.
+SLIVER_WITNESS_EQUAL_PRICE = (
+    [
+        _candidate(opis_id=0, price="1.00", position=1, name="S0"),
+        _candidate(opis_id=1, price="1.00", position=2, name="S1"),
+        _candidate(opis_id=2, price="1.01", position=3, name="S2"),
+    ],
+    Decimal("103"),
+    Decimal("100"),
+    Decimal("1"),
+    Decimal("0.01"),
+)
+
+SLIVER_WITNESS_STRICT_INEQUALITY = (
+    [
+        _candidate(opis_id=0, price="1.00", position=0, name="S0"),
+        _candidate(opis_id=1, price="1.01", position=1, name="S1"),
+        _candidate(opis_id=2, price="2.00", position=2, name="S2"),
+    ],
+    Decimal("102"),
+    Decimal("100"),
+    Decimal("1"),
+    Decimal("0"),
+)
+
+
 class PruneOracleDifferentialTests(SimpleTestCase):
     """The oracle arm of D-01's two-referee design: prune-then-solve with
     the Phase 16 fixed-charge oracle must return the same objective and
@@ -444,6 +474,14 @@ class PruneOracleDifferentialTests(SimpleTestCase):
         ),
         penalty=Decimal("35"),
     )
+    # D-27/D-28: the two reach-sliver disproof witnesses, stacked as anchors
+    # so they also run the full prune-then-oracle path end to end. Under
+    # the current rule both pass here vacuously (nothing is removed from
+    # either witness) -- PruneSliverRuleRegressionTests below is the
+    # assertion that actually bites if the reach-sliver rule is ever
+    # reintroduced.
+    @example(drawn_route=SLIVER_WITNESS_EQUAL_PRICE, penalty=Decimal("0"))
+    @example(drawn_route=SLIVER_WITNESS_STRICT_INEQUALITY, penalty=Decimal("0"))
     def test_prune_then_oracle_matches_oracle_over_full_set(self, drawn_route, penalty):
         candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
         self.assertLessEqual(
@@ -635,4 +673,65 @@ class PrunePenaltyInvarianceTests(SimpleTestCase):
             f"penalties (D-04): {retained_opis_ids_by_penalty!r}; "
             f"candidates={candidates!r}, tank_range_mi={tank_range_mi}, "
             f"total_route_mi={total_route_mi}",
+        )
+
+
+class PruneSliverRuleRegressionTests(SimpleTestCase):
+    """Guards against reintroducing the disproven reach-sliver rule.
+
+    Both witnesses below are permanently recorded in
+    routing/services/prune.py's "Why the reach-sliver rule is wrong"
+    docstring section. The reach-sliver rule removed the middle station in
+    each witness and thereby raised the true optimum -- $102.0100 to
+    $102.0200 for the equal-price witness, $103.01 to $104.00 (99x
+    COST_TOLERANCE) for the strict-inequality witness -- both at
+    penalty=0, a pure-fuel objective. The current rule must retain all
+    three stations in each witness.
+
+    These retention assertions are the primary evidence (D-28), not the
+    @example anchors stacked onto PruneOracleDifferentialTests above:
+    under the current rule neither witness is pruned at all, so a
+    prune-then-solve comparison alone passes vacuously and asserts nothing
+    rule-specific. Asserting the full retained opis_id tuple, rather than
+    just "the middle station survives", also catches over-pruning of
+    either of the other two stations.
+    """
+
+    def test_equal_price_witness_retains_all_three_stations(self):
+        candidates, total_route_mi, tank_range_mi, _mpg, _starting_fuel = (
+            SLIVER_WITNESS_EQUAL_PRICE
+        )
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            tuple(c.opis_id for c in result),
+            (0, 1, 2),
+            "equal-price sliver witness (S0 $1.00@1mi, S1 $1.00@2mi, "
+            "S2 $1.01@3mi; tank_range_mi=100, total_route_mi=103): the "
+            "reach-sliver rule removed S1 (opis_id=1) here and raised the "
+            "true optimum from $102.0100 to $102.0200; the current rule "
+            f"must retain all three stations. Got retained={result!r}",
+        )
+
+    def test_strict_inequality_witness_retains_all_three_stations(self):
+        candidates, total_route_mi, tank_range_mi, _mpg, _starting_fuel = (
+            SLIVER_WITNESS_STRICT_INEQUALITY
+        )
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            tuple(c.opis_id for c in result),
+            (0, 1, 2),
+            "strict-inequality sliver witness (S0 $1.00@0mi, "
+            "S1 $1.01@1mi, S2 $2.00@2mi; tank_range_mi=100, "
+            "total_route_mi=102): the reach-sliver rule removed S1 "
+            "(opis_id=1) here and raised the true optimum from $103.01 "
+            "to $104.00 (99x COST_TOLERANCE); the current rule must "
+            f"retain all three stations. Got retained={result!r}",
         )
