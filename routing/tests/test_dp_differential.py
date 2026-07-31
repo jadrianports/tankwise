@@ -10,6 +10,63 @@ stops, same gallons, same cost, and every `purchase_reason` -- on both the
 unpruned candidate list and Phase 17's domination-pruned one. It then
 separately proves the DP's repeat-run determinism (D-14).
 
+**Amendment, 2026-08-01 (Defect C -- reproducible-gate fix):**
+`test_dp_matches_frozen_greedy_at_penalty_zero` drew its 200 examples from
+a fresh, unseeded Hypothesis run every invocation, so two consecutive runs
+of the SAME code could exercise two different sets of drawn inputs. That
+made it possible for a genuine defect to pass on a lucky run and fail on
+the next, and for the ROADMAP's "identical inputs return an identical plan
+on repeat runs" claim to be gated by a test that was not itself
+repeat-run-identical. Fixed with `@settings(..., derandomize=True)`:
+Hypothesis's own documented mechanism for exactly this case -- it seeds
+its internal example-generation PRNG deterministically from the test's
+fully qualified name instead of the system's entropy source, so the same
+200 examples are drawn on every run, every machine, forever, with no
+change to `max_examples` or the `single_leg_routes()` strategy itself.
+Neither `test_solver_optimality.py` nor `test_solver_fixed_charge_optimality.py`
+already use `derandomize` on their own `@given` properties (checked before
+choosing this route) -- their nearest precedent is `CORPUS_PARAMS`'s
+`random.Random(seed=20260730)` corpus, but that seeds a hand-rolled
+generator for a plain (non-Hypothesis) test, not a Hypothesis strategy, so
+it is not a directly reusable mechanism here. `derandomize=True` is
+Hypothesis's own first-class equivalent for a `@given`-based property and
+is applied with the least change to this specific test's existing
+`@settings(deadline=None, max_examples=200)` call, per this same
+amendment's constraint against narrowing the strategy or lowering example
+count.
+
+**Amendment, 2026-08-01 (gate-stabilization, discovered while making the
+frozen-greedy differential reproducible per the same rationale-defect-fix
+pass):** a second, independent split-degeneracy tie was found once the
+Hypothesis strategy was run with a fixed seed instead of a fresh one every
+invocation -- `is_unique_optimum` only proves the winning STATION SET is
+unique (it groups feasible subsets by `stop_opis_ids`); it says nothing
+about whether the gallons purchased at each station in that set is also
+forced. Reproducing witness: `candidates=[Candidate(name='S0', opis_id=0,
+price_per_gallon=Decimal('1.00'), distance_from_start_mi=Decimal(1)),
+Candidate(name='S1', opis_id=1, price_per_gallon=Decimal('1.00'),
+distance_from_start_mi=Decimal(2))]`, `total_route_mi=102,
+tank_range_mi=100, mpg=1, starting_fuel=0.01`. Both solvers buy at BOTH
+stations (station set `{0, 1}` matches, `is_unique_optimum=True`) for the
+SAME total cost/gallons (`101.0000`/`101.00`), but split it differently:
+the DP buys 1.00 gal at S0 then 100 at S1; the greedy fills the tank
+(100 gal) at S0 (its `price_here <= min(ahead prices)` check uses `<=`,
+so an EQUAL price also triggers `TOP_UP_AT_CHEAPEST`) then buys only 1 gal
+at S1. Both are equally optimal -- when two stations in a plan share an
+identical price, the fuel-dollar cost is invariant to how a purchase is
+divided between them, so the per-stop gallons/cost/reason split is a
+second, independent source of non-uniqueness that `is_unique_optimum`
+was never designed to see. The fix mirrors D-36's own pattern exactly:
+narrow what is asserted (skip per-stop gallons/cost/reason, but keep
+opis_id/distance, which stay forced regardless of price ties) rather than
+patch the DP, the greedy, or the oracle's uniqueness signal. See
+`EqualPriceSplitWitnessRegressionTests` for the permanently anchored,
+non-Hypothesis regression test. This finding is what actually made the
+Hypothesis property flake run-to-run BEFORE the fix below existed --
+Defect A and Defect B's fixes alone were not sufficient to make the gate
+reproducibly green, because a fresh unseeded run could draw this witness
+shape on some runs and not others.
+
 **Amendment, 2026-08-01 (rationale-defect-fix, resolving the orchestrator's
 independent-verification finding on plan 18-03):** stop-for-stop identity
 carves out one more narrow, documented exception on top of the D-36
@@ -174,7 +231,7 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
     """
 
     @given(single_leg_routes())
-    @settings(deadline=None, max_examples=200)
+    @settings(deadline=None, max_examples=200, derandomize=True)
     def test_dp_matches_frozen_greedy_at_penalty_zero(self, drawn_route):
         candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
 
@@ -309,6 +366,26 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                     f"greedy_plan={greedy_plan!r}; {context}",
                 )
 
+                # `is_unique_optimum` only proves the winning STATION SET
+                # is unique (Phase 17 D-02) -- it says nothing about
+                # whether the gallons purchased AT EACH station in that
+                # set is also forced. When two stations in the winning set
+                # share an identical price, the fuel-dollar cost is
+                # invariant to how a purchase is split between them (buy
+                # more at the earlier one and less at the later one, or
+                # vice versa), so gallons/cost/reason can legitimately
+                # differ per stop even though the station set, total cost,
+                # and total gallons all agree -- see
+                # `EqualPriceSplitWitnessRegressionTests` for a permanently
+                # anchored witness. This is the SAME underlying
+                # phenomenon as the D-36 station-set tie, one level
+                # deeper: an equal price is a second, independent source
+                # of a non-unique optimum that `is_unique_optimum` was
+                # never designed to see (it only groups by
+                # `stop_opis_ids`, never by per-stop gallons).
+                stop_prices = [s.price_per_gallon for s in dp_plan.stops]
+                has_equal_price_pair = len(set(stop_prices)) != len(stop_prices)
+
                 for dp_stop, greedy_stop in zip(dp_plan.stops, greedy_plan.stops):
                     self.assertEqual(
                         dp_stop.opis_id,
@@ -324,6 +401,14 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                         f"unique oracle optimum; dp_stop={dp_stop!r}, "
                         f"greedy_stop={greedy_stop!r}; {context}",
                     )
+                    if has_equal_price_pair:
+                        # Documented exemption: the winning set contains
+                        # two identically-priced stations, so the exact
+                        # gallons/cost/reason split is not forced by the
+                        # objective -- only the station set, positions,
+                        # total cost, and total gallons are (all already
+                        # proven equal above/here).
+                        continue
                     self.assertLessEqual(
                         abs(dp_stop.gallons - greedy_stop.gallons),
                         COST_TOLERANCE,
@@ -552,6 +637,101 @@ class FinishCoincidentStationWitnessRegressionTests(SimpleTestCase):
             f"the helper that gates the exemption in "
             f"FrozenGreedyDifferentialTests no longer recognises this "
             f"witness; {context}",
+        )
+
+
+class EqualPriceSplitWitnessRegressionTests(SimpleTestCase):
+    """Anchors the equal-price gallons-split degeneracy (see this module's
+    2026-08-01 gate-stabilization docstring amendment above) as a
+    permanent, non-Hypothesis regression test. Proves the underlying claim
+    that made the exemption correct: the winning station SET is unique
+    (`is_unique_optimum=True`) and total cost/gallons match exactly, but
+    the per-stop split legitimately differs because two stations in that
+    set share an identical price.
+    """
+
+    def test_two_equal_priced_stations_split_the_purchase_differently_at_equal_cost(
+        self,
+    ):
+        candidates = [
+            Candidate(
+                name="S0", opis_id=0, price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(1),
+            ),
+            Candidate(
+                name="S1", opis_id=1, price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(2),
+            ),
+        ]
+        total_route_mi = Decimal(102)
+        tank_range_mi = Decimal(100)
+        mpg = Decimal(1)
+        starting_fuel = Decimal("0.01")
+
+        greedy_plan = frozen_greedy.solve(
+            candidates,
+            total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+        dp_plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=Decimal(0),
+        )
+        oracle_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=Decimal(0),
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+
+        context = f"dp_plan={dp_plan!r}, greedy_plan={greedy_plan!r}, oracle_plan={oracle_plan!r}"
+
+        # The winning station SET is unique -- this is NOT a D-36 station-
+        # set tie, it is the deeper split-level tie this amendment exists
+        # to document.
+        self.assertIsNotNone(oracle_plan, context)
+        self.assertTrue(oracle_plan.is_unique_optimum, context)
+        self.assertEqual(oracle_plan.stop_opis_ids, (0, 1), context)
+
+        self.assertEqual(len(dp_plan.stops), 2, context)
+        self.assertEqual(len(greedy_plan.stops), 2, context)
+        self.assertEqual(
+            [s.opis_id for s in dp_plan.stops], [s.opis_id for s in greedy_plan.stops], context
+        )
+
+        # Total cost/gallons are byte-identical -- the regression gate
+        # this whole suite protects.
+        self.assertEqual(dp_plan.total_cost, Decimal("101.0000"), context)
+        self.assertEqual(greedy_plan.total_cost, Decimal("101.0000"), context)
+        self.assertEqual(dp_plan.total_gallons, Decimal("101.00"), context)
+        self.assertEqual(greedy_plan.total_gallons, Decimal("101.00"), context)
+
+        # The divergence this test exists to pin: the per-stop split is
+        # genuinely different, not a bug in either solver.
+        dp_first, greedy_first = dp_plan.stops[0], greedy_plan.stops[0]
+        self.assertNotEqual(dp_first.gallons, greedy_first.gallons, context)
+        self.assertEqual(dp_first.gallons, Decimal("1.00"), context)
+        self.assertEqual(greedy_first.gallons, Decimal("100.00"), context)
+        self.assertEqual(dp_first.purchase_reason, PurchaseReason.REACH_CHEAPER_STOP, context)
+        self.assertEqual(
+            greedy_first.purchase_reason, PurchaseReason.TOP_UP_AT_CHEAPEST, context
+        )
+
+        stop_prices = [s.price_per_gallon for s in dp_plan.stops]
+        self.assertNotEqual(
+            len(set(stop_prices)),
+            len(stop_prices),
+            f"the winning set no longer contains an equal-price pair -- "
+            f"the has_equal_price_pair gate in FrozenGreedyDifferentialTests "
+            f"would no longer recognise this witness; {context}",
         )
 
 
