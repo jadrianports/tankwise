@@ -81,6 +81,12 @@ export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 // in-app through the WhyMultipleStopsPopup dialog mounted above the
 // itinerary in ResultsSection, so a reviewer reads the count as
 // intelligence rather than a bug.
+//
+// Flagged, not rewritten (Phase 18): the 10/6 counts above predate the
+// fixed-charge (per-stop-penalty) objective swap and will move once the
+// live solver charges a flat fee per stop instead of optimizing on fuel
+// dollars alone. Re-measuring them is Phase 19's job (HON-01/HON-03),
+// alongside the count-agnostic copy this comment already describes.
 export interface DemoTrip {
   label: string;
   description: string;

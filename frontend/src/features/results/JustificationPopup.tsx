@@ -16,10 +16,12 @@ export interface JustificationPopupProps {
   onClose: () => void;
 }
 
-// The 4-value purchase_reason enum translated into a human sentence
-// (the backend emits no prose, structured fields only -- this is the one
-// place that prose gets written, frontend-side).
-const REASON_COPY: Record<PurchaseReason, (stop: FuelStop) => string> = {
+// The purchase_reason enum translated into a human sentence (the backend
+// emits no prose, structured fields only -- this is the one place that
+// prose gets written, frontend-side). Looked up via an OPTIONAL call
+// (see justificationText below) so a future, still-unmapped reason value
+// degrades to a neutral sentence instead of throwing.
+const REASON_COPY: Partial<Record<PurchaseReason, (stop: FuelStop) => string>> = {
   reach_cheaper_stop: (stop) =>
     `Bought just enough fuel here to reach ${
       stop.rationale.reason_target_name ?? 'a cheaper station up ahead'
@@ -28,6 +30,11 @@ const REASON_COPY: Record<PurchaseReason, (stop: FuelStop) => string> = {
     'No cheaper station was in range, so the tank was filled here to keep the trip moving.',
   reach_finish: () => 'Bought just enough fuel here to reach the finish.',
   top_up_at_cheapest: () => 'This was the cheapest station in range, so the tank was topped up here.',
+  // Placeholder sentence only -- the real copy is written in plan 18-05,
+  // last, against observed DP output (D-06), so it can describe what the
+  // solver actually does rather than being authored blind here.
+  bypass_cheaper_not_worth_stop: () =>
+    'A cheaper station up ahead was skipped here because stopping for it would have cost more in fees than it saved.',
 };
 
 function justificationText(stop: FuelStop): string {
@@ -35,16 +42,43 @@ function justificationText(stop: FuelStop): string {
   if (!purchase_reason) {
     return 'The starting tank already covered this leg -- no fuel was purchased here.';
   }
-  return REASON_COPY[purchase_reason](stop);
+  // Optional call with a fallback: REASON_COPY was previously an exhaustive
+  // Record over a four-value union, so a fifth (or future sixth) value
+  // called `undefined` and threw at runtime -- a crash, not a copy gap.
+  // The fallback stays even after every known reason has real copy, so a
+  // future new value degrades instead of breaking.
+  return (
+    REASON_COPY[purchase_reason]?.(stop) ??
+    'This stop was part of the cheapest overall fueling plan for the trip.'
+  );
 }
 
-// Matches the backend's own skipped rule, re-derived frontend-side:
-// "passed N stations since the last stop" plus their average price.
+// Reworded per D-04: skipped_count/skipped_avg_price no longer mean
+// "everything positionally passed between the previous stop and this
+// one" -- they now count genuinely-rejected candidates: strictly-cheaper
+// stations the solver evaluated as successors from this stop and chose
+// not to take.
 function skippedText(stop: FuelStop): string | null {
   const { skipped_count, skipped_avg_price } = stop.rationale;
   if (skipped_count <= 0) return null;
   const avg = skipped_avg_price ? `, averaging $${skipped_avg_price}/gal` : '';
-  return `Passed ${skipped_count} station${skipped_count === 1 ? '' : 's'} since the last stop${avg}.`;
+  return `Rejected ${skipped_count} cheaper station${skipped_count === 1 ? '' : 's'} in range from here${avg}.`;
+}
+
+// New (Phase 18): names the count -- and, when priced, the forgone
+// fuel-dollar saving -- of strictly-cheaper stations the solver bypassed
+// here because the flat per-stop penalty outweighed the saving
+// (`bypass_cheaper_not_worth_stop`). Distinct from skippedText above:
+// this always reflects the actual bypass decision behind THIS purchase,
+// while skippedText is the broader "what was evaluated and rejected"
+// context.
+function bypassedCheaperText(stop: FuelStop): string | null {
+  const { bypassed_cheaper_count, bypassed_saving_forgone } = stop.rationale;
+  if (bypassed_cheaper_count <= 0) return null;
+  const saving = bypassed_saving_forgone ? ` (about $${bypassed_saving_forgone} in fuel savings)` : '';
+  return `Passed up ${bypassed_cheaper_count} cheaper station${
+    bypassed_cheaper_count === 1 ? '' : 's'
+  } here rather than pay for another stop${saving}.`;
 }
 
 function percentileText(stop: FuelStop): string | null {
@@ -60,6 +94,7 @@ function percentileText(stop: FuelStop): string | null {
 // the structured `rationale` fields -- no backend prose field is consumed.
 function JustificationPopup({ stop, number, open, onClose }: JustificationPopupProps) {
   const skipped = skippedText(stop);
+  const bypassedCheaper = bypassedCheaperText(stop);
   const percentile = percentileText(stop);
 
   return (
@@ -89,8 +124,13 @@ function JustificationPopup({ stop, number, open, onClose }: JustificationPopupP
           {justificationText(stop)}
         </Typography>
         {skipped && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: skipped && percentile ? 0.5 : 0 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: bypassedCheaper || percentile ? 0.5 : 0 }}>
             {skipped}
+          </Typography>
+        )}
+        {bypassedCheaper && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: percentile ? 0.5 : 0 }}>
+            {bypassedCheaper}
           </Typography>
         )}
         {percentile && (

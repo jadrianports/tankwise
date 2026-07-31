@@ -111,8 +111,8 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v5: and contains exactly
-    two | separators (stops-chain|vehicle|eia)."""
+    """Every produced key starts with route:v6: and contains exactly
+    three | separators (stops-chain|vehicle|eia|penalty)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
         key = build_cache_key(
@@ -122,8 +122,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v5:"))
-        self.assertEqual(key.count("|"), 2)
+        self.assertTrue(key.startswith("route:v6:"))
+        self.assertEqual(key.count("|"), 3)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -160,13 +160,13 @@ class VehicleCacheKeyTests(SimpleTestCase):
 
         self.assertEqual(key_absent, key_explicit)
 
-    def test_every_key_starts_with_v4_prefix(self):
+    def test_every_key_starts_with_current_prefix(self):
         for payload in (
             self._payload(),
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v5:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v6:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -192,6 +192,31 @@ class VehicleCacheKeyTests(SimpleTestCase):
         keys = [build_cache_key(self._payload(profile)) for profile in profiles]
 
         self.assertEqual(len(keys), len(set(keys)))
+
+
+class PenaltyCacheKeyTests(SimpleTestCase):
+    """The `p:` penalty token (INTG-03, D-32) ties a cached payload to the
+    flat per-stop penalty it was priced under: two different penalties
+    never collide, while an omitted penalty (a legacy or test caller)
+    still produces a stable key."""
+
+    def _payload(self):
+        return {
+            "start": coord("41.8781", "-87.6298"),
+            "finish": coord("38.6270", "-90.1994"),
+        }
+
+    def test_different_penalty_produces_different_key(self):
+        key_a = build_cache_key(self._payload(), penalty=Decimal("35"))
+        key_b = build_cache_key(self._payload(), penalty=Decimal("20"))
+
+        self.assertNotEqual(key_a, key_b)
+
+    def test_omitted_penalty_is_stable_across_calls(self):
+        key_a = build_cache_key(self._payload())
+        key_b = build_cache_key(self._payload())
+
+        self.assertEqual(key_a, key_b)
 
 
 class EiaVintageCacheKeyTests(SimpleTestCase):

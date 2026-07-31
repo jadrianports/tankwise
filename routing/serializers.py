@@ -70,7 +70,14 @@ def _rationale_repr(instance) -> dict:
     """Render a `FuelStop`'s rationale fields (set by the solver at the
     exact branch that produced the purchase -- see `PurchaseReason`) into
     a plain, JSON-safe dict. Every price in this object reuses
-    `_quantize_money`; no new money formatter is introduced."""
+    `_quantize_money`; no new money formatter is introduced.
+
+    `bypassed_cheaper_count`/`bypassed_saving_forgone` are additive
+    (Phase 18): how many strictly-cheaper reachable stations the
+    fixed-charge recurrence evaluated as successors from this stop and
+    did not take because the flat per-stop penalty outweighed the saving,
+    and the fuel-dollar saving those rejections gave up. Contract stays
+    additive-only -- structured facts, no prose."""
     return {
         "purchase_reason": instance.purchase_reason,
         "reason_target_station_id": instance.reason_target_opis_id,
@@ -87,6 +94,12 @@ def _rationale_repr(instance) -> dict:
             else None
         ),
         "price_percentile": _percent_repr(instance.price_percentile),
+        "bypassed_cheaper_count": int(instance.bypassed_cheaper_count),
+        "bypassed_saving_forgone": (
+            _quantize_money(instance.bypassed_saving_forgone)
+            if instance.bypassed_saving_forgone is not None
+            else None
+        ),
     }
 
 
@@ -441,9 +454,10 @@ class FuelStopSerializer(serializers.Serializer):
     structured, English-prose-free facts (`purchase_reason`,
     `reason_target_station_id`/`reason_target_name`,
     `skipped_count`/`skipped_avg_price`, `price_percentile`,
-    `corridor_avg_price`) explaining why the stop happened and for how
-    much. Every value in it was computed by the solver at the branch that
-    produced the purchase -- this class re-derives nothing, it only
+    `corridor_avg_price`, `bypassed_cheaper_count`/
+    `bypassed_saving_forgone`) explaining why the stop happened and for
+    how much. Every value in it was computed by the solver at the branch
+    that produced the purchase -- this class re-derives nothing, it only
     formats.
     """
 

@@ -600,7 +600,11 @@ class RouteView(APIView):
             factor_table["week"] if price_index_status != "frozen" else "frozen"
         )
 
-        cache_key = build_cache_key(validated, eia_vintage=eia_vintage)
+        cache_key = build_cache_key(
+            validated,
+            eia_vintage=eia_vintage,
+            penalty=settings.FUEL_STOP_PENALTY_USD,
+        )
         with self._timing.stage("cache"):
             cached = cache.get(cache_key)
         if cached is not None:

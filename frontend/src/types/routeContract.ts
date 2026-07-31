@@ -12,7 +12,8 @@ export type PurchaseReason =
   | 'reach_cheaper_stop'
   | 'fill_to_continue'
   | 'reach_finish'
-  | 'top_up_at_cheapest';
+  | 'top_up_at_cheapest'
+  | 'bypass_cheaper_not_worth_stop';
 
 // `_location_repr` shape: a resolved coordinate rendered as string lat/lng,
 // or `null` when no coords were supplied via serializer context.
@@ -32,6 +33,13 @@ export interface Rationale {
   skipped_avg_price: string | null;
   corridor_avg_price: string | null;
   price_percentile: number | null;
+  // Additive (Phase 18): how many strictly-cheaper reachable stations the
+  // fixed-charge recurrence evaluated as successors from this stop and did
+  // not take because the flat per-stop penalty outweighed the fuel-dollar
+  // saving, and that forgone saving. Money stays a full-precision string,
+  // never `number`, matching this file's own header comment.
+  bypassed_cheaper_count: number;
+  bypassed_saving_forgone: string | null;
 }
 
 // `FuelStopSerializer.to_representation` output.

@@ -21,7 +21,26 @@ additionally ties a cached payload to the EIA week it was priced under --
 a week rollover produces a new key, so no plan priced under one EIA week
 is ever served under a newer week's disclaimer (EIA-01).
 
-It is now versioned `route:v5:` because the meaning of a cached
+It is now versioned `route:v6:` because two independent things changed
+under the same deploy (D-33): (a) the objective changed -- plans are now
+chosen under fuel dollars plus a per-stop penalty rather than fuel dollars
+alone, so a payload cached under the previous prefix is a plan computed
+under a superseded objective (INTG-03), and (b) `skipped_count`'s meaning
+changed under D-04 from positionally-passed stations to
+genuinely-rejected candidates, so the cached value is *wrong* for the new
+consumer, not merely old -- the same argument that drove the previous
+bump. The new `p:` penalty token (see `_penalty_token` below) additionally
+ties a cached payload to the penalty it was priced under:
+`CACHE_TTL_SECONDS` is 86400 and production Redis is Upstash, which
+persists across deploys, so changing `FUEL_STOP_PENALTY_USD` and
+redeploying would otherwise serve plans computed under the old penalty for
+up to 24 hours after deploy -- INTG-03's exact failure mode, displaced one
+commit past the phase boundary that introduced the setting. A documented
+bump-on-change rule was considered and rejected here too, for the same
+reason the `e:` token exists: it makes correctness depend on a human
+remembering a note.
+
+It was versioned `route:v5:` because the meaning of a cached
 `savings` payload changed: the price-blind baseline no longer tops the
 tank on its final stop, so a plan cached under `v4` reports a materially
 larger saving (measured ~3.7x across 56 routes) than the same request
@@ -118,7 +137,29 @@ def _eia_token(eia_vintage) -> str:
     return f"e:{eia_vintage if eia_vintage is not None else 'none'}"
 
 
-def build_cache_key(validated_data, *, eia_vintage=None) -> str:
+def _penalty_token(penalty) -> str:
+    """Namespaced `p:` token for the flat per-stop `penalty` (dollars) a
+    cached payload was priced under. `CACHE_TTL_SECONDS` is 86400 and
+    production Redis is Upstash, which persists across deploys, so
+    changing `FUEL_STOP_PENALTY_USD` and redeploying would otherwise serve
+    plans computed under the old penalty for up to 24 hours after deploy
+    -- this token exists so that failure mode is structurally impossible
+    rather than merely documented. Quantized to 2 decimal places,
+    deterministically, exactly as the vehicle token quantizes its own
+    fields. Omitted (`None`, a legacy or test caller that never threads a
+    penalty through) resolves to a fixed, stable literal rather than a
+    varying key shape -- the same treatment `_eia_token` gives its own
+    `None`. A documented bump-on-change rule was considered and rejected
+    here, because it makes correctness depend on a human remembering a
+    note, which is exactly what this token (and the `e:` token before it)
+    exists to stop relying on."""
+    if penalty is None:
+        return "p:none"
+    penalty_value = penalty if isinstance(penalty, Decimal) else Decimal(str(penalty))
+    return f"p:{round(penalty_value, 2)}"
+
+
+def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     """Build the cache key for a validated
     `{"start": ..., "finish": ..., "vehicle": ..., "waypoints": ...}`
     payload (the `RouteRequestSerializer.validated_data` shape).
@@ -131,8 +172,9 @@ def build_cache_key(validated_data, *, eia_vintage=None) -> str:
     the original two-endpoint shape. `vehicle` is optional here -- see
     `_vehicle_token` -- so callers that omit it (existing tests, a
     v1.0-shaped request that resolved to defaults) still get a stable
-    key. `eia_vintage` (see `_eia_token`) is likewise optional, so a
-    caller that never threads it through still gets a stable key.
+    key. `eia_vintage` (see `_eia_token`) and `penalty` (see
+    `_penalty_token`) are likewise optional, so a caller that never
+    threads either through still gets a stable key.
 
     The ordered chain is `start -> *waypoints -> finish`, each stop's
     token built by the unchanged `_endpoint_token()` -- never sorted,
@@ -144,4 +186,5 @@ def build_cache_key(validated_data, *, eia_vintage=None) -> str:
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
     vehicle_token = _vehicle_token(validated_data.get("vehicle"))
     eia_token = _eia_token(eia_vintage)
-    return f"route:v5:{stops_token}|{vehicle_token}|{eia_token}"
+    penalty_token = _penalty_token(penalty)
+    return f"route:v6:{stops_token}|{vehicle_token}|{eia_token}|{penalty_token}"
