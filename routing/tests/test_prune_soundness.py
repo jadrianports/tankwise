@@ -13,8 +13,8 @@ re-deriving them: D-06 constrains how a referee is *derived*, not how it
 is *consumed*, and re-deriving it here would give the prune a second,
 unproven judge.
 
-Uses django.test.SimpleTestCase throughout, never
-hypothesis.extra.django.TestCase: the prune under test is pure and never
+Uses django.test.SimpleTestCase throughout, never Hypothesis's own
+Django-integrated TestCase: the prune under test is pure and never
 touches the ORM, so the Django/Hypothesis integration's per-example
 database transaction would buy nothing here.
 
