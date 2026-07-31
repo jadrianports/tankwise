@@ -690,10 +690,10 @@ def solve_fixed_charge(
                         bypassed_cheaper_count=bypassed_count,
                         bypassed_saving_forgone=bypassed_saving,
                     )
-                    # Already confirmed a winner by `_wins` above, with
-                    # nothing else touching this exact (target_index,
-                    # arrival_fuel_ticks) state in between -- commit
-                    # directly rather than re-checking through `relax`.
+                    # Already confirmed a winner by the inlined check
+                    # above, with nothing else touching this exact
+                    # (target_index, arrival_fuel_ticks) state in between
+                    # -- commit directly rather than re-checking.
                     states[target_index][arrival_fuel_ticks] = _StateRecord(
                         key=new_key, predecessor=predecessor, edge=edge
                     )
