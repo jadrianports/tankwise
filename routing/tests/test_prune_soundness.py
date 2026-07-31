@@ -26,6 +26,8 @@ below are on the retained set directly (D-05), not on a downstream solve()
 call.
 """
 import inspect
+import random
+from dataclasses import dataclass
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -909,4 +911,251 @@ class PruneSliverRuleRegressionTests(SimpleTestCase):
             "(opis_id=1) here and raised the true optimum from $103.01 "
             "to $104.00 (99x COST_TOLERANCE); the current rule must "
             f"retain all three stations. Got retained={result!r}",
+        )
+
+
+@dataclass(frozen=True)
+class PruneCorpusParams:
+    """The D-16 single source of truth for D-36's dense reduction-guard
+    corpus (PruneReductionGuardTests.test_dense_corpus_reduction_rate_
+    exceeds_floor below), mirroring CorpusParams' precedent in
+    test_solver_fixed_charge_optimality.py: every field is fixed here,
+    before the first measurement is taken, and is never revisited after
+    seeing a result (D-14).
+
+    total_route_mi is set materially longer than tank_range_mi so a
+    substantial share of the uniformly-placed stations land in the
+    prune's tail region (pos >= total_route_mi - tank_range_mi) and the
+    tail-cover pass fires; colocated_share pins the fraction of stations
+    deliberately placed at an already-used position so the co-located
+    dedup pass fires too. station_count is "hundreds of stations", the
+    realistic-corridor-scale D-36 calls for -- distinct from and not
+    derived from GREEDY_STATION_CAP above, which is a Hypothesis
+    per-example density knob, not a fixed corpus size.
+    """
+
+    seed: int
+    station_count: int
+    total_route_mi: Decimal
+    tank_range_mi: Decimal
+    min_price_cents: int
+    max_price_cents: int
+    colocated_share: Decimal
+
+
+# The D-16 single shared instance. Every field was chosen before the
+# reduction rate below was ever measured: seed is today's date (distinct
+# from Phase 16's CORPUS_PARAMS.seed=20260730, so the two corpora never
+# accidentally interleave draws from the same RNG state); station_count
+# and the price band match the "hundreds of stations" / realistic
+# corridor-price scale used elsewhere in this module; total_route_mi is
+# materially longer than tank_range_mi (2200 vs 1050, matching the
+# UI-default loaded-semi tank from Phase 16's CORPUS_PARAMS) so roughly
+# half the route falls in the tail region by construction, not by tuning;
+# colocated_share=0.10 guarantees real co-located duplicates without
+# dominating the corpus.
+PRUNE_CORPUS_PARAMS = PruneCorpusParams(
+    seed=20260731,
+    station_count=500,
+    total_route_mi=Decimal(2200),
+    tank_range_mi=Decimal(1050),
+    min_price_cents=100,
+    max_price_cents=600,
+    colocated_share=Decimal("0.10"),
+)
+
+# D-36: set once, after PRUNE_CORPUS_PARAMS above was measured a single
+# time -- 50.80% (246/500 retained) reduction, recorded verbatim in
+# 17-05-SUMMARY.md. Set at 0.15, roughly a third of that measured rate
+# (0.15 / 0.508 ~= 0.30), following DISAGREEMENT_FLOOR's precedent
+# exactly: wide enough that ordinary distribution drift never flakes this
+# guard, tight enough that a silently no-op prune (which scores exactly 0
+# here) fails it instantly. Do not adjust PRUNE_CORPUS_PARAMS or this
+# floor to make a future run pass (D-14/D-17) -- see the failure message
+# on the guard below.
+PRUNE_REDUCTION_FLOOR = Decimal("0.15")
+
+
+def build_prune_corpus(*, params=PRUNE_CORPUS_PARAMS):
+    """Deterministically build params.station_count candidates on a single
+    dense corridor, from a fresh random.Random(params.seed) -- never the
+    global random module, so two consecutive calls return byte-identical
+    corpora (proven by
+    PruneReductionGuardTests.test_build_prune_corpus_is_deterministic_
+    across_two_calls below).
+
+    A params.colocated_share fraction of the stations are placed at a
+    position already drawn for an earlier station in the same corpus (a
+    duplicate position, independently priced), so the prune's co-located
+    dedup pass has real duplicates to resolve. The remaining
+    (1 - params.colocated_share) fraction get fresh, mutually distinct
+    positions drawn without replacement from across the whole route, so a
+    substantial share of the corpus lands in the tail region purely from
+    that uniform spread, at params.total_route_mi materially longer than
+    params.tank_range_mi.
+    """
+    rng = random.Random(params.seed)
+    n_colocated = int(params.station_count * params.colocated_share)
+    n_fresh = params.station_count - n_colocated
+
+    fresh_positions = rng.sample(range(1, int(params.total_route_mi)), n_fresh)
+    colocated_positions = [rng.choice(fresh_positions) for _ in range(n_colocated)]
+    positions = fresh_positions + colocated_positions
+
+    candidates = []
+    for i, position_mi in enumerate(positions):
+        price_cents = rng.randint(params.min_price_cents, params.max_price_cents)
+        candidates.append(
+            Candidate(
+                name=f"P{i}",
+                opis_id=i,
+                price_per_gallon=Decimal(price_cents) / Decimal(100),
+                distance_from_start_mi=Decimal(position_mi),
+            )
+        )
+    return candidates
+
+
+class PruneReductionGuardTests(SimpleTestCase):
+    """D-36's reduction guards -- a plain SimpleTestCase, not a Hypothesis
+    property, so it runs identically -- same corpus, same result -- on
+    every commit.
+
+    `prune(x) -> x` (a no-op) satisfies every soundness property in this
+    module vacuously: containment, feasibility, and cost all hold
+    trivially when nothing is ever removed. D-17's floor existed to catch
+    exactly that; this class replaces the one-sided floor with a
+    closed-form equality (test A) derived from prune.py's own maximality
+    theorem, which catches over-pruning as well as a no-op, plus a seeded
+    dense-corpus floor (test B) so a regression at realistic scale still
+    fails.
+
+    The report-only twelve-corridor command is plan 17-06's deliverable
+    and must never run in CI (D-17); this class is the CI-enforcing half
+    of that pair.
+    """
+
+    def test_survivor_set_equals_the_independently_computed_prefix_minima(self):
+        """D-36's primary guard. On a route shorter than the tank range
+        with pairwise-distinct prices at distinct positions, every
+        station's own supply interval reaches FINISH (pos + T >= L holds
+        for all of them, since T alone already exceeds L) -- so the cover
+        condition's tail branch is available to every candidate, and the
+        survivor set is exactly the strict price prefix-minima in total
+        order. This is a theorem of prune.py's own maximality section
+        ("route shorter than tank range" collapses containment to "no
+        earlier-ranked station is cheaper-or-equal"), not a number tuned
+        to a measurement -- so it is asserted as set equality against an
+        independently computed expectation. Equality is the point: a
+        no-op prune fails it by retaining everything, and an over-eager
+        prune fails it by dropping a true prefix-minimum -- exactly the
+        half a one-sided floor could never catch.
+        """
+        total_route_mi = Decimal(1000)
+        tank_range_mi = Decimal(1500)
+        self.assertLess(
+            total_route_mi,
+            tank_range_mi,
+            "this test's geometry requires total_route_mi < tank_range_mi "
+            "so every station's cover condition tail branch fires",
+        )
+        station_count = 300
+
+        rng = random.Random(PRUNE_CORPUS_PARAMS.seed)
+        positions = rng.sample(range(1, int(total_route_mi)), station_count)
+        # A price population wide enough that random.Random.sample's
+        # without-replacement draw guarantees distinctness by
+        # construction, not by luck.
+        price_cents_population = range(100, 100 + 50 * station_count)
+        price_cents = rng.sample(price_cents_population, station_count)
+
+        candidates = [
+            Candidate(
+                name=f"S{i}",
+                opis_id=i,
+                price_per_gallon=Decimal(price_cents[i]) / Decimal(100),
+                distance_from_start_mi=Decimal(positions[i]),
+            )
+            for i in range(station_count)
+        ]
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        ordered = sorted(candidates, key=_sort_key)
+        expected = []
+        running_min = None
+        for candidate in ordered:
+            if running_min is None or candidate.price_per_gallon < running_min:
+                expected.append(candidate)
+                running_min = candidate.price_per_gallon
+
+        self.assertEqual(
+            set(result),
+            set(expected),
+            f"survivor set does not equal the independently computed "
+            f"strict price prefix-minima on a {station_count}-station "
+            f"corpus shorter than the tank range (total_route_mi="
+            f"{total_route_mi}, tank_range_mi={tank_range_mi}); got "
+            f"{len(result)} survivors, expected {len(expected)}",
+        )
+
+        # A statement about the corpus, not about the prune: for a few
+        # hundred randomly ordered distinct prices, the expected
+        # prefix-minima count is on the order of the harmonic number
+        # (single digits) -- far smaller than the station count. This
+        # generous ceiling is what makes the equality assertion above
+        # demonstrably load-bearing rather than vacuous.
+        self.assertLess(
+            len(expected),
+            30,
+            f"expected prefix-minima count ({len(expected)}) is not far "
+            f"smaller than station_count={station_count} -- this is a "
+            f"statement about the corpus's random price ordering, not "
+            f"about the prune; if this fails, the corpus needs "
+            f"attention, not prune_dominated_candidates",
+        )
+
+    def test_dense_corpus_reduction_rate_exceeds_floor(self):
+        """D-36's seeded dense-corpus floor. A prune that has silently
+        become a no-op scores exactly 0 here -- check that first if this
+        ever fails. Do not adjust the seed, the station count, or any
+        other PRUNE_CORPUS_PARAMS field to make this pass (D-14/D-17).
+        """
+        candidates = build_prune_corpus()
+        retained = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=PRUNE_CORPUS_PARAMS.tank_range_mi,
+            total_route_mi=PRUNE_CORPUS_PARAMS.total_route_mi,
+        )
+        reduction_rate = Decimal(1) - Decimal(len(retained)) / Decimal(len(candidates))
+
+        self.assertGreater(
+            reduction_rate,
+            PRUNE_REDUCTION_FLOOR,
+            f"measured reduction rate {reduction_rate} over "
+            f"PRUNE_CORPUS_PARAMS (seed={PRUNE_CORPUS_PARAMS.seed}, "
+            f"station_count={PRUNE_CORPUS_PARAMS.station_count}) did not "
+            f"exceed PRUNE_REDUCTION_FLOOR={PRUNE_REDUCTION_FLOOR}. A "
+            f"prune that has silently become a no-op scores exactly 0 "
+            f"here -- check that first. Do not adjust the seed, the "
+            f"station count, or any other PRUNE_CORPUS_PARAMS field to "
+            f"make this pass (D-14/D-17); candidate_count="
+            f"{len(candidates)}, retained_count={len(retained)}",
+        )
+
+    def test_build_prune_corpus_is_deterministic_across_two_calls(self):
+        """Without random.Random(seed) freshly seeded per call, a corpus
+        that quietly consumed global RNG state would make both guards
+        above unreproducible."""
+        first = build_prune_corpus()
+        second = build_prune_corpus()
+        self.assertEqual(
+            [(c.opis_id, c.price_per_gallon, c.distance_from_start_mi) for c in first],
+            [(c.opis_id, c.price_per_gallon, c.distance_from_start_mi) for c in second],
+            "build_prune_corpus() returned different corpora across two "
+            "consecutive calls -- it must be freshly seeded from "
+            "PRUNE_CORPUS_PARAMS.seed on every call, never consuming the "
+            "global random module's state.",
         )
