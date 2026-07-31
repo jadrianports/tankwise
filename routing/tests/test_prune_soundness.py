@@ -569,6 +569,181 @@ class PruneOracleDifferentialTests(SimpleTestCase):
             )
 
 
+# The D-08 knob (the only value tasks in this module may move to fit the
+# ~15s runtime ceiling) and its companion, the explicit density floor
+# (min_size, never left to Hypothesis's small-biased max_size-only
+# default). Both are consumed directly by dense_corridor_routes() below.
+GREEDY_MIN_STATIONS = 100
+GREEDY_STATION_CAP = 250
+
+
+@st.composite
+def dense_corridor_routes(draw):
+    """Draw a dense single-leg route for the greedy/density differential
+    arm: GREEDY_MIN_STATIONS..GREEDY_STATION_CAP candidates on a route
+    drawn from roughly 1,400-2,600 mi -- the band REQUIREMENTS.md's
+    Evidence Base names as where the problem concentrates -- with
+    tank_range_mi drawn from roughly 200-1,050 mi, so
+    tank_range_mi / total_route_mi varies across the range that governs
+    how much of the route falls in the prune's tail region.
+
+    Prices are drawn as integer cents and divided by 100 into a Decimal --
+    deliberately not Hypothesis's own decimal-drawing strategy, which
+    costs roughly twice the generation time at these list sizes, and at
+    200 examples that difference is what decides whether the D-08 ceiling
+    holds. Hypothesis's decimal strategy stays on the oracle arm
+    (single_leg_routes(), imported verbatim from
+    test_solver_fixed_charge_optimality per D-06). starting_fuel below is
+    drawn the same integer-cents way, for the same reason.
+
+    min_size=GREEDY_MIN_STATIONS is set explicitly: relying on max_size
+    alone yields an average of about 4.3 candidates per example (Hypothesis's
+    small-biased default), which would make this arm a duplicate of the
+    oracle arm rather than a density referee.
+
+    starting_fuel is drawn as a 2-place decimal across the closed interval
+    [0, 1] (as integer cents 0-100, divided by 100), so the
+    starting_fuel=0 origin boundary is inside the drawn distribution
+    rather than needing its own unwieldy multi-hundred-station @example
+    anchor.
+
+    Station positions are unique (unique_by on the position element) and
+    strictly inside (0, total_route_mi), so solve()'s _validate never
+    rejects a drawn example.
+    """
+    total_route_mi = Decimal(draw(st.integers(min_value=1400, max_value=2600)))
+    tank_range_mi = Decimal(draw(st.integers(min_value=200, max_value=1050)))
+    station_tuples = draw(
+        st.lists(
+            st.tuples(
+                st.integers(min_value=100, max_value=600),  # integer cents: $1.00-$6.00
+                st.integers(min_value=1, max_value=int(total_route_mi) - 1),
+            ),
+            min_size=GREEDY_MIN_STATIONS,
+            max_size=GREEDY_STATION_CAP,
+            unique_by=lambda t: t[1],
+        )
+    )
+    candidates = [
+        Candidate(
+            name=f"D{i}",
+            opis_id=i,
+            price_per_gallon=Decimal(price_cents) / Decimal(100),
+            distance_from_start_mi=Decimal(position),
+        )
+        for i, (price_cents, position) in enumerate(station_tuples)
+    ]
+    mpg = Decimal(draw(st.integers(min_value=1, max_value=50)))
+    starting_fuel_cents = draw(st.integers(min_value=0, max_value=100))
+    starting_fuel = Decimal(starting_fuel_cents) / Decimal(100)
+    return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
+
+
+class PruneGreedyDifferentialTests(SimpleTestCase):
+    """The greedy/density arm of D-01's two-referee design.
+
+    routing/tests/test_solver_optimality.py already proves solve() is a
+    true pure-fuel cost optimum -- an exhaustive memoized recursive search
+    over every (node_index, fuel_miles_remaining) state, not an
+    approximation. routing/services/prune.py's own soundness proof (see
+    its "Soundness" docstring section, the pure-fuel paragraph) shows that
+    D-22 preserves that optimum: a dominated station's supply interval is
+    contained in its dominator's at a price no higher, so removing it
+    never raises the achievable minimum fuel cost and never turns a
+    feasible route infeasible. Both solves must therefore attain the same
+    cost -- this class is not a second, weaker oracle, it is the same
+    claim PruneOracleDifferentialTests already proves at up to
+    MAX_STATIONS=6, exercised here at a density (100-250 stations per
+    example) the exponential oracle's subset enumeration can never reach.
+
+    Corollary the fence names: if this property ever fails, the cause is
+    either an unsound prune or a shipped greedy that is not optimal at
+    this density -- both are real findings for Phase 18 to investigate,
+    neither is something to tune away here (scope fence clause 4).
+
+    Station set and stop count are deliberately NOT asserted here -- only
+    feasibility and total_cost. The greedy's tie-breaks may legitimately
+    select a different but equal-cost station set once a co-located
+    duplicate is removed by the prune; asserting the set here would
+    produce flakes that say nothing about soundness.
+    PruneOracleDifferentialTests above already covers station-set
+    equality, and only where the unpruned optimum is strictly unique
+    (D-02).
+    """
+
+    @given(dense_corridor_routes())
+    @settings(deadline=None, max_examples=200)
+    def test_prune_then_solve_matches_solve_over_full_set_at_corridor_density(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+
+        retained = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        context = (
+            f"candidate_count={len(candidates)}, retained_count={len(retained)}, "
+            f"total_route_mi={total_route_mi}, tank_range_mi={tank_range_mi}, "
+            f"mpg={mpg}, starting_fuel={starting_fuel}"
+        )
+
+        # Containment: every retained candidate is one of the inputs, and
+        # pruning never grows the set. (Full candidate reprs are omitted
+        # from context deliberately at this density -- 100-250 Candidate
+        # reprs would make a failure message unreadable; the oracle arm's
+        # small candidate counts keep full reprs useful there instead.)
+        candidate_ids = {id(c) for c in candidates}
+        for element in retained:
+            self.assertIn(id(element), candidate_ids, f"retained a non-input candidate; {context}")
+        self.assertLessEqual(len(retained), len(candidates), f"prune grew the candidate set; {context}")
+
+        try:
+            unpruned_plan = solve(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            unpruned_feasible = True
+        except InfeasibleRouteError:
+            unpruned_plan = None
+            unpruned_feasible = False
+
+        try:
+            pruned_plan = solve(
+                retained,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+            )
+            pruned_feasible = True
+        except InfeasibleRouteError:
+            pruned_plan = None
+            pruned_feasible = False
+
+        # Feasibility, always (D-02).
+        self.assertEqual(
+            unpruned_feasible,
+            pruned_feasible,
+            f"feasibility verdicts disagree between pruned and unpruned "
+            f"solves: unpruned_feasible={unpruned_feasible}, "
+            f"pruned_feasible={pruned_feasible}; {context}",
+        )
+        if not unpruned_feasible:
+            return
+
+        # Cost, always (D-02) -- within the same tolerance band the oracle
+        # arm and the shipped optimality suite both use.
+        self.assertLessEqual(
+            abs(unpruned_plan.total_cost - pruned_plan.total_cost),
+            COST_TOLERANCE,
+            f"pruned total_cost ({pruned_plan.total_cost}) differs from "
+            f"the unpruned total_cost ({unpruned_plan.total_cost}) beyond "
+            f"COST_TOLERANCE; {context}",
+        )
+
+
 class PrunePenaltyInvarianceTests(SimpleTestCase):
     """D-04: prune_dominated_candidates takes no penalty argument, and its
     retained set is byte-identical across penalties. Both claims are
