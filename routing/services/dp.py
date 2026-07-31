@@ -345,7 +345,7 @@ def solve_fixed_charge(
     a plain Python `int` ("ticks"): `_to_ticks`/`_from_ticks` convert via
     `Decimal.as_tuple()`'s exact `(sign, digits, exponent)` triple, never
     via `Decimal` division or `scaleb` (both of which are, in general,
-    subject to context-precision rounding) -- so the conversion is a exact
+    subject to context-precision rounding) -- so the conversion is an exact
     change of representation, not an approximation. Addition and
     subtraction are closed under a fixed exponent (the sum/difference of
     two values exactly representable at exponent E is itself exactly
