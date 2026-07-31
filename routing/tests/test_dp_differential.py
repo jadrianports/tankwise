@@ -10,6 +10,54 @@ stops, same gallons, same cost, and every `purchase_reason` -- on both the
 unpruned candidate list and Phase 17's domination-pruned one. It then
 separately proves the DP's repeat-run determinism (D-14).
 
+**Amendment, 2026-08-01 (rationale-defect-fix, resolving the orchestrator's
+independent-verification finding on plan 18-03):** stop-for-stop identity
+carves out one more narrow, documented exception on top of the D-36
+uniqueness gate below: a candidate station positioned EXACTLY at
+`total_route_mi` (a station that coincides with the route's finish line).
+Reproducing witness: `candidates=[Candidate(name='S0', opis_id=0,
+price_per_gallon=Decimal('1.00'), distance_from_start_mi=Decimal(2)),
+Candidate(name='S1', opis_id=1, price_per_gallon=Decimal('1.01'),
+distance_from_start_mi=Decimal(1))]`, `total_route_mi=2, tank_range_mi=20,
+mpg=1, starting_fuel=0.05`. The oracle reports `is_unique_optimum=True` --
+this is NOT a cost tie -- and both solvers buy an identical 1.00 gal at S1
+for an identical `1.0100`; only the reason label differs: the DP says
+`reach_finish`, the frozen greedy says `reach_cheaper_stop` targeting S0.
+
+**Settled on the merits, not by preference:** the DP's `reach_finish` is
+correct and the greedy's `reach_cheaper_stop` is the artifact. S0 sits at
+the same coordinate as FINISH, and neither plan makes any purchase AT S0
+(the reconstructed `stops` list is identical between the two solvers --
+one stop, at S1). Labelling the purchase `reach_cheaper_stop` implies the
+driver is routing toward a named station to do something there; that is
+false here, since the trip ends at that exact coordinate and nothing is
+bought at S0 in either plan. `reach_finish` names what the purchase
+actually accomplishes: completing the trip. The frozen greedy's walk-based
+loop structurally cannot express "the next hop is also the finish" -- its
+`cheaper` branch fires whenever ANY strictly-cheaper reachable candidate
+exists, with no check for whether that candidate's position happens to
+equal `total_route_mi`, and `PurchaseReason.REACH_FINISH` is reachable in
+the greedy only from its own separate, later branch (b), which this input
+never reaches because branch (a) claims the loop first. The DP's edge
+graph, by contrast, treats FINISH as a distinct synthetic node from any
+same-position candidate and resolves the tie between them by insertion
+order (see `dp.py`'s D-12 key), which happens to prefer the FINISH-typed
+edge here -- not by design intent specific to this case, but the resulting
+label is still the semantically correct one on independent inspection, so
+it is kept rather than "fixed" to match the greedy.
+
+The frozen greedy is a frozen referee (never edited) and its label cannot
+be changed; the test's plan-identity assertion is narrowed instead, in the
+same spirit as the D-36 uniqueness gate below -- a second, independently
+verified case where the two solvers' differing internal structures produce
+a legitimate labelling divergence on an otherwise-identical plan, not a
+correctness bug in either. Every other per-stop field (`opis_id`,
+`distance_from_start_mi`, `gallons`, `cost`) is still asserted equal for
+this class; only `purchase_reason` is exempted, and only when the specific
+condition below holds. See
+`FinishCoincidentStationWitnessRegressionTests` for the permanently
+anchored, non-Hypothesis regression test.
+
 **Amendment, 2026-07-31 (D-36 resolution, resolving plan 18-03's reported
 finding):** the original property asserted plan identity unconditionally
 and failed on two Hypothesis-shrunk, hand-verified witnesses where the
@@ -52,6 +100,28 @@ from routing.tests.test_solver_fixed_charge_optimality import (
     optimal_fixed_charge_plan,
     single_leg_routes,
 )
+
+
+def _is_finish_coincident_reason_mismatch(
+    dp_stop, greedy_stop, candidates_by_opis_id, total_route_mi
+):
+    """True exactly for the documented finish-coincident-station reason-
+    label class (see this module's docstring amendment above): a candidate
+    positioned EXACTLY at `total_route_mi` makes the DP say `reach_finish`
+    and the frozen greedy say `reach_cheaper_stop` targeting that same
+    candidate, on an otherwise byte-identical single purchase. Narrowly
+    scoped -- both the DP's specific reason AND the greedy's specific
+    reason must match this exact pattern, and the greedy's own claimed
+    target must genuinely sit at the finish line, or this returns False and
+    the caller's normal equality assertion still applies."""
+    if dp_stop.purchase_reason == greedy_stop.purchase_reason:
+        return False
+    if dp_stop.purchase_reason != PurchaseReason.REACH_FINISH:
+        return False
+    if greedy_stop.purchase_reason != PurchaseReason.REACH_CHEAPER_STOP:
+        return False
+    target = candidates_by_opis_id.get(greedy_stop.reason_target_opis_id)
+    return target is not None and target.distance_from_start_mi == total_route_mi
 
 
 class FrozenGreedyDifferentialTests(SimpleTestCase):
@@ -148,6 +218,12 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
             else None
         )
 
+        # Built once, over the UNPRUNED candidate list, for the
+        # finish-coincident-station reason-label exemption below --
+        # `opis_id` identifies a candidate uniquely regardless of arm, so
+        # one lookup table serves both.
+        candidates_by_opis_id = {c.opis_id: c for c in candidates}
+
         for arm_name, arm_candidates in (("unpruned", candidates), ("pruned", retained)):
             try:
                 preflight_gap_check(
@@ -232,6 +308,7 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                     f"greedy={len(greedy_plan.stops)}; dp_plan={dp_plan!r}, "
                     f"greedy_plan={greedy_plan!r}; {context}",
                 )
+
                 for dp_stop, greedy_stop in zip(dp_plan.stops, greedy_plan.stops):
                     self.assertEqual(
                         dp_stop.opis_id,
@@ -261,6 +338,18 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                         f"strictly unique oracle optimum; dp_stop={dp_stop!r}, "
                         f"greedy_stop={greedy_stop!r}; {context}",
                     )
+                    if _is_finish_coincident_reason_mismatch(
+                        dp_stop, greedy_stop, candidates_by_opis_id, total_route_mi
+                    ):
+                        # Documented exemption (see this module's docstring
+                        # amendment): a candidate sits exactly at
+                        # `total_route_mi`, so the DP's `reach_finish` and
+                        # the greedy's `reach_cheaper_stop` both describe
+                        # the SAME single purchase -- already proven
+                        # identical above on opis_id/distance/gallons/cost.
+                        # Settled on the merits in favour of the DP's
+                        # label; only this one field is exempted.
+                        continue
                     self.assertEqual(
                         dp_stop.purchase_reason,
                         greedy_stop.purchase_reason,
@@ -367,6 +456,102 @@ class FrozenGreedyTieWitnessRegressionTests(SimpleTestCase):
             f"independently verified, differently-shaped equal-cost plans "
             f"-- is_unique_optimum is not usable as the narrowing gate; "
             f"{context}",
+        )
+
+
+class FinishCoincidentStationWitnessRegressionTests(SimpleTestCase):
+    """Anchors the finish-coincident-station reason-label divergence (see
+    this module's docstring amendment above) as a permanent, non-Hypothesis
+    regression test, so the exemption in `FrozenGreedyDifferentialTests`
+    cannot silently re-tighten back to unconditional reason equality
+    without this test catching it immediately, no Hypothesis shrink
+    required. Also proves the underlying claim that made the exemption
+    correct rather than merely convenient: the oracle reports a STRICTLY
+    UNIQUE optimum here (this is not a tie), and every stop field other
+    than `purchase_reason` is byte-identical between the two solvers.
+    """
+
+    def test_station_at_finish_line_dp_says_reach_finish_greedy_says_reach_cheaper_stop(
+        self,
+    ):
+        candidates = [
+            Candidate(
+                name="S0", opis_id=0, price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(2),
+            ),
+            Candidate(
+                name="S1", opis_id=1, price_per_gallon=Decimal("1.01"),
+                distance_from_start_mi=Decimal(1),
+            ),
+        ]
+        total_route_mi = Decimal(2)
+        tank_range_mi = Decimal(20)
+        mpg = Decimal(1)
+        starting_fuel = Decimal("0.05")
+
+        greedy_plan = frozen_greedy.solve(
+            candidates,
+            total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+        dp_plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=Decimal(0),
+        )
+        oracle_plan = optimal_fixed_charge_plan(
+            candidates,
+            total_route_mi,
+            penalty=Decimal(0),
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+        )
+
+        context = f"dp_plan={dp_plan!r}, greedy_plan={greedy_plan!r}, oracle_plan={oracle_plan!r}"
+
+        # This is NOT a cost tie -- the oracle's optimum is strictly
+        # unique, which is exactly why the reason-label divergence needs
+        # its own documented exemption rather than being covered by the
+        # D-36 uniqueness gate.
+        self.assertIsNotNone(oracle_plan, context)
+        self.assertTrue(oracle_plan.is_unique_optimum, context)
+
+        self.assertEqual(len(dp_plan.stops), 1, context)
+        self.assertEqual(len(greedy_plan.stops), 1, context)
+        dp_stop, greedy_stop = dp_plan.stops[0], greedy_plan.stops[0]
+
+        # Every other field is byte-identical -- only the reason differs.
+        self.assertEqual(dp_stop.opis_id, greedy_stop.opis_id, context)
+        self.assertEqual(
+            dp_stop.distance_from_start_mi, greedy_stop.distance_from_start_mi, context
+        )
+        self.assertEqual(dp_stop.gallons, greedy_stop.gallons, context)
+        self.assertEqual(dp_stop.gallons, Decimal("1.00"), context)
+        self.assertEqual(dp_stop.cost, greedy_stop.cost, context)
+        self.assertEqual(dp_stop.cost, Decimal("1.0100"), context)
+
+        # The divergence this test exists to pin: settled on the merits in
+        # `dp.py`'s favour, not the greedy's.
+        self.assertEqual(dp_stop.purchase_reason, PurchaseReason.REACH_FINISH, context)
+        self.assertEqual(
+            greedy_stop.purchase_reason, PurchaseReason.REACH_CHEAPER_STOP, context
+        )
+        self.assertEqual(greedy_stop.reason_target_opis_id, 0, context)
+
+        candidates_by_opis_id = {c.opis_id: c for c in candidates}
+        self.assertTrue(
+            _is_finish_coincident_reason_mismatch(
+                dp_stop, greedy_stop, candidates_by_opis_id, total_route_mi
+            ),
+            f"the helper that gates the exemption in "
+            f"FrozenGreedyDifferentialTests no longer recognises this "
+            f"witness; {context}",
         )
 
 

@@ -281,11 +281,14 @@ class SolveFixedChargeTests(SimpleTestCase):
 
 
 class ReasonReconstructionRegressionTests(SimpleTestCase):
-    """Anchors a rationale-reconstruction defect found by the
-    orchestrator's independent verification of plan 18-03: a fabricated
-    `BYPASS_CHEAPER_NOT_WORTH_STOP` reason at `penalty=0`, where the DP's
-    own reconstructed plan ALSO stopped at the station it claimed to have
-    bypassed."""
+    """Anchors two rationale-reconstruction defects found by the
+    orchestrator's independent verification of plan 18-03, both at
+    `penalty=0` on the unpruned arm -- fixing a fabricated
+    `BYPASS_CHEAPER_NOT_WORTH_STOP` reason where the DP's own reconstructed
+    plan ALSO stopped at the station it claimed to have bypassed (Defect
+    A), and settling a genuine `reach_finish` vs. `reach_cheaper_stop`
+    reason-label disagreement against the frozen greedy on the merits
+    (Defect B), rather than relaxing either assertion to reach green."""
 
     def test_full_fill_landing_exactly_on_the_bypassed_station_is_not_a_bypass(self):
         # Defect A. S1 (pricier, mile 1) full-fills to a level that
@@ -322,3 +325,33 @@ class ReasonReconstructionRegressionTests(SimpleTestCase):
             self.assertNotEqual(
                 stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
             )
+
+    def test_finish_coincident_cheaper_station_is_labelled_reach_finish(self):
+        # Defect B. S0 sits exactly at the route's finish (mile 2 of a
+        # 2-mile route) and is cheaper than S1. Buying at S1 exactly
+        # enough to complete the trip lands, coincidentally, on S0's own
+        # position too -- but the reconstructed plan makes no purchase at
+        # S0 (buy_mi=0 there) and the journey ends. REACH_FINISH is the
+        # correct label: the purchase's purpose is completing the trip,
+        # not routing toward a station the plan never actually visits for
+        # a purchase. See `routing/tests/test_dp_differential.py`'s
+        # 2026-08-01 docstring amendment for the full merits discussion
+        # (why the frozen greedy's `reach_cheaper_stop` label is the
+        # walk-algorithm artifact here, not the DP's `reach_finish`).
+        candidates = [
+            _candidate("S0", 0, "1.00", 2),
+            _candidate("S1", 1, "1.01", 1),
+        ]
+        plan = solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(2),
+            tank_range_mi=Decimal(20),
+            mpg=Decimal(1),
+            starting_fuel=Decimal("0.05"),
+            penalty=Decimal(0),
+        )
+        self.assertEqual([s.opis_id for s in plan.stops], [1])
+        only_stop = plan.stops[0]
+        self.assertEqual(only_stop.purchase_reason, PurchaseReason.REACH_FINISH)
+        self.assertEqual(only_stop.gallons, Decimal("1"))
+        self.assertEqual(only_stop.cost, Decimal("1.01"))
