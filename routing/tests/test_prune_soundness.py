@@ -87,10 +87,11 @@ class PruneRetainedSetTests(SimpleTestCase):
         self.assertEqual(result, [])
 
     def test_single_candidate_always_retained(self):
-        """A lone station has no dominator (the stack is empty when it is
-        examined), so it is structurally unprunable -- checked across
-        several tank ranges and both a route longer and a route shorter
-        than the tank range.
+        """A lone station has no dominator -- nothing ranks before it in
+        the total order, so no earlier station can ever satisfy the cover
+        condition against it -- and it is therefore structurally
+        unprunable, checked across several tank ranges and both a route
+        longer and a route shorter than the tank range.
         """
         candidate = _candidate(opis_id=1, price="3.50", position=100)
 
@@ -108,14 +109,23 @@ class PruneRetainedSetTests(SimpleTestCase):
                 )
                 self.assertEqual(result, [candidate])
 
-    def test_all_identical_prices_cluster_shorter_than_tank_range_leaves_one_survivor(self):
+    def test_all_identical_prices_cluster_shorter_than_tank_range_retains_the_entire_cluster(self):
         """Stations at 1-mile spacing across [0, 100], all priced
-        identically, on a 2,000-mile route with tank_range_mi=1050. Every
-        station's dominator is its immediate predecessor (equal price
-        never pops the monotonic stack), and every resulting sliver lands
-        past the cluster (>= 1050 mi) and short of FINISH (2,000 mi), so
-        exactly one station survives -- the lowest-position,
-        lowest-opis_id one.
+        identically, on a 2,000-mile route with tank_range_mi=1050. Under
+        D-22 a station is removable only when a cheaper-or-equal
+        earlier-ranked station shares its exact position, or that earlier
+        station's own supply interval already reaches FINISH
+        (pos_B + T >= L). No station in this cluster satisfies the latter
+        -- even the farthest, at position 100, has pos + T = 1150, short of
+        the 2,000-mile route -- and no two candidates share a position, so
+        NOTHING is removable: the cover condition never fires and all 101
+        stations survive.
+
+        This is a deliberate, honest consequence of a provable rule, not a
+        gap: it leaves the front of a long route untouched at a tank range
+        that cannot reach FINISH from there, exactly as D-24 anticipates.
+        Latency at realistic scale remains Phase 18's to prove; this test
+        only pins the retained-set outcome the rewritten rule dictates.
         """
         candidates = [
             _candidate(opis_id=i, price="3.499", position=i) for i in range(101)
@@ -125,17 +135,18 @@ class PruneRetainedSetTests(SimpleTestCase):
             candidates, tank_range_mi=Decimal(1050), total_route_mi=Decimal(2000)
         )
 
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0].opis_id, 0)
+        self.assertEqual(len(result), 101)
+        self.assertEqual({c.opis_id for c in result}, set(range(101)))
 
-    def test_all_identical_prices_short_tank_range_retains_more_than_one(self):
-        """The same cluster as above, but with tank_range_mi small
-        relative to the 1-mile spacing (10 mi), so that
-        sliver(A, B) = (pos_B + T, pos_A + T] lands inside the populated
-        [0, 100] span for most candidates and finds an occupying station.
-        Asserts len(retained) > 1 -- the arm that stops the long-tank-range
-        test above from being satisfiable by a prune that simply always
-        returns one element.
+    def test_all_identical_prices_cluster_short_tank_range_retains_the_entire_cluster(self):
+        """The same cluster as above, but with tank_range_mi shrunk to 10
+        mi (small relative to the cluster's 1-mile spacing). The outcome is
+        identical to the long-tank-range case above and for the same
+        reason: no station's own supply interval reaches FINISH on this
+        2,000-mile route (the farthest station has pos + T = 110), so the
+        cover condition's tail branch never fires here either, regardless
+        of tank range -- what matters is distance to FINISH, not the
+        cluster's internal spacing. All 101 stations survive.
         """
         candidates = [
             _candidate(opis_id=i, price="3.499", position=i) for i in range(101)
@@ -145,18 +156,44 @@ class PruneRetainedSetTests(SimpleTestCase):
             candidates, tank_range_mi=Decimal(10), total_route_mi=Decimal(2000)
         )
 
-        self.assertGreater(len(result), 1)
+        self.assertEqual(len(result), 101)
+        self.assertEqual({c.opis_id for c in result}, set(range(101)))
+
+    def test_all_identical_prices_cluster_relocated_into_tail_retains_only_the_first(self):
+        """The same identically-priced, 1-mile-spaced cluster as the two
+        tests above, but relocated so every member's own supply interval
+        reaches FINISH: total_route_mi is set equal to tank_range_mi, so
+        even the earliest station (position 0) has pos + T == L, and every
+        later one clears it by more. This is the arm the two tests above
+        never exercise -- with every station tied on price and every one
+        of them tail-eligible, the cover condition fires all the way down
+        the cluster in total order, so only the lowest-position (lowest
+        opis_id, on ties) station survives. Without this test the class
+        would have no coverage at all of multi-station tail collapse.
+        """
+        candidates = [
+            _candidate(opis_id=i, price="3.499", position=i) for i in range(101)
+        ]
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=Decimal(1050), total_route_mi=Decimal(1050)
+        )
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].opis_id, 0)
 
     def test_route_shorter_than_tank_range_retains_exactly_the_prefix_minima(self):
-        """With total_route_mi < tank_range_mi, every sliver's lower bound
-        (pos_B + T) already exceeds every candidate's position and exceeds
-        total_route_mi (since T alone already exceeds total_route_mi), so
-        no sliver can hold a candidate or FINISH. A candidate is removable
-        exactly when it has a dominator, so the retained set is exactly
-        the strict prefix minima of the price sequence under the total
-        order -- the running-minimum stations. Asserted as set equality
-        against that independently computed expectation, not merely a
-        length.
+        """With total_route_mi < tank_range_mi, every candidate's own
+        pos + T already exceeds total_route_mi (T alone already exceeds
+        it), so every candidate's supply interval reaches FINISH and the
+        cover condition's ``pos_B + T >= L`` branch is available to all of
+        them. A candidate is removable exactly when an earlier-ranked
+        station is no more expensive, so the retained set is exactly the
+        strict prefix minima of the price sequence under the total order --
+        the running-minimum stations. This is now a *theorem*, not merely
+        an observation: it follows directly from the cover condition once
+        ``L <= T`` makes it universal. Asserted as set equality against an
+        independently computed expectation, not merely a length.
         """
         candidates = [
             _candidate(opis_id=1, price="5.00", position=10),
@@ -191,15 +228,16 @@ class PruneRetainedSetTests(SimpleTestCase):
         starting_fuel=0 origin, and it is made the MOST EXPENSIVE station
         in the set so a naive price-only rule would drop it.
 
-        D-05's derivation: any dominator B of the origin station would
-        need pos_B <= pos_A == 0, so B would have to sit at position 0
-        too -- there is no station strictly closer to START that could
-        dominate it. Structurally, the position-0 station is always index
-        0 in the total order (nothing sorts before position 0) and the
-        monotonic stack is empty when index 0 is examined, so it can
-        never have a dominator and can never be pruned. This is asserted
-        here, not special-cased: prune_dominated_candidates contains no
-        starting_fuel parameter and no branch keyed on origin fuel at all.
+        D-26's structural derivation: any dominator B of the origin station
+        would need pos_B <= pos_A == 0 (implied by the total order), so B
+        would have to sit at position 0 too -- there is no station
+        strictly closer to START that could dominate it. The position-0
+        station is always first in the total order (nothing sorts before
+        position 0 unless it too sits there), so nothing ever ranks before
+        it and it can never have a dominator under either branch of the
+        cover condition. This is asserted here, not special-cased:
+        prune_dominated_candidates still contains no origin-fuel parameter
+        and no branch keyed on how much fuel the route starts with.
         """
         origin = _candidate(opis_id=1, price="9.99", position=0)  # most expensive
         others = [
@@ -217,11 +255,14 @@ class PruneRetainedSetTests(SimpleTestCase):
 
     def test_co_located_identical_price_pair_keeps_exactly_the_lower_opis_id(self):
         """Two candidates share a position and a price but have different
-        opis_id values. Under a non-strict comparison without the D-11
-        total order, both would see each other as a valid dominator (a
-        same-position sliver has zero width and is trivially empty) and
-        both would be removed -- this test exists to catch exactly that
-        failure. Asserts exactly one survivor and that it is the lower
+        opis_id values. Under the cover condition's ``pos_B == pos_A``
+        branch, without the D-11 total-order tiebreak, both would see each
+        other as a valid dominator (each satisfies ``price_B <= price_A``
+        and ``pos_B == pos_A`` against the other) and both would be
+        removed -- this test exists to catch exactly that failure. The
+        total order resolves it: only the higher-``opis_id`` station ever
+        ranks after the lower one, so only it ever looks backward and finds
+        a dominator. Asserts exactly one survivor and that it is the lower
         opis_id.
         """
         lower = _candidate(opis_id=2, price="3.00", position=50)
@@ -235,8 +276,10 @@ class PruneRetainedSetTests(SimpleTestCase):
         self.assertEqual(result[0].opis_id, 2)
 
     def test_co_located_different_price_pair_keeps_the_cheaper(self):
-        """Same position, different prices: the cheaper station survives,
-        the costlier co-located station is removed.
+        """Same position, different prices: the cheaper station satisfies
+        both cover-condition clauses against the costlier one
+        (``price_B <= price_A`` and ``pos_B == pos_A``), so the cheaper
+        station survives and the costlier co-located station is removed.
         """
         cheaper = _candidate(opis_id=2, price="3.00", position=50)
         costlier = _candidate(opis_id=5, price="4.00", position=50)
