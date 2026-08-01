@@ -150,6 +150,21 @@ def solve_penalty_aware_heuristic(
         hi = bisect.bisect_right(positions, from_pos + reach, lo, node_count)
         return ordered[lo:hi]
 
+    def _farthest(items):
+        """The farthest-by-position item in `items` (non-empty), ties
+        broken by cheapest price then `opis_id` -- the same total order
+        convention every other tie-break in this module and `dp.py` uses.
+        A full-tank fill should always travel as far as it can (maximizing
+        distance covered per fixed charge paid) -- targeting merely the
+        CHEAPEST reachable station instead (as the pre-Phase-18 greedy's
+        own fill branch does) can strand the vehicle with a mostly-full
+        tank at a nearby station, forcing another top-off stop only a few
+        miles later. That is a second, independent source of the
+        micro-stop problem this module exists to eliminate, distinct from
+        (but just as real as) the nearest-vs-cheapest chain the module
+        docstring's "Design choice" section already covers."""
+        return min(items, key=lambda c: (-c.distance_from_start_mi, c.price_per_gallon, c.opis_id))
+
     def _raise_infeasible(from_name, from_pos, max_range):
         remaining_nodes = [
             (c.distance_from_start_mi, c.name)
@@ -241,10 +256,11 @@ def solve_penalty_aware_heuristic(
                 break
             if not reachable:
                 _raise_infeasible(current_name, pos, usable_range)
-            target = min(
-                reachable,
-                key=lambda c: (c.price_per_gallon, c.distance_from_start_mi, c.opis_id),
-            )
+            # Nothing cheaper anywhere in the window -- no price benefit
+            # to weigh, so travel as far as this full tank allows rather
+            # than hopping to the nearest/cheapest-among-non-cheaper
+            # station (see `_farthest`'s own docstring).
+            target = _farthest(reachable)
             buy_mi = tank_range_mi - fuel
             if buy_mi > 0:
                 ahead = [c for c in candidates if c.distance_from_start_mi > pos]
@@ -268,7 +284,7 @@ def solve_penalty_aware_heuristic(
         # tank_range_mi here (current_opis_id is not None), so it IS the
         # full-tank window a fill-and-hop move would use -- no separate
         # computation needed.
-        target_full = None if finish_reachable else reachable[-1]
+        target_full = None if finish_reachable else _farthest(reachable)
 
         if target_full is not None and target_full.price_per_gallon < price_here:
             # The farthest node a full tank reaches also happens to be
