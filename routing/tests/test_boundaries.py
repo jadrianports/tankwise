@@ -20,6 +20,7 @@ SOLVER_FILES = [
     SERVICES_DIR / "exceptions.py",
     SERVICES_DIR / "prune.py",
     SERVICES_DIR / "dp.py",
+    SERVICES_DIR / "greedy.py",
 ]
 SOLVER_FORBIDDEN_PREFIXES = (
     "django",
@@ -89,12 +90,13 @@ class ImportBoundaryTest(SimpleTestCase):
 
 class SolverPurityTest(SimpleTestCase):
     """Statically enforces that the solver (routing/services/solver.py,
-    routing/services/exceptions.py, routing/services/prune.py, and
-    routing/services/dp.py) must stay free of Django, the ORM, the offline
-    geocoding pipeline, and any HTTP client. Scoped to just these four
-    files -- not all of services/ -- so a later Station -> Candidate
-    adapter is free to import routing.models elsewhere in services/
-    without tripping this gate.
+    routing/services/exceptions.py, routing/services/prune.py,
+    routing/services/dp.py, and routing/services/greedy.py -- the
+    fixed-charge DP's production fallback, added Phase 18-04c) must stay
+    free of Django, the ORM, the offline geocoding pipeline, and any HTTP
+    client. Scoped to just these five files -- not all of services/ -- so
+    a later Station -> Candidate adapter is free to import routing.models
+    elsewhere in services/ without tripping this gate.
     """
 
     def test_solver_files_never_import_django_orm_pipeline_or_http(self):

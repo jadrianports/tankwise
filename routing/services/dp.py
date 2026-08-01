@@ -293,6 +293,49 @@ because it can render a sparse corridor infeasible when no station ahead
 can supply the floor amount, and it would break the optimality proof this
 milestone is built on -- the finite-fill lemma above assumes every useful
 purchase amount stays reachable, not artificially excluded.
+
+## Pre-flight transition-count estimate and the greedy fallback
+
+Three optimization passes (integer ticks, deferred purchase-reason
+computation, Pareto state-dominance pruning, an exact-integer money-domain
+comparison) took the worst real corridor this codebase measures
+(`toronto_oh-hillsboro_or`) from ~646s to ~46s and hit a structural wall:
+every pass's own profile (see `18-04b-SUMMARY.md`) found the remaining cost
+is the transition *count* -- `states x levels x targets` -- not any single
+operation's per-call cost, and reducing that count further (a fourth,
+deeper state-space restructuring) was explicitly out of scope for those
+passes. A 46s solve does not return slowly in production: the deployed
+gunicorn worker's timeout is 30s, so a request at that density is killed
+outright rather than merely slow.
+
+`estimate_transition_count` (below) is a cheap, `O(n log n)`, deterministic
+STRUCTURAL upper bound on that same transition count, computed with the
+identical integer-tick / `bisect` machinery `solve_fixed_charge` itself
+uses -- never a fitted curve over `(kept, tank)`. It intentionally does
+NOT attempt to predict the number of surviving `(node, fuel)` STATES a
+real run's Pareto frontier would keep (that depends on the actual run,
+which is exactly the cost this function exists to avoid paying up front);
+it bounds, per node, the transitions ONE surviving state at that node
+could generate (`reach * (reach + 1)`, `reach` being the count of
+remaining candidates-plus-FINISH within one tank of that node), and sums
+that bound across every node. This is therefore an estimate of the
+recurrence's STRUCTURAL shape, calibrated (see `DP_TRANSITION_BUDGET`)
+against real measured `solve()` wall-clock time on the twelve pinned
+corridor fixtures (`routing.tests.test_corridor_fixtures.CORRIDORS`), not
+a claim that it equals the literal transition count a real run performs.
+
+`solver.solve()` computes this estimate over the same (pruned) search set
+it is about to hand `solve_fixed_charge`, and compares it against
+`DP_TRANSITION_BUDGET`. At or under budget, it delegates to
+`solve_fixed_charge` exactly as before (`strategy="exact_dp"`). Over
+budget, it delegates instead to `routing.services.greedy.solve_greedy` --
+the restored pre-Phase-18 greedy, structurally insensitive to per-stop
+penalty and therefore not exactly optimal under the fixed-charge
+objective, but bounded near-linear in candidate count and always well
+under the request budget (`strategy="greedy_fallback"`). Both branches are
+deterministic pure functions of the same validated input, so which branch
+fires is itself deterministic and cache-key-stable: identical requests
+always choose the same strategy and produce the same plan.
 """
 import bisect
 from dataclasses import dataclass
@@ -367,6 +410,107 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
             gap_mi=gap,
             max_range_mi=usable_range,
         )
+
+
+# Calibrated against `estimate_transition_count` computed over the real,
+# pruned search set for the twelve corridor/tank-range cells named in
+# 18-04c-SUMMARY.md's calibration table (drawn from
+# routing.tests.test_corridor_fixtures.CORRIDORS, both pinned tank
+# ranges), cross-referenced against dp.solve_fixed_charge's own measured
+# wall-clock time on that exact search set (mpg=10, starting_fuel=0.5,
+# penalty=35, price basis "neutral", single uncontended dev-machine
+# process). The twelve measured estimates cleanly separate into two
+# clusters with a 1.9x gap between them and no borderline cell in
+# between:
+#
+#   estimate <= 182,506  -> solve_fixed_charge measured 0.000s-3.087s
+#   estimate >= 356,085  -> solve_fixed_charge measured 9.409s-43.298s
+#
+# 250,000 sits in that gap -- 37% above the highest DP-side estimate
+# (miami_fl-boston_ma @500mi, 182,506 -> 3.087s) and 30% below the
+# lowest greedy-side estimate (jacksonville_fl-bangor_me @500mi,
+# 356,085 -> 9.538s) -- comfortably inside a <=5s DP-path target (itself
+# well inside the deployed 30s gunicorn worker timeout) with headroom for
+# production hardware slower than this dev machine, rather than sitting
+# flush against either boundary. See 18-04c-SUMMARY.md's full 12-cell
+# table for the raw calibration data this threshold was picked from.
+DP_TRANSITION_BUDGET = 250_000
+
+
+def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
+    """Deterministic, `O(n log n)` structural upper bound on the number of
+    `(state, level, target)` transitions `solve_fixed_charge`'s inner loop
+    would need to consider for this exact input -- see the module
+    docstring's "Pre-flight transition-count estimate and the greedy
+    fallback" section for the full derivation and its calibration.
+
+    Pure function of its arguments: sorts `candidates` by the same total
+    order `solve_fixed_charge` uses, converts every position-domain value
+    to the same kind of exact integer tick `solve_fixed_charge` itself
+    computes (via `Decimal.as_tuple()`, never division or `scaleb`), and
+    sums, over START plus every candidate, `reach * (reach + 1)` -- where
+    `reach` is the count of remaining candidates-plus-FINISH within one
+    tank of that node's position (found by `bisect.bisect_right` over the
+    same sorted tick array, exactly as `solve_fixed_charge`'s own
+    `_reachable_ticks` does). `reach + 1` upper-bounds the number of
+    distinct useful fill levels at that node (the finite-fill lemma
+    above: at most one level per remaining reachable candidate/FINISH,
+    plus the fill-to-capacity level); each such level can reach at most
+    `reach` downstream targets. START contributes only `reach` (never
+    `reach * (reach + 1)`): it is non-purchasable, so it has exactly one
+    fixed departure level, never a choice among several.
+
+    `candidates` should already be the search set that would be handed to
+    `solve_fixed_charge` (the pruned set, when pruning is in effect) --
+    this function does not prune anything itself, and never raises: it is
+    called before feasibility is known to matter for dispatch purposes,
+    so it tolerates an empty or degenerate `candidates` list the same way
+    `solve_fixed_charge` itself does.
+    """
+    total_route_mi = _as_decimal(total_route_mi)
+    tank_range_mi = _as_decimal(tank_range_mi)
+    starting_fuel = _as_decimal(starting_fuel)
+
+    ordered = sorted(
+        candidates,
+        key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
+    )
+    node_count = len(ordered)
+    positions = [c.distance_from_start_mi for c in ordered]
+    start_fuel = starting_fuel * tank_range_mi
+
+    _exponent = min(
+        value.as_tuple().exponent
+        for value in (total_route_mi, tank_range_mi, start_fuel, *positions)
+    )
+
+    def _to_ticks(value):
+        sign, digits, exponent = value.as_tuple()
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        if sign:
+            coefficient = -coefficient
+        shift = exponent - _exponent
+        return coefficient * (10**shift) if shift else coefficient
+
+    positions_ticks = [_to_ticks(p) for p in positions]
+    total_route_ticks = _to_ticks(total_route_mi)
+    tank_range_ticks = _to_ticks(tank_range_mi)
+    start_fuel_ticks = _to_ticks(start_fuel)
+    full_ticks = positions_ticks + [total_route_ticks]
+    hi_bound = node_count + 1
+
+    def _reach_count(max_ticks, lo):
+        hi = bisect.bisect_right(full_ticks, max_ticks, lo, hi_bound)
+        return hi - lo
+
+    total = _reach_count(start_fuel_ticks, 0)
+    for i in range(node_count):
+        reach = _reach_count(positions_ticks[i] + tank_range_ticks, i + 1)
+        total += reach * (reach + 1)
+
+    return total
 
 
 def useful_fill_levels_mi(

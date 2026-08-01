@@ -31,6 +31,19 @@ class PurchaseReason:
     BYPASS_CHEAPER_NOT_WORTH_STOP = "bypass_cheaper_not_worth_stop"
 
 
+class SolverStrategy:
+    """String-enum constants for `FuelPlan.strategy` -- which algorithm
+    actually produced a given plan. `solve()` sets this on every plan it
+    returns (see its own docstring's dispatch description); it is `None`
+    only for a `FuelPlan` built by something other than `solve()` (a raw
+    `dp.solve_fixed_charge`/`greedy.solve_greedy` call, or a hand-built
+    test double), which never happens on the production request path.
+    """
+
+    EXACT_DP = "exact_dp"
+    GREEDY_FALLBACK = "greedy_fallback"
+
+
 @dataclass(frozen=True)
 class Candidate:
     """A candidate fuel stop positioned along the route."""
@@ -86,6 +99,12 @@ class FuelPlan:
     actually minimises. Both are internal-only and deliberately not
     serialized this phase -- exposing them is a product decision that
     belongs to Phase 19.
+
+    `strategy` is additive, defaults to `None`, and IS serialized (unlike
+    the two fields above): which of `SolverStrategy.EXACT_DP` /
+    `SolverStrategy.GREEDY_FALLBACK` actually produced this plan --
+    `solve()` sets it on every plan it returns (see its own docstring),
+    the API response's honesty requirement for which algorithm ran.
     """
 
     stops: list[FuelStop]
@@ -93,6 +112,7 @@ class FuelPlan:
     total_gallons: Decimal
     penalised_objective: Decimal | None = None
     penalty_applied: Decimal | None = None
+    strategy: str | None = None
 
 
 def _as_decimal(value):
@@ -129,13 +149,13 @@ def _validate(candidates, total_route_mi, tank_range_mi, mpg, starting_fuel):
 
 # Imported here -- after `Candidate`/`FuelStop`/`FuelPlan`/`PurchaseReason`
 # are already defined above -- rather than at module top, because
-# `routing.services.dp` and `routing.services.prune` both import those
-# names back from this module. Placing the import here means Python has
-# already populated this module's namespace with those names by the time
-# either sibling module's own `from routing.services.solver import ...`
-# line runs, so the two-way reference resolves without a circular-import
-# error.
-from routing.services import dp  # noqa: E402
+# `routing.services.dp`, `routing.services.greedy`, and
+# `routing.services.prune` all import those names back from this module.
+# Placing the import here means Python has already populated this
+# module's namespace with those names by the time any sibling module's
+# own `from routing.services.solver import ...` line runs, so the
+# two-way reference resolves without a circular-import error.
+from routing.services import dp, greedy  # noqa: E402
 from routing.services.prune import prune_dominated_candidates  # noqa: E402
 
 
@@ -195,14 +215,29 @@ def solve(
     whose absence makes a gap detectable, so this check always runs first,
     on the complete input; (3) prune the search set with
     ``prune_dominated_candidates`` -- only the set the *search* explores is
-    ever pruned; (4) delegate to ``dp.solve_fixed_charge``; (5) rebuild
-    every returned stop's reporting statistics
-    (``corridor_avg_price``, ``price_percentile``, ``skipped_count``,
-    ``skipped_avg_price``) over the FULL, unpruned ``candidates`` argument
-    (D-20, inherited from Phase 17 and load-bearing) -- the DP's own
-    ``purchase_reason``, ``reason_target_opis_id``, ``reason_target_name``,
+    ever pruned; (4) compute ``dp.estimate_transition_count`` over that
+    same search set and compare it against ``dp.DP_TRANSITION_BUDGET`` --
+    at or under budget, delegate to ``dp.solve_fixed_charge``
+    (``strategy=SolverStrategy.EXACT_DP``); over budget, delegate instead
+    to ``greedy.solve_greedy`` over the FULL, unpruned ``candidates``
+    (``strategy=SolverStrategy.GREEDY_FALLBACK`` -- see
+    ``routing.services.dp``'s "Pre-flight transition-count estimate and
+    the greedy fallback" module docstring section for why this dispatch
+    exists and how its threshold was calibrated); (5) rebuild every
+    returned stop's reporting statistics (``corridor_avg_price``,
+    ``price_percentile``, ``skipped_count``, ``skipped_avg_price``) over
+    the FULL, unpruned ``candidates`` argument (D-20, inherited from Phase
+    17 and load-bearing) -- the winning branch's own ``purchase_reason``,
+    ``reason_target_opis_id``, ``reason_target_name``,
     ``bypassed_cheaper_count`` and ``bypassed_saving_forgone`` are carried
-    through untouched.
+    through untouched regardless of which branch produced them.
+
+    The dispatch decision is a pure function of ``search_set``,
+    ``total_route_mi``, ``tank_range_mi`` and ``starting_fuel`` -- the same
+    request always chooses the same strategy and produces the same plan
+    (load-bearing for the response cache: see ``routing/cache.py``'s
+    ``build_cache_key``, which keys on exactly those same inputs and needs
+    no separate strategy token as a result).
 
     ``penalty`` is a plain ``Decimal`` this function never resolves itself
     -- it defaults to ``Decimal(0)``, at which the DP is plan-identical to
@@ -255,14 +290,32 @@ def solve(
         else sorted(candidates, key=total_order_key)
     )
 
-    raw_plan = dp.solve_fixed_charge(
+    estimate = dp.estimate_transition_count(
         search_set,
         total_route_mi=total_route_mi,
         tank_range_mi=tank_range_mi,
-        mpg=mpg,
         starting_fuel=starting_fuel,
-        penalty=penalty,
     )
+    if estimate <= dp.DP_TRANSITION_BUDGET:
+        strategy = SolverStrategy.EXACT_DP
+        raw_plan = dp.solve_fixed_charge(
+            search_set,
+            total_route_mi=total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=penalty,
+        )
+    else:
+        strategy = SolverStrategy.GREEDY_FALLBACK
+        raw_plan = greedy.solve_greedy(
+            candidates,
+            total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=penalty,
+        )
 
     total_candidates = len(candidates)
     corridor_avg_price = (
@@ -317,4 +370,5 @@ def solve(
         total_gallons=raw_plan.total_gallons,
         penalised_objective=raw_plan.penalised_objective,
         penalty_applied=raw_plan.penalty_applied,
+        strategy=strategy,
     )
