@@ -97,11 +97,11 @@ class RealCorridorDispatchTestCase(TestCase):
 
 class HeavyLightDispatchTests(RealCorridorDispatchTestCase):
     """Design requirement 5's first test: a heavy real corridor takes the
-    greedy path, a light one takes the DP path."""
+    penalty-aware heuristic path, a light one takes the DP path."""
 
-    def test_heavy_corridor_takes_the_greedy_fallback(self):
+    def test_heavy_corridor_takes_the_penalty_aware_heuristic(self):
         plan = self._solve("toronto_oh-hillsboro_or", Decimal(1050))
-        self.assertEqual(plan.strategy, SolverStrategy.GREEDY_FALLBACK)
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
         self.assertGreater(len(plan.stops), 0)
 
     def test_light_corridor_takes_the_exact_dp(self):

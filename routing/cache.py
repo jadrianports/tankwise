@@ -21,6 +21,20 @@ additionally ties a cached payload to the EIA week it was priced under --
 a week rollover produces a new key, so no plan priced under one EIA week
 is ever served under a newer week's disclaimer (EIA-01).
 
+Still `route:v6:` as of Phase 18-04d, which swapped the DP's fallback
+target from the fixed-charge-blind pre-Phase-18 greedy
+(`routing.services.greedy.solve_greedy`) to a penalty-aware heuristic
+(`routing.services.heuristic.solve_penalty_aware_heuristic`) and
+renamed the wire value that names which one ran from `"greedy_fallback"`
+to `"penalty_aware_heuristic"` -- also deliberately NOT bumped, for the
+identical reasons the paragraph below gives for the field's original
+addition: which branch fires, and what it computes, are both still pure
+deterministic functions of exactly the inputs `route:v6:`'s key already
+namespaces, and `route:v6:` remains undeployed (still local, unpushed),
+so there is still no live entry anywhere a stale, differently-computed
+fallback plan could collide with. The same "a future change landing
+AFTER this prefix has shipped must still bump it" rule applies here too.
+
 Still `route:v6:` as of the additive `solver_strategy` response field
 (Phase 18-04c) -- deliberately NOT bumped to `route:v7:`. Two reasons,
 together: (1) `solver_strategy` is a pure, deterministic function of

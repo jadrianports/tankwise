@@ -145,16 +145,19 @@ export interface InfeasibleRouteDetail {
 // (no factors ever fetched -- the original 2024 snapshot, unindexed).
 export type PriceIndexStatus = 'current' | 'stale' | 'frozen';
 
-// `solver_strategy` values (Phase 18-04c): which algorithm actually
-// produced the returned plan. `'exact_dp'` is the fixed-charge dynamic
-// program (an exact optimum under fuel dollars plus a per-stop penalty);
-// `'greedy_fallback'` is a fast, structurally penalty-unaware heuristic
-// used only when a deterministic pre-flight estimate finds the exact DP
-// would exceed the request's latency budget. Treat any string other than
-// these two the same way `JustificationPopup`'s reason lookup already
-// treats an unmapped `PurchaseReason` -- render a neutral fallback rather
-// than throwing, since this is server-reported and additive.
-export type SolverStrategy = 'exact_dp' | 'greedy_fallback';
+// `solver_strategy` values (Phase 18-04c; wire value updated 18-04d):
+// which algorithm actually produced the returned plan. `'exact_dp'` is
+// the fixed-charge dynamic program (an exact optimum under fuel dollars
+// plus a per-stop penalty); `'penalty_aware_heuristic'` is a fast,
+// single-pass heuristic that approximates the same fixed-charge
+// objective (not exactly, and not guaranteed stop-count-minimal -- see
+// `routing.services.heuristic`'s own module docstring) used only when a
+// deterministic pre-flight estimate finds the exact DP would exceed the
+// request's latency budget. Treat any string other than these two the
+// same way `JustificationPopup`'s reason lookup already treats an
+// unmapped `PurchaseReason` -- render a neutral fallback rather than
+// throwing, since this is server-reported and additive.
+export type SolverStrategy = 'exact_dp' | 'penalty_aware_heuristic';
 
 // The full `RouteResponseSerializer.to_representation` return shape.
 export interface RouteResponse {

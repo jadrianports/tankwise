@@ -516,8 +516,9 @@ class RouteResponseSerializer(serializers.Serializer):
       absent renders `waypoints: []` (WAY-06/WAY-08).
 
     `"solver_strategy"` is read directly off `plan.strategy` (Phase
-    18-04c), not from `instance` -- it names which algorithm actually
-    produced the plan, `"exact_dp"` or `"greedy_fallback"` (see
+    18-04c; wire value updated Phase 18-04d), not from `instance` -- it
+    names which algorithm actually produced the plan, `"exact_dp"` or
+    `"penalty_aware_heuristic"` (see
     `routing.services.solver.SolverStrategy`). A `plan` predating this
     field (`strategy` defaults to `None` on `FuelPlan`) renders
     `solver_strategy: null` rather than raising.

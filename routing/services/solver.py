@@ -36,12 +36,23 @@ class SolverStrategy:
     actually produced a given plan. `solve()` sets this on every plan it
     returns (see its own docstring's dispatch description); it is `None`
     only for a `FuelPlan` built by something other than `solve()` (a raw
-    `dp.solve_fixed_charge`/`greedy.solve_greedy` call, or a hand-built
-    test double), which never happens on the production request path.
+    `dp.solve_fixed_charge`/`heuristic.solve_penalty_aware_heuristic`
+    call, or a hand-built test double), which never happens on the
+    production request path.
+
+    `PENALTY_AWARE_HEURISTIC` (Phase 18-04d) replaced the prior
+    `GREEDY_FALLBACK` dispatch target -- the wire value changed from
+    `"greedy_fallback"` to `"penalty_aware_heuristic"` alongside it, since
+    the fallback algorithm itself changed from the fixed-charge-blind
+    pre-Phase-18 greedy (`greedy.solve_greedy`, still used only by its own
+    differential test) to a heuristic that approximates the same
+    fixed-charge objective the DP minimises exactly (see
+    `routing.services.heuristic`'s module docstring). `"greedy_fallback"`
+    is never emitted by a live `solve()` call as of this change.
     """
 
     EXACT_DP = "exact_dp"
-    GREEDY_FALLBACK = "greedy_fallback"
+    PENALTY_AWARE_HEURISTIC = "penalty_aware_heuristic"
 
 
 @dataclass(frozen=True)
@@ -102,7 +113,7 @@ class FuelPlan:
 
     `strategy` is additive, defaults to `None`, and IS serialized (unlike
     the two fields above): which of `SolverStrategy.EXACT_DP` /
-    `SolverStrategy.GREEDY_FALLBACK` actually produced this plan --
+    `SolverStrategy.PENALTY_AWARE_HEURISTIC` actually produced this plan --
     `solve()` sets it on every plan it returns (see its own docstring),
     the API response's honesty requirement for which algorithm ran.
     """
@@ -149,13 +160,19 @@ def _validate(candidates, total_route_mi, tank_range_mi, mpg, starting_fuel):
 
 # Imported here -- after `Candidate`/`FuelStop`/`FuelPlan`/`PurchaseReason`
 # are already defined above -- rather than at module top, because
-# `routing.services.dp`, `routing.services.greedy`, and
+# `routing.services.dp`, `routing.services.heuristic`, and
 # `routing.services.prune` all import those names back from this module.
 # Placing the import here means Python has already populated this
 # module's namespace with those names by the time any sibling module's
 # own `from routing.services.solver import ...` line runs, so the
 # two-way reference resolves without a circular-import error.
-from routing.services import dp, greedy  # noqa: E402
+#
+# `routing.services.greedy` is deliberately NOT imported here as of Phase
+# 18-04d -- it is no longer a dispatch target (see
+# `SolverStrategy.PENALTY_AWARE_HEURISTIC`'s own docstring), and remains
+# reachable only from its own differential test
+# (`routing/tests/test_greedy.py`) and `routing/tests/frozen_greedy.py`.
+from routing.services import dp, heuristic  # noqa: E402
 from routing.services.prune import prune_dominated_candidates  # noqa: E402
 
 
@@ -219,11 +236,13 @@ def solve(
     same search set and compare it against ``dp.DP_TRANSITION_BUDGET`` --
     at or under budget, delegate to ``dp.solve_fixed_charge``
     (``strategy=SolverStrategy.EXACT_DP``); over budget, delegate instead
-    to ``greedy.solve_greedy`` over the FULL, unpruned ``candidates``
-    (``strategy=SolverStrategy.GREEDY_FALLBACK`` -- see
-    ``routing.services.dp``'s "Pre-flight transition-count estimate and
-    the greedy fallback" module docstring section for why this dispatch
-    exists and how its threshold was calibrated); (5) rebuild every
+    to ``heuristic.solve_penalty_aware_heuristic`` over the FULL, unpruned
+    ``candidates`` (``strategy=SolverStrategy.PENALTY_AWARE_HEURISTIC`` --
+    see ``routing.services.dp``'s "Pre-flight transition-count estimate
+    and the greedy fallback" module docstring section for why this
+    dispatch exists and how its threshold was calibrated, and
+    ``routing.services.heuristic``'s own module docstring for what the
+    fallback algorithm itself does and does not guarantee); (5) rebuild every
     returned stop's reporting statistics (``corridor_avg_price``,
     ``price_percentile``, ``skipped_count``, ``skipped_avg_price``) over
     the FULL, unpruned ``candidates`` argument (D-20, inherited from Phase
@@ -307,8 +326,8 @@ def solve(
             penalty=penalty,
         )
     else:
-        strategy = SolverStrategy.GREEDY_FALLBACK
-        raw_plan = greedy.solve_greedy(
+        strategy = SolverStrategy.PENALTY_AWARE_HEURISTIC
+        raw_plan = heuristic.solve_penalty_aware_heuristic(
             candidates,
             total_route_mi,
             tank_range_mi=tank_range_mi,

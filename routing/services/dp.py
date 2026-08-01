@@ -294,7 +294,7 @@ can supply the floor amount, and it would break the optimality proof this
 milestone is built on -- the finite-fill lemma above assumes every useful
 purchase amount stays reachable, not artificially excluded.
 
-## Pre-flight transition-count estimate and the greedy fallback
+## Pre-flight transition-count estimate and the penalty-aware fallback
 
 Three optimization passes (integer ticks, deferred purchase-reason
 computation, Pareto state-dominance pruning, an exact-integer money-domain
@@ -328,11 +328,19 @@ a claim that it equals the literal transition count a real run performs.
 it is about to hand `solve_fixed_charge`, and compares it against
 `DP_TRANSITION_BUDGET`. At or under budget, it delegates to
 `solve_fixed_charge` exactly as before (`strategy="exact_dp"`). Over
-budget, it delegates instead to `routing.services.greedy.solve_greedy` --
-the restored pre-Phase-18 greedy, structurally insensitive to per-stop
-penalty and therefore not exactly optimal under the fixed-charge
-objective, but bounded near-linear in candidate count and always well
-under the request budget (`strategy="greedy_fallback"`). Both branches are
+budget, it delegates instead to
+`routing.services.heuristic.solve_penalty_aware_heuristic` (Phase 18-04d
+-- this dispatch target replaced the originally-wired
+`routing.services.greedy.solve_greedy`, the fixed-charge-blind
+pre-Phase-18 greedy, which remains in the codebase only as
+`routing/tests/test_greedy.py`'s differential-referee subject and is no
+longer reachable from a live `solve()` call): a single-pass heuristic
+that approximates the SAME fixed-charge objective this module minimises
+exactly, rather than ignoring the per-stop penalty entirely, while
+staying bounded near-linear in candidate count and always well under the
+request budget (`strategy="penalty_aware_heuristic"`; see
+`routing.services.heuristic`'s own module docstring for the algorithm and
+its measured gap against this module's exact answer). Both branches are
 deterministic pure functions of the same validated input, so which branch
 fires is itself deterministic and cache-key-stable: identical requests
 always choose the same strategy and produce the same plan.
@@ -441,8 +449,9 @@ def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, star
     """Deterministic, `O(n log n)` structural upper bound on the number of
     `(state, level, target)` transitions `solve_fixed_charge`'s inner loop
     would need to consider for this exact input -- see the module
-    docstring's "Pre-flight transition-count estimate and the greedy
-    fallback" section for the full derivation and its calibration.
+    docstring's "Pre-flight transition-count estimate and the
+    penalty-aware fallback" section for the full derivation and its
+    calibration.
 
     Pure function of its arguments: sorts `candidates` by the same total
     order `solve_fixed_charge` uses, converts every position-domain value

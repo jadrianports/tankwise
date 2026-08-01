@@ -21,6 +21,7 @@ SOLVER_FILES = [
     SERVICES_DIR / "prune.py",
     SERVICES_DIR / "dp.py",
     SERVICES_DIR / "greedy.py",
+    SERVICES_DIR / "heuristic.py",
 ]
 SOLVER_FORBIDDEN_PREFIXES = (
     "django",
