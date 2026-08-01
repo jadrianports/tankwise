@@ -539,29 +539,64 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
         )
 
 
-# Calibrated against `estimate_transition_count` computed over the real,
-# pruned search set for the twelve corridor/tank-range cells named in
-# 18-04c-SUMMARY.md's calibration table (drawn from
-# routing.tests.test_corridor_fixtures.CORRIDORS, both pinned tank
-# ranges), cross-referenced against dp.solve_fixed_charge's own measured
-# wall-clock time on that exact search set (mpg=10, starting_fuel=0.5,
-# penalty=35, price basis "neutral", single uncontended dev-machine
-# process). The twelve measured estimates cleanly separate into two
-# clusters with a 1.9x gap between them and no borderline cell in
-# between:
+# Recalibrated in 18-05c against CORRECTED solve_fixed_charge timings.
+# The prior value (250,000, from 18-04c-SUMMARY.md) was calibrated against
+# a DP that still had the 224b0ee precision bug: `useful_fill_levels_mi`'s
+# non-precision-safe exact-reach subtraction was silently discarding
+# reachable states, which is exactly why it measured artificially fast
+# (miami_fl-boston_ma @500mi calibrated at 3.087s). Once 224b0ee fixed
+# that, every exact-DP cell got materially slower -- the same corridor now
+# measures 6.25s-13.01s across three runs -- so 250,000 no longer honours
+# the <=5s DP-path design target and had to be re-fit against real timings,
+# not merely re-asserted.
 #
-#   estimate <= 182,506  -> solve_fixed_charge measured 0.000s-3.087s
-#   estimate >= 356,085  -> solve_fixed_charge measured 9.409s-43.298s
+# Re-measured `estimate_transition_count` over the real, pruned search set
+# for the same twelve corridor/tank-range cells (mpg=10,
+# starting_fuel=0.5, penalty=35, price basis "neutral", single
+# uncontended dev-machine process), each `solve_fixed_charge` run 3x
+# (min/median/max reported -- run-to-run variance is large at this
+# corridor density, so the WORST of three is what this budget is fit
+# against, never the mean):
 #
-# 250,000 sits in that gap -- 37% above the highest DP-side estimate
-# (miami_fl-boston_ma @500mi, 182,506 -> 3.087s) and 30% below the
-# lowest greedy-side estimate (jacksonville_fl-bangor_me @500mi,
-# 356,085 -> 9.538s) -- comfortably inside a <=5s DP-path target (itself
-# well inside the deployed 30s gunicorn worker timeout) with headroom for
-# production hardware slower than this dev machine, rather than sitting
-# flush against either boundary. See 18-04c-SUMMARY.md's full 12-cell
-# table for the raw calibration data this threshold was picked from.
-DP_TRANSITION_BUDGET = 250_000
+#   corridor                       tank   estimate     worst (of 3 runs)
+#   houston_tx-chicago_il          1050          23     0.001s
+#   phoenix_az-minneapolis_mn      1050       4,809     0.053s
+#   dallas_tx-seattle_wa            500      61,944     2.706s
+#   san_diego_ca-jacksonville_fl    500      66,571     2.542s
+#   dallas_tx-seattle_wa           1050     117,895     2.181s
+#   atlanta_ga-denver_co            500     150,905     8.546s  (excluded)
+#   miami_fl-boston_ma               500     182,506    13.008s  (excluded)
+#
+# (jacksonville_fl-bangor_me @500mi, both toronto_oh-hillsboro_or cells,
+# and both el_paso_tx-portland_me cells all sit at estimate >= 356,085 --
+# already 2-16x further above this cluster's own top than any plausible
+# <=5s threshold could reach, so raw solve_fixed_charge was not re-run on
+# them; they stay on the heuristic path exactly as before, confirmed by
+# `solve()`-dispatch measurement in 18-05c-SUMMARY.md's own 12-cell table.)
+#
+# The five retained cells now separate cleanly from the two demoted ones:
+# every retained cell's worst-of-three measurement is under 5s
+# (dallas_tx-seattle_wa @500mi -- the retained cell closest to the 5s
+# ceiling -- worst 2.706s, still 2.294s/46% of margin under it), while
+# both demoted cells' worst-of-three measurements (8.546s, 13.008s)
+# exceed the ceiling outright.
+# 134,000 sits in the resulting 117,895-150,905 estimate gap -- roughly
+# the arithmetic midpoint, ~13.7% above the highest retained estimate
+# (dallas_tx-seattle_wa @1050mi, 117,895) and ~11.2% below the lowest
+# demoted estimate (atlanta_ga-denver_co @500mi, 150,905) -- rather than
+# sitting flush against either boundary.
+#
+# dallas_tx-seattle_wa (the demo corridor, ROADMAP criterion 1) stays on
+# exact_dp at both tank ranges under this threshold: @500mi worst 2.706s,
+# @1050mi worst 2.181s, both comfortably under the 5s target.
+#
+# atlanta_ga-denver_co @500mi and miami_fl-boston_ma @500mi now dispatch
+# to the penalty-aware heuristic instead of the exact DP -- both were
+# exact_dp under the prior (invalid) 250,000 calibration; their re-measured
+# worst-case DP time no longer supports that. See 18-05c-SUMMARY.md for
+# the full calibration table and the re-derived heuristic quality figures
+# on the cells this demotes.
+DP_TRANSITION_BUDGET = 134_000
 
 
 def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
