@@ -30,11 +30,15 @@ const REASON_COPY: Partial<Record<PurchaseReason, (stop: FuelStop) => string>> =
     'No cheaper station was in range, so the tank was filled here to keep the trip moving.',
   reach_finish: () => 'Bought just enough fuel here to reach the finish.',
   top_up_at_cheapest: () => 'This was the cheapest station in range, so the tank was topped up here.',
-  // Placeholder sentence only -- the real copy is written in plan 18-05,
-  // last, against observed DP output (D-06), so it can describe what the
-  // solver actually does rather than being authored blind here.
-  bypass_cheaper_not_worth_stop: () =>
-    'A cheaper station up ahead was skipped here because stopping for it would have cost more in fees than it saved.',
+  // Authored against real observed DP/heuristic output (D-06): on
+  // el_paso_tx-portland_me at the UI-default vehicle, QUIKTRIP #667
+  // fills up and drives past CIRCLE K #4707605 rather than pay for a
+  // second stop (see 18-05-SUMMARY.md). Phase 19's HON-01 verifies this
+  // wording against the shipped build rather than authoring it blind.
+  bypass_cheaper_not_worth_stop: (stop) =>
+    `Filled up here and drove past ${
+      stop.rationale.reason_target_name ?? 'a cheaper station up ahead'
+    } on the way, because stopping there would have cost more in fees than the fuel it would have saved.`,
 };
 
 function justificationText(stop: FuelStop): string {

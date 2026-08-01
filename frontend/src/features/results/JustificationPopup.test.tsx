@@ -32,10 +32,24 @@ function makeStop(rationale: Partial<Rationale> & { purchase_reason: PurchaseRea
   };
 }
 
-test('renders without throwing for the fifth (bypass_cheaper_not_worth_stop) reason', () => {
-  const stop = makeStop({ purchase_reason: 'bypass_cheaper_not_worth_stop' });
+test('renders the real bypass_cheaper_not_worth_stop sentence, naming the fill target', () => {
+  const stop = makeStop({
+    purchase_reason: 'bypass_cheaper_not_worth_stop',
+    reason_target_name: 'CIRCLE K #4707605',
+  });
   render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
   expect(screen.getByRole('dialog')).toBeInTheDocument();
+  expect(
+    screen.getByText(/filled up here and drove past circle k #4707605/i)
+  ).toBeInTheDocument();
+});
+
+test('falls back gracefully when reason_target_name is null for the bypass reason', () => {
+  const stop = makeStop({ purchase_reason: 'bypass_cheaper_not_worth_stop', reason_target_name: null });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  expect(
+    screen.getByText(/filled up here and drove past a cheaper station up ahead/i)
+  ).toBeInTheDocument();
 });
 
 test('renders a neutral fallback sentence, not a crash, for an unknown future reason value', () => {
