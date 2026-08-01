@@ -164,6 +164,115 @@ simply never chosen as anybody's predecessor going forward, so it can
 never appear in a reconstructed plan either, whether or not it stays
 physically present in the dict.
 
+## Exact-integer money-domain comparison
+
+The prior pass's own "considered and rejected" note (superseded here, not
+reopened blindly) rejected extending the position domain's integer-tick
+technique to `gallons = buy_mi / mpg` itself: that `Decimal` division's
+result is bounded by Python's 28-significant-digit context precision, but
+its *exponent* is not statically knowable the way a sum/difference's is,
+so there is no single fixed scale `gallons` can be exactly re-expressed
+in ahead of time. That objection is correct and still stands -- but it
+is an objection to *materializing* `gallons`, not to *comparing*
+objectives, and every place `gallons`/`cost` ever mattered in the hot
+loop was a comparison (`_key_less`, called >15M times at real-corridor
+density per `18-04b-SUMMARY.md`'s own profile), never a value a caller
+reads. This section derives an exact-integer proxy for that comparison
+which never computes `gallons` at all.
+
+**The derivation.** Every dollar this recurrence's objective ever sums is
+`cost_i = gallons_i * price_i = (buy_mi_i / mpg) * price_i` for some
+purchase `i`. `buy_mi_i = level_i - fuel_on_arrival_i` is a position-
+domain value, hence (per the "Implementation note" above) exactly
+`buy_ticks_i * 10**_pos_exponent` for an exact integer `buy_ticks_i`.
+`price_i` is one of the finitely many `price_per_gallon` values already
+materialized on `ordered` before this recurrence ever runs -- each one
+some concrete, already-computed `Decimal`, however it was derived
+upstream (a plain OPIS retail price, or that price times an EIA regional
+index factor computed via `Decimal` division in `eia.py`, itself
+context-rounded to *some* fixed, finite exponent the moment it was
+computed). `Decimal.as_tuple()` always yields an exact `(sign, digits,
+exponent)` triple for ANY `Decimal` instance, regardless of how it was
+produced -- there is no such thing as a `Decimal` with unknown or
+unbounded precision, only one whose precision was already fixed upstream.
+So exactly the same trick `_pos_exponent` already applies to positions
+generalizes to price: `_price_exponent` is the finest exponent already
+present among this run's own finitely many `price_per_gallon` values,
+found by a plain `min()` over already-materialized data -- never
+"cents", never a fixed assumed scale, never a worst-case search or a
+second pass. Every price converts to an exact integer `price_ticks_i` at
+that one shared exponent by the same `(sign, digits, exponent)`-triple
+method `_to_ticks` already uses, for the same reason: a value already
+exactly representable at a *finer* exponent is trivially exactly
+representable at a *coarser*-or-equal one too (padding zero digits, not
+rounding), so picking the *minimum* exponent present is the one choice
+that is always exact for every value in the set.
+
+Substituting: `cost_i = buy_ticks_i * 10**_pos_exponent * price_ticks_i *
+10**_price_exponent / mpg = (buy_ticks_i * price_ticks_i) * MONEY_SCALE`,
+where `MONEY_SCALE = 10**(_pos_exponent + _price_exponent) / mpg` is one
+positive rational constant shared by every purchase this call will ever
+compare -- it depends only on this call's own `mpg` and the two
+exponents, never on which candidate or state is being compared. The full
+per-purchase objective contribution is `cost_i + penalty = (buy_ticks_i *
+price_ticks_i) * MONEY_SCALE + penalty`. Because `MONEY_SCALE` is common
+to every comparison, and division by a positive constant preserves
+ordering, comparing two accumulated objectives is exactly equivalent to
+comparing `(SUM of buy_ticks_i * price_ticks_i) + (penalty / MONEY_SCALE)
+* stop_count` -- an integer fuel term plus a rational per-stop term.
+`penalty / MONEY_SCALE`, reduced to lowest terms via `Fraction` (built
+from `Decimal.as_integer_ratio()`, itself exact -- never `float`), gives
+`P_NUM`/`P_DEN`; multiplying the whole comparison by `P_DEN` clears the
+one remaining fraction, yielding a **plain integer** running key:
+`key[0] += (buy_ticks_i * price_ticks_i) * P_DEN + P_NUM` per purchase,
+compared with plain integer `<`/`abs`/`*` -- no `Decimal`, no `float`,
+anywhere in the comparison.
+
+**The tolerance band is reproduced exactly, not dropped.** `COST_TOLERANCE`
+exists so two objectives within $0.0001 of each other fall through to the
+stops/positions/`opis_id` tie-break rather than one winning on noise (see
+`COST_TOLERANCE`'s own docstring). Dropping that band in the new integer
+comparison would be an answer-visible behavior change -- a genuine
+$0.00003 difference the old `Decimal` comparison called a tie could
+become a decisive win under a naive exact-integer replacement, silently
+picking a different, though numerically near-identical, plan. Instead,
+`COST_TOLERANCE / MONEY_SCALE`, scaled by `P_DEN` and reduced via the same
+exact `Fraction` machinery, gives `TOL_NUM`/`TOL_DEN`; `_make_key_less`
+cross-multiplies (`abs(diff) * TOL_DEN > TOL_NUM`) to reproduce
+`abs(real_objective_diff) > COST_TOLERANCE` exactly, in integers, with
+the identical strict-`>` semantics the `Decimal` version had (a
+difference of precisely `COST_TOLERANCE` is still a tie).
+
+**Where this is not, and does not need to be, bit-for-bit identical to
+the old code's own arithmetic.** The *old* `Decimal` chain computed
+`gallons = buy_mi / mpg` per purchase -- a division that, when `mpg`'s
+prime factorization outside 2 and 5 is nontrivial (e.g. the UI default
+6.5 mpg = 13/2), does not terminate in decimal and is itself rounded to
+Python's 28-significant-digit context precision. That rounding is a real,
+if minute (order `10**-25` relative for realistic dollar magnitudes),
+departure from the true rational value this section's `MONEY_SCALE`
+derivation computes exactly. The two are therefore not mathematically
+identical quantities -- but `COST_TOLERANCE` (`$0.0001`) already exists
+precisely to absorb noise of exactly this class and character ("Decimal
+summation-order noise", per its own docstring), and sits some 21 orders
+of magnitude above where 28-significant-digit rounding noise could ever
+land for the dollar amounts this dataset produces. A real, non-noise
+difference between two candidate plans would have to fall, by
+coincidence, within about `10**-25` of exactly the `$0.0001` boundary for
+the old rounded comparison and this section's exact one to ever disagree
+on a tie/not-tie verdict -- not proven structurally impossible here, but
+verified empirically has never occurred, across every differential case
+this module's test suite and its dedicated old-vs-new harnesses run (see
+`test_dp_differential.py` and this pass's own differential evidence).
+
+**Materialization stays exactly as it was.** `gallons`/`cost`, the actual
+`Decimal` values a surviving `FuelStop` reports, are still computed by
+the exact same `buy_mi = level - fuel_on_arrival; gallons = buy_mi / mpg;
+cost = gallons * price_per_gallon` sequence, in the exact same order, as
+every prior version of this module -- this section changes only what the
+recurrence *compares* while deciding which states survive, never what a
+winning stop's own reported numbers are built from.
+
 ## Trivial-stop bound
 
 A stop survives the optimum only when the gallons bought there, times the
@@ -188,6 +297,7 @@ purchase amount stays reachable, not artificially excluded.
 import bisect
 from dataclasses import dataclass
 from decimal import Decimal
+from fractions import Fraction
 
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
@@ -321,25 +431,46 @@ class _StateRecord:
     edge: "_EdgeInfo | None"
 
 
-def _key_less(key_a, key_b):
-    """The D-12 total order: lowest objective (within `COST_TOLERANCE`,
-    for summation-order noise only -- never comparison slop), then fewest
-    stops, then the sorted tuple of chosen stations' positions, then the
-    tuple of their `opis_id`. Byte-identical to the fixed-charge oracle's
-    tie-break (`optimal_fixed_charge_plan`,
+def _make_key_less(tol_num, tol_den):
+    """Build the D-12 total-order comparator for one `solve_fixed_charge`
+    call, closing over that call's own exact-integer tolerance threshold
+    (`tol_num`/`tol_den`, positive integers with `tol_den > 0` -- see the
+    module docstring's "Exact-integer money-domain comparison" section for
+    their derivation). Returned as a factory rather than a single
+    module-level function because `tol_num`/`tol_den` depend on that call's
+    own `mpg`/`penalty`/tick scale, exactly the same reason `_to_ticks`,
+    `relax`, and every other per-call-scaled helper in this module are
+    nested inside `solve_fixed_charge` rather than defined once at module
+    scope.
+
+    `key_a[0]`/`key_b[0]` ("objective") are the exact integer described in
+    that same docstring section -- proportional to, never equal to, the
+    real dollar objective -- so this comparator never touches `Decimal` or
+    `float`: `abs(diff) * tol_den > tol_num` is an exact cross-multiplied
+    reproduction of `abs(real_objective_diff) > COST_TOLERANCE`, both
+    sides positive integers, both operators exact. Ties within that band
+    fall through to fewest stops, then the sorted tuple of chosen
+    stations' positions, then the tuple of their `opis_id` -- unchanged
+    from the prior `Decimal`-objective version, and byte-identical to the
+    fixed-charge oracle's own tie-break (`optimal_fixed_charge_plan`,
     `test_solver_fixed_charge_optimality.py:391`)."""
-    objective_a, stops_a, positions_a, opis_a = key_a
-    objective_b, stops_b, positions_b, opis_b = key_b
-    if abs(objective_a - objective_b) > COST_TOLERANCE:
-        return objective_a < objective_b
-    if stops_a != stops_b:
-        return stops_a < stops_b
-    if positions_a != positions_b:
-        return positions_a < positions_b
-    return opis_a < opis_b
+
+    def _key_less(key_a, key_b):
+        objective_a, stops_a, positions_a, opis_a = key_a
+        objective_b, stops_b, positions_b, opis_b = key_b
+        diff = objective_a - objective_b
+        if abs(diff) * tol_den > tol_num:
+            return objective_a < objective_b
+        if stops_a != stops_b:
+            return stops_a < stops_b
+        if positions_a != positions_b:
+            return positions_a < positions_b
+        return opis_a < opis_b
+
+    return _key_less
 
 
-def _pareto_frontier(states_at_node):
+def _pareto_frontier(states_at_node, key_less):
     """Return the subset of `states_at_node` (a `{fuel_ticks:
     _StateRecord}` dict for one node) that is NOT Pareto-dominated by
     another entry in the same dict -- see the module docstring's "Pareto
@@ -349,6 +480,9 @@ def _pareto_frontier(states_at_node):
     entry, or when nothing is dominated) containing only the surviving
     entries, in `states_at_node`'s OWN original iteration order -- never
     the descending-by-fuel order used internally to detect domination.
+    `key_less` is the current call's `_make_key_less(...)` comparator --
+    threaded in as a parameter, rather than closed over globally, since
+    this function has no per-call state of its own to close over.
 
     Order preservation matters beyond style: this module's "Determinism"
     section documents that `dict` insertion/iteration order is itself
@@ -362,7 +496,7 @@ def _pareto_frontier(states_at_node):
     as much an answer-visible change (a different, though equally
     optimal, per-stop gallon split) as discarding a state that genuinely
     mattered would be. Only STRICT domination discards an entry here
-    (`_key_less(dominant.key, record.key)`, never an equal-key match) --
+    (`key_less(dominant.key, record.key)`, never an equal-key match) --
     see the module docstring's Pareto section for why the tied-key case
     (same D-12 key, more fuel) is deliberately left unpruned rather than
     also discarded: pruning it cannot change the numeric optimum, but it
@@ -378,11 +512,11 @@ def _pareto_frontier(states_at_node):
     for fuel_ticks, record in sorted(
         states_at_node.items(), key=lambda item: item[0], reverse=True
     ):
-        if best_key_so_far is not None and _key_less(best_key_so_far, record.key):
+        if best_key_so_far is not None and key_less(best_key_so_far, record.key):
             # A strictly better key already exists at >= fuel -- this
             # entry is genuinely dominated, never merely tied.
             dominated_ticks.add(fuel_ticks)
-        elif best_key_so_far is None or _key_less(record.key, best_key_so_far):
+        elif best_key_so_far is None or key_less(record.key, best_key_so_far):
             # First entry seen, or a genuine, strict improvement over
             # every higher-or-equal-fuel entry so far.
             best_key_so_far = record.key
@@ -487,15 +621,19 @@ def solve_fixed_charge(
     original all-`Decimal` recurrence would have produced -- just computed
     without `Decimal`'s per-operation object overhead, and with the
     (already position-sorted) reachable-target scan replaced by
-    `bisect.bisect_right` instead of a linear filter. Nothing in the
-    *money* domain (`gallons`, `cost`, the objective, the D-12 tie-break)
-    is touched by this -- `buy_mi = level - fuel_on_arrival` is still
-    computed from the original `Decimal` `level` (`useful_fill_levels_mi`'s
-    own unmodified return value) and the original `Decimal`
-    `fuel_on_arrival` reconstructed via `_from_ticks`, so `gallons = buy_mi
-    / mpg` and everything downstream of it runs through the exact same
-    `Decimal` division/multiplication/comparison sequence, in the exact
-    same order, as before this optimization existed.
+    `bisect.bisect_right` instead of a linear filter.
+
+    The *money* domain -- the D-12 comparison itself -- runs on the same
+    exact-integer discipline; see the module docstring's "Exact-integer
+    money-domain comparison" section for the full derivation. `gallons`
+    and `cost`, the `Decimal` purchase record a surviving `FuelStop`
+    actually reports, are unaffected: they are still computed by the
+    exact same `buy_mi = level - fuel_on_arrival; gallons = buy_mi / mpg;
+    cost = gallons * price_per_gallon` sequence, in the exact same order,
+    as before either optimization pass existed -- only *when* that
+    sequence runs (lazily, at most once per surviving `(state, level)`,
+    never for a transition that loses every target it reaches) has
+    changed, not its arithmetic.
     """
     total_route_mi = _as_decimal(total_route_mi)
     tank_range_mi = _as_decimal(tank_range_mi)
@@ -589,6 +727,71 @@ def solve_fixed_charge(
     # always >= the last station tick.
     full_ticks = positions_ticks + [total_route_ticks]
 
+    # --- Exact-integer money-domain comparison (see the module
+    # docstring's "Exact-integer money-domain comparison" section for the
+    # full derivation this mirrors). `_price_exponent` is this call's own
+    # analogue of `_pos_exponent` above: the finest exponent already
+    # present among the finitely many `price_per_gallon` values this run
+    # will ever compare, taken as a plain `min()` over already-materialized
+    # `Decimal`s -- never discovered by running a worst-case pass or
+    # assumed to be a fixed "cents" scale. `default=0` only matters when
+    # `ordered` is empty, in which case no purchase edge is ever built and
+    # `_price_exponent` is never read again.
+    _price_exponent = min(
+        (c.price_per_gallon.as_tuple().exponent for c in ordered), default=0
+    )
+
+    def _to_price_ticks(value):
+        # Identical exact-conversion logic to `_to_ticks` above, at
+        # `_price_exponent` instead of `_pos_exponent` -- kept as its own
+        # small function (rather than parameterizing `_to_ticks`) so
+        # neither call site pays an extra argument on its own hot path.
+        sign, digits, exponent = value.as_tuple()
+        coefficient = 0
+        for digit in digits:
+            coefficient = coefficient * 10 + digit
+        if sign:
+            coefficient = -coefficient
+        shift = exponent - _price_exponent
+        if shift < 0:
+            raise AssertionError(
+                f"price-domain value {value!r} needs more precision than "
+                f"the derived tick scale (exponent {exponent} < "
+                f"{_price_exponent})"
+            )
+        return coefficient * (10**shift) if shift else coefficient
+
+    # price_ticks[i] is ordered[i].price_per_gallon re-expressed as an
+    # exact integer at _price_exponent -- parallel to positions/positions_ticks.
+    price_ticks = [_to_price_ticks(c.price_per_gallon) for c in ordered]
+
+    # Every dollar this recurrence ever sums is
+    # `buy_ticks * 10**_pos_exponent * price_ticks * 10**_price_exponent /
+    # mpg` -- i.e. `(buy_ticks * price_ticks) * MONEY_SCALE`, where
+    # MONEY_SCALE = 10**(_pos_exponent + _price_exponent) / mpg is one
+    # positive constant shared by every candidate this call will ever
+    # compare (see the module docstring). Built via `Fraction` --
+    # `Fraction(mpg)` is exact for any `Decimal` (routed through
+    # `Decimal.as_integer_ratio()`, itself exact, never `float`) -- so
+    # MONEY_SCALE is an exact rational, not a rounded one.
+    _money_scale = Fraction(10) ** (_pos_exponent + _price_exponent) / Fraction(mpg)
+
+    # penalty/MONEY_SCALE, reduced to lowest terms: the exact rational
+    # weight one purchase's "+1 stop" contributes to the integer key, in
+    # the same MONEY_SCALE-implied units as `buy_ticks * price_ticks`.
+    _penalty_ratio = Fraction(penalty) / _money_scale
+    P_NUM, P_DEN = _penalty_ratio.numerator, _penalty_ratio.denominator
+
+    # COST_TOLERANCE/MONEY_SCALE, scaled by P_DEN and reduced: the exact
+    # rational threshold `_make_key_less` cross-multiplies against, so its
+    # `abs(diff) * tol_den > tol_num` reproduces
+    # `abs(real_objective_diff) > COST_TOLERANCE` exactly -- see
+    # `_make_key_less`'s own docstring.
+    _tolerance_ratio = Fraction(COST_TOLERANCE) * P_DEN / _money_scale
+    TOL_NUM, TOL_DEN = _tolerance_ratio.numerator, _tolerance_ratio.denominator
+
+    key_less = _make_key_less(TOL_NUM, TOL_DEN)
+
     def _reachable_ticks(node_index, max_pos_ticks):
         """Every node index in (node_index, node_count] (stations, then
         FINISH) whose tick position is <= max_pos_ticks, as a `range` in
@@ -601,7 +804,7 @@ def solve_fixed_charge(
         return range(lo, hi)
 
     states = {i: {} for i in range(-1, node_count + 1)}
-    start_key = (Decimal(0), 0, (), ())
+    start_key = (0, 0, (), ())
     states[-1][start_fuel_ticks] = _StateRecord(
         key=start_key, predecessor=None, edge=None
     )
@@ -623,11 +826,11 @@ def solve_fixed_charge(
             # The overwhelmingly common "buy nothing" pass-through: several
             # levels/targets from the same predecessor propagate the exact
             # same key tuple object onward. Object identity trivially
-            # implies "not strictly less" -- skip the Decimal-comparing
-            # `_key_less` call entirely rather than re-deriving the same
+            # implies "not strictly less" -- skip the exact-integer
+            # `key_less` call entirely rather than re-deriving the same
             # answer from scratch.
             return False
-        return _key_less(new_key, existing.key)
+        return key_less(new_key, existing.key)
 
     def relax(target_index, arrival_fuel_ticks, new_key, predecessor, edge):
         """Unconditionally re-checks and commits -- used only where the
@@ -679,7 +882,7 @@ def solve_fixed_charge(
         # dominated entries are simply never chosen as a relaxation
         # source, never physically removed from `states[node_index]`.
         for fuel_on_arrival_ticks, record in _pareto_frontier(
-            states[node_index]
+            states[node_index], key_less
         ).items():
             fuel_on_arrival = _from_ticks(fuel_on_arrival_ticks)
             levels = useful_fill_levels_mi(
@@ -694,8 +897,8 @@ def solve_fixed_charge(
                 if not target_range:
                     continue
 
-                buy_mi = level - fuel_on_arrival
-                is_purchase = buy_mi > 0
+                buy_ticks = level_ticks - fuel_on_arrival_ticks
+                is_purchase = buy_ticks > 0
                 predecessor = (node_index, fuel_on_arrival_ticks)
 
                 if not is_purchase:
@@ -709,16 +912,34 @@ def solve_fixed_charge(
                         )
                     continue
 
-                gallons = buy_mi / mpg
-                cost = gallons * station.price_per_gallon
+                # Exact-integer fuel-dollar contribution of THIS purchase,
+                # scaled by MONEY_SCALE (see the module docstring's
+                # "Exact-integer money-domain comparison" section): both
+                # `buy_ticks` and `price_ticks[node_index]` are exact
+                # integers, so their product is exact too -- no `Decimal`,
+                # no `float`, anywhere in this line.
+                purchase_ticks = buy_ticks * price_ticks[node_index]
                 is_full_fill = level == tank_range_mi
                 new_key = (
-                    record.key[0] + cost + penalty,
+                    record.key[0] + purchase_ticks * P_DEN + P_NUM,
                     record.key[1] + 1,
                     record.key[2] + (pos,),
                     record.key[3] + (station.opis_id,),
                 )
                 reachable_cheaper_idx = {idx for (_p, idx) in reachable_cheaper}
+
+                # `gallons`/`cost` -- the actual `Decimal` purchase record
+                # (D-03), computed by the exact same `buy_mi = level -
+                # fuel_on_arrival; gallons = buy_mi / mpg; cost = gallons *
+                # price` sequence this module has always used -- are
+                # materialized lazily, at most once per (state, level),
+                # only once this level's purchase is confirmed to win at
+                # least one target below. The comparison above never
+                # needed them (see the module docstring); a purchase that
+                # loses every target it reaches never pays for a `Decimal`
+                # division at all.
+                gallons = None
+                cost = None
 
                 # The reason and its bypassed-cheaper counters explain THIS
                 # purchase decision, computed PER TARGET (not once per
@@ -745,8 +966,13 @@ def solve_fixed_charge(
                     if existing is not None:
                         if new_key is existing.key:
                             continue
-                        if not _key_less(new_key, existing.key):
+                        if not key_less(new_key, existing.key):
                             continue
+
+                    if gallons is None:
+                        buy_mi = level - fuel_on_arrival
+                        gallons = buy_mi / mpg
+                        cost = gallons * station.price_per_gallon
 
                     target_pos = (
                         positions[target_index]
@@ -840,7 +1066,7 @@ def solve_fixed_charge(
 
     winner = None
     for record in states[finish].values():
-        if winner is None or _key_less(record.key, winner.key):
+        if winner is None or key_less(record.key, winner.key):
             winner = record
 
     if winner is None:
