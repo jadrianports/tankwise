@@ -91,6 +91,79 @@ input and that key, so re-running `solve_fixed_charge` on the same input
 always retraces the same relaxations in the same order and produces a
 byte-identical `FuelPlan`.
 
+## Pareto state-dominance pruning
+
+At any node, state B (arrived carrying `B.fuel_ticks` fuel, via a path
+whose own D-12 key -- see "Determinism" above -- is `B.key`) is dominated
+by state A at the SAME node when `A.fuel_ticks >= B.fuel_ticks` and
+`A.key` is STRICTLY better than `B.key` under that same D-12 total order
+(`_key_less(A.key, B.key)`). A dominated state is discarded before it is
+ever used as a relaxation source (`_pareto_frontier`, applied once per
+station node, immediately before that node's states become sources for
+the next round of transitions).
+
+Proof this cannot change the answer (exchange argument, same style as
+the finite-fill lemma's perturbation argument above): suppose, for
+contradiction, that the undominated recurrence's true D-12-minimal
+winning path W passes through a dominated state B at some node, with B
+dominated by a surviving state A. Splice A's own (strictly D-12-better)
+prefix onto W's own suffix from that node onward, unmodified. Every
+purchase that suffix makes remains feasible from A (A never has less
+fuel than B had), and wherever the suffix actually spends fuel, A's
+surplus over B either shrinks that purchase -- lowering its dollar cost,
+since every price in this domain is strictly positive -- or removes it
+outright, lowering the D-12 stop-count tie-break. Either way the
+spliced path's full D-12 key is no worse than A's own already-strictly-
+better prefix key, which is itself strictly better than W's -- so the
+spliced path strictly beats W, contradicting that W was already the
+minimal winner. So W could never have passed through a dominated state
+to begin with -- pruning it cannot remove anything the true winner would
+have used.
+
+Deliberately STRICT, never "at least as good": two states whose full
+D-12 keys tie EXACTLY (same objective, same stop count, same station
+positions, same `opis_id`s -- possible when two candidates share a
+price, so the same total dollar cost can be split between them more
+than one way) are both kept, even though the higher-fuel one alone would
+suffice for the numeric optimum. The reason is a step below D-12 itself:
+when two precursor paths reach the exact same downstream `(node, fuel)`
+key, `relax`/`_wins`'s first-writer-wins rule -- the only thing that
+settles WHICH of them the reconstructed plan actually uses -- depends on
+this module's existing dict-iteration-order contract (see
+"Determinism" above). Discarding one side of an exact tie changes
+nothing about the numeric answer, but it can still perturb which
+already-equally-optimal precursor a downstream coincidental tie resolves
+to, which is exactly as answer-visible (a different, though equally
+priced, per-stop gallon split) as a real correctness bug would be, and
+this module's mandate here is speed, never any change -- however
+immaterial to the total -- to which exact plan comes out the other end.
+`_pareto_frontier` accordingly preserves each surviving entry's original
+relative dict-iteration order rather than the descending-fuel order it
+scans internally to detect domination, for the identical reason.
+
+Compared on the FULL D-12 key, never the raw fuel-dollar-plus-penalty
+objective (`key[0]`) in isolation, for the same reason the ties above
+are left alone: two states can tie on that objective while splitting it
+differently between dollars and stop count (more stops at a lower
+per-stop price vs. fewer stops at a higher one), and only the full key
+-- not the numeric objective alone -- can tell whether the comparison is
+a strict improvement or a tie D-12 does not actually resolve. That is
+precisely the shape of a quietly-wrong "domination" shortcut this
+codebase has already paid for once, in the now-superseded reach-sliver
+candidate-prune rule (`prune.py`'s own history) -- comparing the full
+key, and refusing to prune anything short of a strict win, closes that
+same gap rather than assuming a narrower comparison is equivalent.
+
+Filtering never deletes an entry from `states[node_index]` itself, and
+never runs before that node's state dict is fully populated (nothing
+later in the sorted candidate order ever targets an earlier node, so by
+the time processing reaches a node its state dict has already received
+every relaxation it will ever receive) -- it only decides which entries
+the forward relaxation loop treats as sources. A dominated entry is
+simply never chosen as anybody's predecessor going forward, so it can
+never appear in a reconstructed plan either, whether or not it stays
+physically present in the dict.
+
 ## Trivial-stop bound
 
 A stop survives the optimum only when the gallons bought there, times the
@@ -264,6 +337,65 @@ def _key_less(key_a, key_b):
     if positions_a != positions_b:
         return positions_a < positions_b
     return opis_a < opis_b
+
+
+def _pareto_frontier(states_at_node):
+    """Return the subset of `states_at_node` (a `{fuel_ticks:
+    _StateRecord}` dict for one node) that is NOT Pareto-dominated by
+    another entry in the same dict -- see the module docstring's "Pareto
+    state-dominance pruning" section for the domination rule and its full
+    soundness proof. `states_at_node` itself is never mutated; this
+    returns a fresh dict (or the input unchanged when it holds at most one
+    entry, or when nothing is dominated) containing only the surviving
+    entries, in `states_at_node`'s OWN original iteration order -- never
+    the descending-by-fuel order used internally to detect domination.
+
+    Order preservation matters beyond style: this module's "Determinism"
+    section documents that `dict` insertion/iteration order is itself
+    part of this recurrence's contract, because it is what the existing
+    first-writer-wins tie resolution inside `relax`/`_wins` (an
+    intentionally arbitrary, below-D-12 tie-break for the rare case where
+    two precursor paths reach the exact same downstream `(node, fuel)`
+    key) implicitly depends on. Reordering surviving entries -- even
+    without discarding any of them -- would silently change which of two
+    such exactly-tied precursors wins a downstream slot, which is exactly
+    as much an answer-visible change (a different, though equally
+    optimal, per-stop gallon split) as discarding a state that genuinely
+    mattered would be. Only STRICT domination discards an entry here
+    (`_key_less(dominant.key, record.key)`, never an equal-key match) --
+    see the module docstring's Pareto section for why the tied-key case
+    (same D-12 key, more fuel) is deliberately left unpruned rather than
+    also discarded: pruning it cannot change the numeric optimum, but it
+    can still perturb which of several already-tied plans a downstream
+    coincidental tie resolves to, and this module's only mandate is
+    speed, never a change -- however immaterial -- to which exact
+    optimal plan comes out the other end.
+    """
+    if len(states_at_node) <= 1:
+        return states_at_node
+    dominated_ticks = set()
+    best_key_so_far = None
+    for fuel_ticks, record in sorted(
+        states_at_node.items(), key=lambda item: item[0], reverse=True
+    ):
+        if best_key_so_far is not None and _key_less(best_key_so_far, record.key):
+            # A strictly better key already exists at >= fuel -- this
+            # entry is genuinely dominated, never merely tied.
+            dominated_ticks.add(fuel_ticks)
+        elif best_key_so_far is None or _key_less(record.key, best_key_so_far):
+            # First entry seen, or a genuine, strict improvement over
+            # every higher-or-equal-fuel entry so far.
+            best_key_so_far = record.key
+        # else: record.key ties best_key_so_far exactly -- survives,
+        # left out of dominated_ticks, best_key_so_far left unchanged
+        # (it already equals record.key in every D-12-relevant respect).
+    if not dominated_ticks:
+        return states_at_node
+    return {
+        fuel_ticks: record
+        for fuel_ticks, record in states_at_node.items()
+        if fuel_ticks not in dominated_ticks
+    }
 
 
 def solve_fixed_charge(
@@ -540,7 +672,15 @@ def solve_fixed_charge(
             for (p, idx) in ahead
         )
 
-        for fuel_on_arrival_ticks, record in list(states[node_index].items()):
+        # Pareto state-dominance pruning (see the module docstring's
+        # section by that name): `states[node_index]` is already fully
+        # populated at this point (nothing later ever targets an earlier
+        # node), so this is a one-time, complete frontier computation --
+        # dominated entries are simply never chosen as a relaxation
+        # source, never physically removed from `states[node_index]`.
+        for fuel_on_arrival_ticks, record in _pareto_frontier(
+            states[node_index]
+        ).items():
             fuel_on_arrival = _from_ticks(fuel_on_arrival_ticks)
             levels = useful_fill_levels_mi(
                 pos,
