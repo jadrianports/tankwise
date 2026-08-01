@@ -21,7 +21,26 @@ additionally ties a cached payload to the EIA week it was priced under --
 a week rollover produces a new key, so no plan priced under one EIA week
 is ever served under a newer week's disclaimer (EIA-01).
 
-It is now versioned `route:v6:` because two independent things changed
+Still `route:v6:` as of the additive `solver_strategy` response field
+(Phase 18-04c) -- deliberately NOT bumped to `route:v7:`. Two reasons,
+together: (1) `solver_strategy` is a pure, deterministic function of
+exactly the inputs `route:v6:`'s own key already namespaces (the stop
+chain, vehicle profile, EIA vintage, penalty -- see
+`routing.services.solver.solve()`'s own docstring), so the SAME key
+already only ever maps to the ONE strategy a fresh solve would choose;
+no new key component is needed for the same reason `e:`/`p:` exist for
+genuinely input-varying facts but `solver_strategy` is not one -- it is
+an OUTPUT, not an input. (2) as of this change, `route:v6:` itself has
+never been deployed (this repository's Phase 18 work is still local,
+unpushed) -- there is no live Upstash entry anywhere carrying the
+`route:v6:` prefix without a `solver_strategy` key for a stale payload
+to collide with, so amending v6's payload shape in place carries none of
+the "old-shaped payload silently served under new code" risk the v3/v6
+bumps above exist to prevent. A future response-shape change LANDING
+AFTER this prefix has shipped to production must still bump the prefix
+per the same reasoning as every version above.
+
+It was versioned `route:v6:` because two independent things changed
 under the same deploy (D-33): (a) the objective changed -- plans are now
 chosen under fuel dollars plus a per-stop penalty rather than fuel dollars
 alone, so a payload cached under the previous prefix is a plan computed

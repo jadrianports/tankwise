@@ -515,6 +515,13 @@ class RouteResponseSerializer(serializers.Serializer):
       (start, each intermediate waypoint, finish), letter-labeled --
       absent renders `waypoints: []` (WAY-06/WAY-08).
 
+    `"solver_strategy"` is read directly off `plan.strategy` (Phase
+    18-04c), not from `instance` -- it names which algorithm actually
+    produced the plan, `"exact_dp"` or `"greedy_fallback"` (see
+    `routing.services.solver.SolverStrategy`). A `plan` predating this
+    field (`strategy` defaults to `None` on `FuelPlan`) renders
+    `solver_strategy: null` rather than raising.
+
     `self.context` may carry `"stop_coords"` (see `FuelStopSerializer`),
     `"start_coords"`, and `"finish_coords"` (each a
     `{"latitude", "longitude"}` dict), all injected by the orchestrator.
@@ -585,4 +592,5 @@ class RouteResponseSerializer(serializers.Serializer):
             "eia_week": eia_week,
             "trend_region": trend_region,
             "trend_delta_cents": trend_delta_cents,
+            "solver_strategy": plan.strategy,
         }

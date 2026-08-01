@@ -404,6 +404,7 @@ _ROUTE_RESPONSE_SCHEMA = inline_serializer(
         "eia_week": serializers.CharField(allow_null=True),
         "trend_region": serializers.CharField(allow_null=True),
         "trend_delta_cents": serializers.IntegerField(allow_null=True),
+        "solver_strategy": serializers.CharField(allow_null=True),
     },
 )
 
@@ -561,6 +562,7 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
         "eia_week": None,
         "trend_region": None,
         "trend_delta_cents": None,
+        "solver_strategy": "exact_dp",
     },
     request_only=False,
     response_only=True,

@@ -145,6 +145,17 @@ export interface InfeasibleRouteDetail {
 // (no factors ever fetched -- the original 2024 snapshot, unindexed).
 export type PriceIndexStatus = 'current' | 'stale' | 'frozen';
 
+// `solver_strategy` values (Phase 18-04c): which algorithm actually
+// produced the returned plan. `'exact_dp'` is the fixed-charge dynamic
+// program (an exact optimum under fuel dollars plus a per-stop penalty);
+// `'greedy_fallback'` is a fast, structurally penalty-unaware heuristic
+// used only when a deterministic pre-flight estimate finds the exact DP
+// would exceed the request's latency budget. Treat any string other than
+// these two the same way `JustificationPopup`'s reason lookup already
+// treats an unmapped `PurchaseReason` -- render a neutral fallback rather
+// than throwing, since this is server-reported and additive.
+export type SolverStrategy = 'exact_dp' | 'greedy_fallback';
+
 // The full `RouteResponseSerializer.to_representation` return shape.
 export interface RouteResponse {
   start: LatLngString | null;
@@ -180,6 +191,14 @@ export interface RouteResponse {
   eia_week: string | null;
   trend_region: string | null;
   trend_delta_cents: number | null;
+  // Additive (Phase 18-04c). `null` only for a legacy/predates-this-field
+  // cached payload -- a live solve() call always sets one of the two
+  // `SolverStrategy` values. Typed as plain `string | null` rather than
+  // `SolverStrategy | null` so an unrecognized future value (a third
+  // strategy) still type-checks instead of forcing every consumer to
+  // widen its own type -- consumers that care about the two known values
+  // should narrow with `SolverStrategy` themselves.
+  solver_strategy: string | null;
 }
 
 // The request-side nested vehicle profile POSTed to /api/route --
