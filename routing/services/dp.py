@@ -273,6 +273,66 @@ every prior version of this module -- this section changes only what the
 recurrence *compares* while deciding which states survive, never what a
 winning stop's own reported numbers are built from.
 
+## Position-domain subtraction must be exact, not merely well-scaled
+
+The "Implementation note" above proves the *conversion* from `Decimal` to
+integer ticks is exact (`_to_ticks`/`_from_ticks`, built from
+`Decimal.as_tuple()`, never division or `scaleb`). It does not, by itself,
+guarantee the `Decimal` VALUE being converted is correct -- and for one
+call site, `useful_fill_levels_mi`'s `reach_mi = node_mi - position_mi`,
+it silently was not, for the same class of high-precision real input this
+module's own docstring already flags elsewhere: real, Mapbox/shapely-
+derived station positions routinely carry up to 28-29 significant digits
+(`374.5423307176653094063943466`, a real committed corridor fixture
+position, is exactly 28). Plain `Decimal.__sub__` rounds its result to
+whatever context precision happens to be ambient (28 significant digits
+by default) whenever the true difference needs more digits than that to
+represent exactly -- ROUND_HALF_EVEN, silently, with no exception. For
+two positions at this dataset's real precision, that rounding is not a
+theoretical edge case: `1379.290723425196850393700787 -
+374.5423307176653094063943466` truly equals
+`1004.7483927075315409873064404`, but Python's default-context
+`Decimal.__sub__` returns `1004.748392707531540987306440` -- four
+ten-septillionths of a mile short.
+
+The pre-tick-domain recurrence never surfaced this, for a genuinely subtle
+reason worth recording: it re-derived a target's own gap via the
+IDENTICAL rounded expression twice -- once inside `useful_fill_levels_mi`
+to build the level, once more at the call site to compute arrival fuel
+from it (`level - (target_pos - pos)`) -- so the same rounding error
+cancelled itself out algebraically every time (`L - L == 0`, regardless of
+what `L` actually was). Its reachability test (`pos + level <=
+target_pos`, `Decimal`, tolerant `<=`) happened to round its own
+compensating ADDITION back up to exactly the unrounded target position
+too, for the same reason. Both of those masking effects depend on
+recomputing the SAME rounded `Decimal` expression more than once in the
+SAME ambient context -- which the exact-integer tick domain, by design,
+no longer does: `full_ticks[target_index] - pos_ticks` is exact integer
+arithmetic over the RAW, unrounded input positions, computed completely
+independently of whatever `level` (and hence `level_ticks`) turned out to
+be. A `level` silently rounded short during construction therefore no
+longer agrees with the exact tick-domain target it was built to reach --
+`_reachable_ticks`'s strict `bisect_right` boundary then excludes that
+target from `target_range` outright, silently discarding an otherwise-
+optimal transition rather than raising or producing an inexact answer
+that looks obviously wrong.
+
+`_exact_sub` (used by `useful_fill_levels_mi` in place of plain
+`Decimal.__sub__`) fixes this at the source, using the same "exact
+integer arithmetic over each operand's own `(sign, digits, exponent)`
+triple" discipline `_to_ticks`/`_from_ticks` already use, rather than
+raising the ambient context's precision (which would only move the
+boundary, not remove it, and would silently affect every other `Decimal`
+operation running concurrently in the same interpreter). Its result's own
+minimal exponent is always `min(a's exponent, b's exponent)` -- and since
+`_pos_exponent` is defined as the minimum exponent over EVERY
+position-domain value this call ever touches, including both `a` and `b`
+here (`nodes_ahead_mi` is built from `positions`/`total_route_mi`, exactly
+the same set `_pos_exponent` already scans), `_exact_sub`'s result can
+never need finer resolution than `_pos_exponent` already provides --
+`_to_ticks`'s own `shift < 0` assertion guard remains correctly
+unreachable, not merely untested.
+
 ## Trivial-stop bound
 
 A stop survives the optimum only when the gallons bought there, times the
@@ -365,6 +425,65 @@ COST_TOLERANCE = Decimal("0.0001")
 
 def _as_decimal(value):
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def _exact_sub(a, b):
+    """Exact `a - b` for two position-domain `Decimal`s, bypassing
+    whatever ambient context precision (`decimal.getcontext().prec`, 28
+    significant digits by default) happens to be active when this runs.
+
+    Built from each operand's own `Decimal.as_tuple()` triple and exact
+    integer subtraction -- the same "no `Decimal` division/`scaleb`, no
+    context rounding" discipline `_to_ticks`/`_from_ticks` already use
+    elsewhere in this module for exactly the same reason -- rather than
+    Python's own `Decimal.__sub__`, which SILENTLY ROUNDS its result to
+    the ambient context's precision whenever the true difference needs
+    more significant digits than that to represent exactly.
+
+    This matters because this dataset's real, Mapbox/shapely-derived
+    station positions routinely carry up to 28-29 significant digits
+    themselves (e.g. `374.5423307176653094063943466`, a real committed
+    corridor fixture position -- 28 digits, exactly at the default
+    context's own precision ceiling). Subtracting two such positions
+    under the plain `Decimal.__sub__` operator can and does lose the
+    least-significant digit of the true result. `useful_fill_levels_mi`
+    is the one caller that needs this: its "exact reach" fill levels must
+    land exactly on the node they were built to reach once converted to
+    the exact-integer tick domain (`_to_ticks`, below) -- a level that is
+    silently off by even one ULP in that domain can push a target's
+    position just outside `_reachable_ticks`'s strict `bisect_right`
+    boundary, making the DP believe an otherwise-reachable node is not
+    reachable via that level at all. The pre-optimization, all-`Decimal`
+    recurrence never surfaced this: it re-derived a target's own gap via
+    the SAME rounded expression twice (once to build the level, once to
+    compute arrival fuel from it), so the identical rounding error
+    cancelled out algebraically every time, and its reachability test
+    (`pos + level <= target_pos`) similarly happened to round its own
+    compensating addition back up to the exact target position. The
+    exact-integer tick domain has no such rounding step left to cancel
+    against -- `full_ticks[target_index] - pos_ticks` is computed exactly
+    from the RAW, unrounded input positions, so a `level` that was itself
+    silently rounded during construction no longer agrees with it.
+    """
+    a_sign, a_digits, a_exponent = a.as_tuple()
+    b_sign, b_digits, b_exponent = b.as_tuple()
+    exponent = min(a_exponent, b_exponent)
+
+    def _coefficient(sign, digits, digit_exponent):
+        value = 0
+        for digit in digits:
+            value = value * 10 + digit
+        if sign:
+            value = -value
+        return value * (10 ** (digit_exponent - exponent))
+
+    diff = _coefficient(a_sign, a_digits, a_exponent) - _coefficient(
+        b_sign, b_digits, b_exponent
+    )
+    sign = 1 if diff < 0 else 0
+    magnitude = -diff if sign else diff
+    digit_str = str(magnitude) if magnitude else "0"
+    return Decimal((sign, tuple(int(d) for d in digit_str), exponent))
 
 
 def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
@@ -541,7 +660,11 @@ def useful_fill_levels_mi(
     """
     levels = {fuel_on_arrival_mi, tank_range_mi}
     for node_mi in nodes_ahead_mi:
-        reach_mi = node_mi - position_mi
+        # `_exact_sub`, not plain `Decimal.__sub__` -- see its own
+        # docstring. Ambient-context rounding here would make this
+        # "exact reach" level not actually exact once it is later
+        # converted to `solve_fixed_charge`'s integer-tick domain.
+        reach_mi = _exact_sub(node_mi, position_mi)
         if reach_mi <= tank_range_mi:
             levels.add(reach_mi)
     return tuple(
