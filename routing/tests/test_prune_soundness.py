@@ -30,7 +30,7 @@ import random
 from dataclasses import dataclass
 from decimal import Decimal
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, tag
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
@@ -641,8 +641,18 @@ def dense_corridor_routes(draw):
     return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
 
 
+@tag("slow")
 class PruneGreedyDifferentialTests(SimpleTestCase):
     """The greedy/density arm of D-01's two-referee design.
+
+    Tagged `"slow"` (Phase 18-04c) so `manage.py test --exclude-tag=slow`
+    can run the rest of the suite without this class's own ~50-minute
+    corridor-density sweep (see `18-04b-SUMMARY.md`'s Issues Encountered
+    for that measured runtime) -- a bare mechanism for the exclusion
+    18-04c-SUMMARY.md's own "run the full suite twice, skipping this
+    class" instruction already names explicitly. The tag changes nothing
+    about what this class asserts or how it runs when selected; it is
+    metadata for test selection only.
 
     routing/tests/test_solver_optimality.py already proves solve() is a
     true pure-fuel cost optimum -- an exhaustive memoized recursive search
