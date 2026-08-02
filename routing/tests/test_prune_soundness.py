@@ -641,6 +641,28 @@ def dense_corridor_routes(draw):
     return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
 
 
+# 18-09/PROOF-03: the minimum fraction of non-infeasible dense_corridor_routes()
+# draws that must reach `SolverStrategy.EXACT_DP` on BOTH arms for the scoped
+# equality test below to be considered meaningful evidence rather than a
+# vacuous pass. Pinned HERE, before task 2 touches the assertion or retunes
+# the density strategy, from two inputs only: the pre-retune measured
+# baseline (18.6%, see this module's own "Measured evidence this plan starts
+# from" table -- a 120-example probe over the SHIPPED, un-retuned
+# dense_corridor_routes() found 22/118 non-infeasible examples, 18.6%, reach
+# `exact_dp` on both arms) and the retune target task 2 commits to in its own
+# action text: widen tank_range_mi's ceiling and/or lower the station-count
+# floor so a MATERIALLY larger share reaches the exact-DP regime. 0.50 is
+# chosen deliberately far from both ends: comfortably above 18.6% (2.7x) so a
+# retune that only marginally moves the needle cannot silently satisfy this
+# floor and hide the fact that nothing real changed, and comfortably below
+# what task 2's retune is expected to reach so ordinary Hypothesis draw
+# variance across CI runs cannot flake it. If task 2's retune cannot clear
+# this floor, the floor is NOT to be lowered to fit -- report it as a finding
+# about DP_TRANSITION_BUDGET's calibration instead (see this plan's own
+# non-negotiable honesty rules).
+EXACT_DP_REACH_FLOOR = Decimal("0.50")
+
+
 @tag("slow")
 class PruneGreedyDifferentialTests(SimpleTestCase):
     """The greedy/density arm of D-01's two-referee design.
@@ -681,6 +703,52 @@ class PruneGreedyDifferentialTests(SimpleTestCase):
     PruneOracleDifferentialTests above already covers station-set
     equality, and only where the unpruned optimum is strictly unique
     (D-02).
+
+    ## Refuted claims
+
+    18-09 scoped this class's cost-equality assertion down to the regime
+    it is actually proven in (both arms reaching `exact_dp`) after finding
+    the assertion was, in every session that ran it to completion,
+    exercising the `penalty_aware_heuristic` fallback instead -- a path
+    that was never proven, or claimed, to be prune-invariant. Two specific
+    claims were checked directly against this class's own dispatch data
+    and found FALSE. Neither is a claim this codebase makes or should
+    retry:
+
+    1. **The heuristic is prune-invariant.** FALSE. 18-07's witness on a
+       real Hypothesis-drawn falsifying example (100 synthetic stations,
+       reproduced verbatim in `deferred-items.md`'s 18-07 entry) is a
+       direct counterexample: `unpruned strategy penalty_aware_heuristic
+       cost 1760.26 stops 4` vs `pruned strategy penalty_aware_heuristic
+       cost 1708.51 stops 3` -- a `$51.75` divergence, `517500x`
+       `COST_TOLERANCE`, on the SAME input the exact-DP arm would have
+       proven equal had either arm actually reached it. This is not a
+       surprising defect: the heuristic is an approximation by
+       construction (its own module docstring; 18-04d-SUMMARY.md measured
+       it at 6.5% average / 12.5% max off the exact DP's objective on the
+       seven DP-tractable corridor cells available at that time), so
+       prune-invariance -- an EXACT-equality property -- was never a
+       property an approximation could have held in the first place.
+
+    2. **`pruned_cost <= unpruned_cost` on the heuristic path** (the
+       weaker fallback claim considered as a substitute for exact
+       equality). ALSO FALSE. This plan's own pre-retune 120-example probe
+       (see "Measured evidence this plan starts from" above) found the
+       direction disagrees on 25 of 118 non-infeasible draws: pruned
+       cheaper on 55, identical on 38, and pruned STRICTLY WORSE on 25 --
+       worst observed divergence `pruned $186.19` vs `unpruned $107.03`.
+       All 25 regressions occurred on the heuristic arm, in the
+       pre-pruned-input configuration production never ships (D-20: the
+       live `solve()` seam always hands the heuristic the FULL, unpruned
+       `candidates`, never a caller-pre-pruned list -- see task 3's
+       `PruneHeuristicReceivesFullCandidateListTests` below, which pins
+       that actual guarantee directly).
+
+    Both refutations are recorded here permanently, in the same voice
+    Phase 17 used for the disproved Domination Theorem in
+    `routing/services/prune.py`'s own docstring -- a claim this codebase
+    once implicitly relied on (via this class's unscoped assertion) but
+    does not, and should not, make.
     """
 
     @given(dense_corridor_routes())
