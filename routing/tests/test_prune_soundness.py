@@ -13,10 +13,16 @@ re-deriving them: D-06 constrains how a referee is *derived*, not how it
 is *consumed*, and re-deriving it here would give the prune a second,
 unproven judge.
 
-Uses django.test.SimpleTestCase throughout, never Hypothesis's own
-Django-integrated TestCase: the prune under test is pure and never
-touches the ORM, so the Django/Hypothesis integration's per-example
-database transaction would buy nothing here.
+Uses django.test.SimpleTestCase throughout for every class that exercises
+`prune_dominated_candidates` on synthetic input: the prune under test is
+pure and never touches the ORM, so Hypothesis's own Django-integrated
+TestCase's per-example database transaction would buy nothing here. The
+one deliberate exception is `PruneHeuristicReceivesFullCandidateListTests`
+(18-09/task 3), which needs the real committed station dataset via
+`corridor.candidates()`'s DB-backed STRtree query to pin a production
+guarantee against a real corridor -- it uses `django.test.TestCase`, the
+same DB-backed pattern `test_solver_dispatch.RealCorridorDispatchTestCase`
+already establishes elsewhere in this codebase, never Hypothesis.
 
 This first test class, PruneRetainedSetTests, is the primary evidence for
 ROADMAP criterion 3, which makes a claim about what the prune *keeps*
@@ -26,18 +32,25 @@ below are on the retained set directly (D-05), not on a downstream solve()
 call.
 """
 import inspect
+import io
 import random
 from dataclasses import dataclass
 from decimal import Decimal
+from unittest.mock import patch
 
-from django.test import SimpleTestCase, tag
+from django.core.management import call_command
+from django.test import SimpleTestCase, TestCase, tag
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from routing.services import Candidate, dp, solve
+from routing.services import Candidate, corridor, dp, heuristic, solve
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
 from routing.services.solver import SolverStrategy
+from routing.tests.test_corridor_fixtures import (
+    factor_lookup_for_basis,
+    load_corridor_route,
+)
 from routing.tests.test_solver_fixed_charge_optimality import (
     COST_TOLERANCE,
     MAX_STATIONS,
@@ -984,6 +997,106 @@ class PruneGreedyDifferentialExactReachGuardTests(SimpleTestCase):
             f"this pass; a failure here is a finding about "
             f"DP_TRANSITION_BUDGET's calibration or the density strategy, "
             f"not a bug in this guard.",
+        )
+
+
+class PruneHeuristicReceivesFullCandidateListTests(TestCase):
+    """18-09/task 3: pins the production guarantee that actually protects
+    the penalty-aware heuristic fallback, now that prune-invariance of the
+    heuristic itself is refuted (see `PruneGreedyDifferentialTests`' own
+    "## Refuted claims" docstring section above).
+
+    `solver.solve()`'s dispatch block prunes only `search_set` -- the set
+    the exact DP explores -- and, on the branch that dispatches to
+    `heuristic.solve_penalty_aware_heuristic`, hands it the FULL,
+    UNPRUNED `candidates` argument, never `search_set` (see
+    `solver.py`'s own dispatch-block docstring, step 4: "over budget,
+    delegate instead to `heuristic.solve_penalty_aware_heuristic` over
+    the FULL, unpruned `candidates`" -- the same "operate over the full
+    candidate list" discipline D-20 already established for this
+    function's reporting statistics). This is the property the fallback
+    path actually relies on: the heuristic is never handed a
+    caller-pre-pruned list to begin with, so there is no pruned/unpruned
+    divergence for it to be invariant -- or not invariant -- across on
+    the live request path. This test pins that mechanism directly, by
+    patching `heuristic.solve_penalty_aware_heuristic` and asserting on
+    the actual argument it receives, rather than inferring the mechanism
+    from the resulting plan (which the refuted claims above already show
+    is unsafe to do). It is what would catch this protection being
+    silently removed -- e.g. a future change that starts pruning before
+    the heuristic branch too.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_stations", stdout=io.StringIO())
+        corridor.warm_index()
+
+    def test_heuristic_branch_receives_the_full_unpruned_candidate_list(self):
+        factor_for = factor_lookup_for_basis("neutral")
+        # toronto_oh-hillsboro_or @1050mi is a real, committed corridor
+        # confirmed (test_solver_dispatch.HeavyLightDispatchTests) to
+        # dispatch to the penalty-aware heuristic at these parameters --
+        # dense enough (509 raw candidates, 214 retained after pruning)
+        # that this assertion is genuinely load-bearing: a bug that
+        # started handing the heuristic the 214-candidate search_set
+        # instead of the 509-candidate full list would be caught here.
+        route = load_corridor_route("toronto_oh-hillsboro_or")
+        candidates = corridor.candidates(route, factor_for=factor_for)
+        tank_range_mi = Decimal(1050)
+
+        retained = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=route.total_route_mi
+        )
+        self.assertLess(
+            len(retained),
+            len(candidates),
+            "toronto_oh-hillsboro_or @1050mi no longer prunes to a "
+            "strictly smaller search_set -- this test's own load-bearing "
+            "premise (candidates != search_set) no longer holds; pick a "
+            "different real corridor/tank-range cell.",
+        )
+
+        with patch(
+            "routing.services.heuristic.solve_penalty_aware_heuristic",
+            wraps=heuristic.solve_penalty_aware_heuristic,
+        ) as spy:
+            plan = solve(
+                candidates,
+                route.total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=Decimal(10),
+                starting_fuel=Decimal("0.5"),
+                penalty=Decimal(35),
+            )
+
+        self.assertEqual(
+            plan.strategy,
+            SolverStrategy.PENALTY_AWARE_HEURISTIC,
+            "toronto_oh-hillsboro_or @1050mi no longer dispatches to the "
+            "penalty-aware heuristic at these parameters -- this test's "
+            "own load-bearing premise no longer holds; pick a different "
+            "real corridor/tank-range cell.",
+        )
+        spy.assert_called_once()
+        received_candidates = spy.call_args.args[0]
+        self.assertEqual(
+            list(received_candidates),
+            list(candidates),
+            "heuristic.solve_penalty_aware_heuristic received a candidate "
+            "list that differs from the FULL, unpruned candidates solve() "
+            "was called with -- the D-20 guarantee that protects the "
+            "fallback path (never handing it a pre-pruned list) is "
+            "broken.",
+        )
+        self.assertGreater(
+            len(received_candidates),
+            len(retained),
+            "heuristic received a list no larger than the pruned "
+            "search_set (len={}) -- it should have received the full "
+            "{}-candidate list, not the {}-candidate search_set.".format(
+                len(retained), len(candidates), len(retained)
+            ),
         )
 
 
