@@ -637,7 +637,60 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
 # worst-case DP time no longer supports that. See 18-05c-SUMMARY.md for
 # the full calibration table and the re-derived heuristic quality figures
 # on the cells this demotes.
-DP_TRANSITION_BUDGET = 134_000
+# ---------------------------------------------------------------------------
+# HOTFIX 2026-08-02 -- 134,000 was calibrated on developer-workstation
+# timings against a 5s target and is INVALID on the deployed hardware.
+#
+# Everything above this line records the 134,000 derivation and is kept as
+# the historical record of how the miscalibration happened. Its own closing
+# paragraphs are the disproof: they single out dallas_tx-seattle_wa (the
+# demo corridor, ROADMAP criterion 1) as staying on exact_dp "comfortably
+# under the 5s target" at a measured @500mi worst of 2.706s. On the live
+# Render free tier that exact request -- POST /api/route, Dallas -> Seattle,
+# API default vehicle (10 mpg / 500 mi) -- exceeds GUNICORN_TIMEOUT=30 and
+# returns HTTP 500. Reproduced 5/5 at 30.5s-35.7s. That is a >11x
+# workstation-to-live factor on this cell, not the ~5.4x the Dallas -> LA
+# live capture suggested (solver 8.399s live vs 1.556s workstation).
+#
+# The error was calibrating a production dispatch guard against the wrong
+# machine class. A transition-count estimate is hardware-independent; the
+# wall-clock time it buys is not.
+#
+# 50,000 is chosen so the dispatch boundary tracks MEASURED breach
+# behaviour rather than a workstation time target. Estimates at the API
+# default vehicle (10 mpg / 500 mi tank) over the twelve committed
+# corridors:
+#
+#   san_diego_ca-jacksonville_fl     66,564  -> heuristic (was exact_dp)
+#   dallas_tx-seattle_wa             61,912  -> heuristic (was exact_dp)
+#   ----------------------------------------- 50,000 boundary
+#   houston_tx-chicago_il            48,912  -> exact_dp
+#   fargo_nd-amarillo_tx             41,817  -> exact_dp
+#   phoenix_az-minneapolis_mn        16,312  -> exact_dp
+#   nashville_tn-buffalo_ny           8,141  -> exact_dp
+#   sacramento_ca-salt_lake_city_ut     120  -> exact_dp
+#
+# The two cells this demotes are exactly the two plan 18-06 measured as
+# breaching LATENCY_CEILING_SECONDS=1.0s on the workstation
+# (dallas_tx-seattle_wa 1.5560s-1.7244s; san_diego_ca-jacksonville_fl
+# 1.3446s-1.6977s). Every cell that stays on exact_dp was measured
+# comfortably inside that ceiling. The boundary now separates
+# measured-to-breach from measured-fine, instead of separating two
+# workstation time estimates.
+#
+# COST, stated plainly: these two corridors -- including the ROADMAP's own
+# demo corridor -- no longer receive a provably optimal plan. They receive
+# the penalty-aware heuristic, measured at 6.5% average / 12.5% max off the
+# exact optimum (18-04d). The trade is visible to callers rather than
+# hidden: the response's `solver_strategy` field reports
+# `penalty_aware_heuristic`.
+#
+# This is a HOTFIX to stop a live 500, NOT a principled re-calibration. The
+# real fix measures the dispatch boundary against deployed hardware and
+# guards it with a test that would have caught this. That is gap-closure
+# work, tracked in 18-VERIFICATION.md.
+# ---------------------------------------------------------------------------
+DP_TRANSITION_BUDGET = 50_000
 
 
 def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):

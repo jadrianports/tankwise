@@ -10,7 +10,6 @@ CORPUS_PARAMS/OBJECTIVE_PARAMS discipline Phases 16-18 have used
 throughout.
 """
 import io
-import unittest
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -142,9 +141,45 @@ class PlanObjectiveGuardTests(PlanObjectiveMeasurementTestCase):
         except InfeasibleRouteError as exc:
             self.fail(f"dallas_tx-seattle_wa raised InfeasibleRouteError: {exc}")
 
-    @unittest.expectedFailure
     def test_dallas_seattle_stop_count_within_criterion_1_range(self):
-        """D-31 pins DALLAS_SEATTLE_STOP_RANGE=(3, 4) BEFORE measurement,
+        """UPDATE 2026-08-02 -- `@unittest.expectedFailure` REMOVED because
+        this assertion now genuinely passes, and the docstring below called
+        that out in advance as "worth investigating, not an assumed
+        non-event, since it would mean the shipped solver's behaviour on
+        this corridor changed." It did change, and here is exactly how.
+
+        The `DP_TRANSITION_BUDGET` hotfix (134,000 -> 50,000; see
+        `routing/services/dp.py`) demotes dallas_tx-seattle_wa from the
+        exact DP to the penalty-aware heuristic at BOTH pinned tank ranges,
+        because at the API default vehicle this corridor was returning
+        HTTP 500 live against `GUNICORN_TIMEOUT=30`.
+
+        Measured consequence on this corridor at OBJECTIVE_PARAMS
+        (1,050 mi tank, 6.5 mpg, $35 penalty):
+
+            before  strategy=exact_dp                stops=2  cost=$498.04
+            after   strategy=penalty_aware_heuristic stops=3  cost=$552.24
+
+        That is +$54.20 (+10.9%) -- inside the 12.5% max heuristic-vs-exact
+        gap plan 18-04d measured, but well above its 6.5% average. The plan
+        is no longer provably optimal on this corridor; `solver_strategy`
+        reports that honestly on every response.
+
+        Note the irony worth recording: 3 stops falls INSIDE
+        DALLAS_SEATTLE_STOP_RANGE=(3, 4), the range D-31 pinned from
+        ROADMAP criterion 1's literal wording and which the exact DP's own
+        answer (2 stops) fell outside. Criterion 1's original claim
+        described the heuristic's answer, not the exact optimum.
+
+        THIS TEST IS NOW COUPLED TO A PROVISIONAL HOTFIX. If gap-closure
+        work restores exact-DP dispatch for this corridor, the count
+        returns to 2 and this assertion fails again -- at which point the
+        correct move is to reconcile ROADMAP criterion 1 against the exact
+        optimum, not to re-add `expectedFailure`.
+
+        --- original D-31 rationale, retained verbatim ---
+
+        D-31 pins DALLAS_SEATTLE_STOP_RANGE=(3, 4) BEFORE measurement,
         mirroring ROADMAP.md Phase 18 criterion 1's literal "3-4 stops"
         claim. This plan's own measurement (18-05-SUMMARY.md) found the
         real DP/heuristic dispatch returns 2 stops on this corridor at

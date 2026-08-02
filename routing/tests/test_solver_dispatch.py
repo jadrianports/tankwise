@@ -105,7 +105,20 @@ class HeavyLightDispatchTests(RealCorridorDispatchTestCase):
         self.assertGreater(len(plan.stops), 0)
 
     def test_light_corridor_takes_the_exact_dp(self):
-        plan = self._solve("dallas_tx-seattle_wa", Decimal(1050))
+        # Corridor changed 2026-08-02 from dallas_tx-seattle_wa, which is no
+        # longer a "light" corridor under the hotfixed
+        # DP_TRANSITION_BUDGET=50,000: its estimate is 117,852 @1050mi and
+        # 61,912 @500mi, so it now dispatches to the heuristic. That demotion
+        # is the whole point of the hotfix -- Dallas -> Seattle at the API
+        # default vehicle was returning HTTP 500 live against
+        # GUNICORN_TIMEOUT=30 (see dp.py's DP_TRANSITION_BUDGET note).
+        #
+        # san_diego_ca-jacksonville_fl @1050mi is the replacement: estimate
+        # 15,724, comfortably under the budget, but a genuinely substantial
+        # corridor (312 raw candidates, 39 retained after the prune) rather
+        # than a trivially small one -- so this test still exercises a real
+        # exact-DP dispatch instead of passing vacuously on a toy input.
+        plan = self._solve("san_diego_ca-jacksonville_fl", Decimal(1050))
         self.assertEqual(plan.strategy, SolverStrategy.EXACT_DP)
         self.assertGreater(len(plan.stops), 0)
 
