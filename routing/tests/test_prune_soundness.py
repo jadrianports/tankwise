@@ -34,9 +34,10 @@ from django.test import SimpleTestCase, tag
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
-from routing.services import Candidate, solve
+from routing.services import Candidate, dp, solve
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
+from routing.services.solver import SolverStrategy
 from routing.tests.test_solver_fixed_charge_optimality import (
     COST_TOLERANCE,
     MAX_STATIONS,
@@ -575,7 +576,16 @@ class PruneOracleDifferentialTests(SimpleTestCase):
 # ~15s runtime ceiling) and its companion, the explicit density floor
 # (min_size, never left to Hypothesis's small-biased max_size-only
 # default). Both are consumed directly by dense_corridor_routes() below.
-GREEDY_MIN_STATIONS = 100
+#
+# 18-09/PROOF-03: GREEDY_MIN_STATIONS was lowered from its original 100 to
+# 60 as part of the density retune -- together with widening
+# tank_range_mi's ceiling below, this is what raises the share of draws
+# landing under DP_TRANSITION_BUDGET (measured 18.6% before this retune,
+# ~74-88% after it across five independent 150-200-example probes; see
+# EXACT_DP_REACH_FLOOR's own comment). 60 stays well above the oracle
+# arm's MAX_STATIONS=6 ceiling, so this arm remains a genuine density
+# referee, not a duplicate of the small-candidate oracle arm.
+GREEDY_MIN_STATIONS = 60
 GREEDY_STATION_CAP = 250
 
 
@@ -585,9 +595,31 @@ def dense_corridor_routes(draw):
     arm: GREEDY_MIN_STATIONS..GREEDY_STATION_CAP candidates on a route
     drawn from roughly 1,400-2,600 mi -- the band REQUIREMENTS.md's
     Evidence Base names as where the problem concentrates -- with
-    tank_range_mi drawn from roughly 200-1,050 mi, so
+    tank_range_mi drawn from roughly 200-2,600 mi, so
     tank_range_mi / total_route_mi varies across the range that governs
     how much of the route falls in the prune's tail region.
+
+    18-09/PROOF-03 retune: tank_range_mi's ceiling was widened from 1,050
+    to 2,600 (matching total_route_mi's own ceiling, so tank_range_mi can
+    reach or exceed total_route_mi on a drawn example) specifically to
+    raise the share of draws that land under DP_TRANSITION_BUDGET. This is
+    NOT because a wider tank makes the DP itself cheaper to run -- it is
+    because prune_dominated_candidates() prunes far more aggressively as
+    tank_range_mi approaches or exceeds total_route_mi (see
+    PruneRetainedSetTests.
+    test_route_shorter_than_tank_range_retains_exactly_the_prefix_minima's
+    proof: once every station's own supply interval reaches FINISH, the
+    retained set collapses to the strict price prefix-minima, typically a
+    single-digit count even over a few hundred stations), which shrinks
+    the search_set solve() actually estimates transition counts over.
+    Lowering GREEDY_MIN_STATIONS (60, see its own comment above) works the
+    same direction from the other side: fewer raw candidates means a
+    smaller search_set even before the tail-collapse effect. Both levers
+    are the ones this plan's action text names as preferred over shrinking
+    the route, and the arm stays genuinely dense at 60-250 raw stations
+    per example -- far denser than the oracle arm's MAX_STATIONS=6, so
+    this remains a real density referee rather than a duplicate of that
+    arm.
 
     Prices are drawn as integer cents and divided by 100 into a Decimal --
     deliberately not Hypothesis's own decimal-drawing strategy, which
@@ -614,7 +646,7 @@ def dense_corridor_routes(draw):
     rejects a drawn example.
     """
     total_route_mi = Decimal(draw(st.integers(min_value=1400, max_value=2600)))
-    tank_range_mi = Decimal(draw(st.integers(min_value=200, max_value=1050)))
+    tank_range_mi = Decimal(draw(st.integers(min_value=200, max_value=2600)))
     station_tuples = draw(
         st.lists(
             st.tuples(
@@ -813,14 +845,145 @@ class PruneGreedyDifferentialTests(SimpleTestCase):
         if not unpruned_feasible:
             return
 
-        # Cost, always (D-02) -- within the same tolerance band the oracle
-        # arm and the shipped optimality suite both use.
+        # Cost equality, SCOPED to the regime it is actually proven in
+        # (18-09/PROOF-03): both arms must report SolverStrategy.EXACT_DP.
+        # When either arm dispatches to the penalty-aware heuristic
+        # instead, this example is out-of-regime for the equality claim --
+        # the heuristic is refuted as prune-invariant (see this class's
+        # own "## Refuted claims" docstring section above) -- and is
+        # recorded as such by simply not asserting equality against it,
+        # rather than by weakening COST_TOLERANCE or the claim itself.
+        # PruneGreedyDifferentialExactReachGuardTests below is the
+        # anti-vacuity guard that keeps this scoping from silently
+        # hollowing this test out.
+        if unpruned_plan.strategy != SolverStrategy.EXACT_DP or pruned_plan.strategy != SolverStrategy.EXACT_DP:
+            return
+
         self.assertLessEqual(
             abs(unpruned_plan.total_cost - pruned_plan.total_cost),
             COST_TOLERANCE,
             f"pruned total_cost ({pruned_plan.total_cost}) differs from "
             f"the unpruned total_cost ({unpruned_plan.total_cost}) beyond "
             f"COST_TOLERANCE; {context}",
+        )
+
+
+# 18-09/PROOF-03: a fixed, seeded sample -- deterministic random.Random
+# generation, NOT a Hypothesis draw -- mirroring PruneCorpusParams/
+# build_prune_corpus's precedent (D-16/D-36) rather than inventing a second
+# corpus-building convention. The guard below needs the same fixed sample on
+# every run so a flaky share is never mistaken for a real regression in
+# DP_TRANSITION_BUDGET's calibration or the retuned density strategy.
+_EXACT_DP_REACH_SAMPLE_SEED = 20260802
+_EXACT_DP_REACH_SAMPLE_SIZE = 150
+
+
+def _sample_dense_corridor_routes(seed, count):
+    """Deterministically draw `count` dense-corridor-shaped routes from a
+    fresh `random.Random(seed)`, using the SAME parameter ranges
+    dense_corridor_routes() draws from (GREEDY_MIN_STATIONS..
+    GREEDY_STATION_CAP stations, 1,400-2,600mi routes, 200-2,600mi tank
+    ranges) -- but via the stdlib random module instead of Hypothesis, so
+    two calls with the same seed are always byte-identical, exactly as
+    build_prune_corpus() is elsewhere in this module.
+    """
+    rng = random.Random(seed)
+    routes = []
+    for _ in range(count):
+        total_route_mi = Decimal(rng.randint(1400, 2600))
+        tank_range_mi = Decimal(rng.randint(200, 2600))
+        station_count = rng.randint(GREEDY_MIN_STATIONS, GREEDY_STATION_CAP)
+        positions = rng.sample(range(1, int(total_route_mi)), station_count)
+        candidates = [
+            Candidate(
+                name=f"D{i}",
+                opis_id=i,
+                price_per_gallon=Decimal(rng.randint(100, 600)) / Decimal(100),
+                distance_from_start_mi=Decimal(position),
+            )
+            for i, position in enumerate(positions)
+        ]
+        mpg = Decimal(rng.randint(1, 50))
+        starting_fuel = Decimal(rng.randint(0, 100)) / Decimal(100)
+        routes.append((candidates, total_route_mi, tank_range_mi, mpg, starting_fuel))
+    return routes
+
+
+class PruneGreedyDifferentialExactReachGuardTests(SimpleTestCase):
+    """18-09/PROOF-03's anti-vacuity guard for
+    `PruneGreedyDifferentialTests.
+    test_prune_then_solve_matches_solve_over_full_set_at_corridor_density`'s
+    scoping above. `prune(x) -> exact_dp on nothing` (scoping the equality
+    to a regime that is never actually reached) would satisfy that test's
+    equality assertion vacuously -- exactly the failure mode
+    PruneReductionGuardTests' own docstring names for `prune(x) -> x`. This
+    class is the guard that would fail if the scoping ever hollowed the
+    test out that way.
+
+    Uses `dp.estimate_transition_count` directly against
+    `SolverStrategy.EXACT_DP`'s own dispatch condition
+    (`estimate <= dp.DP_TRANSITION_BUDGET`, see `solver.py`'s dispatch
+    block), never a full `solve()` call -- structurally identical to what
+    `solve()` itself computes for dispatch purposes, at a fraction of the
+    cost of actually running the DP or the heuristic on every sampled
+    route. Mirrors both arms `PruneGreedyDifferentialTests` exercises:
+    `solve(candidates, ...)`'s internal search_set is
+    `prune(candidates)` (the "unpruned-input" arm), and
+    `solve(retained, ...)`'s internal search_set is `prune(retained)` (the
+    "pruned-input" arm) -- both computed explicitly below rather than
+    assumed identical, even though prune's own idempotence makes them
+    equal in every sampled case measured so far.
+    """
+
+    def test_exact_dp_reach_share_meets_the_pinned_floor(self):
+        routes = _sample_dense_corridor_routes(
+            _EXACT_DP_REACH_SAMPLE_SEED, _EXACT_DP_REACH_SAMPLE_SIZE
+        )
+
+        both_exact = 0
+        for candidates, total_route_mi, tank_range_mi, mpg, starting_fuel in routes:
+            retained = prune_dominated_candidates(
+                candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+            )
+            unpruned_arm_search_set = prune_dominated_candidates(
+                candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+            )
+            pruned_arm_search_set = prune_dominated_candidates(
+                retained, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+            )
+
+            unpruned_estimate = dp.estimate_transition_count(
+                unpruned_arm_search_set,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+            pruned_estimate = dp.estimate_transition_count(
+                pruned_arm_search_set,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+
+            if (
+                unpruned_estimate <= dp.DP_TRANSITION_BUDGET
+                and pruned_estimate <= dp.DP_TRANSITION_BUDGET
+            ):
+                both_exact += 1
+
+        share = Decimal(both_exact) / Decimal(len(routes))
+
+        self.assertGreaterEqual(
+            share,
+            EXACT_DP_REACH_FLOOR,
+            f"measured exact_dp reach share {share} (both_exact={both_exact}/"
+            f"{len(routes)}, seed={_EXACT_DP_REACH_SAMPLE_SEED}) fell below "
+            f"EXACT_DP_REACH_FLOOR={EXACT_DP_REACH_FLOOR} -- the scoped "
+            f"equality assertion above would be exercising too few examples "
+            f"to mean anything. Do not lower EXACT_DP_REACH_FLOOR to make "
+            f"this pass; a failure here is a finding about "
+            f"DP_TRANSITION_BUDGET's calibration or the density strategy, "
+            f"not a bug in this guard.",
         )
 
 
