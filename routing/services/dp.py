@@ -404,6 +404,47 @@ its measured gap against this module's exact answer). Both branches are
 deterministic pure functions of the same validated input, so which branch
 fires is itself deterministic and cache-key-stable: identical requests
 always choose the same strategy and produce the same plan.
+
+## EIA x penalty coupling
+
+**The mechanism (D-23).** `routing/services/corridor.py`'s `factor_for`
+scales every candidate's per-gallon price by the EIA regional multiplier
+before it ever reaches this module, so the dollar saving available from
+routing through an extra stop scales with that multiplier too -- while
+the flat `FUEL_STOP_PENALTY_USD` charged for making the stop does not.
+**Direction: when diesel is expensive TankWise plans more stops; when it
+is cheap, fewer.** This is the mechanism STATE.md's `[Unknown]` EIA entry
+named and asked this phase to characterise as a deliberate finding.
+
+**The measurement (D-24).** A synthetic multiplier ladder
+(`EIA_MULTIPLIER_LADDER = (0.8, 1.0, 1.2, 1.5)`, `routing/tests/
+test_eia_penalty_sweep.py`) was applied on top of each candidate's own
+neutral-basis price, across the twelve pinned corridors
+(`routing.tests.test_corridor_fixtures.CORRIDORS`), at the UI-default
+vehicle (6.5 mpg, 1,050 mi tank, full starting tank) and the sourced
+`$35` penalty. The measured maximum stop-count delta across the stated
+swing (multiplier 0.8 -> 1.5, `EIA_SWING_STATED`) is **0 stops**, on
+every one of the twelve corridors -- station selection is byte-identical
+at every rung on every corridor; only the reported dollar cost scales
+with the multiplier. This is the actual measured figure, not a
+projection.
+
+**The verdict (D-25).** `EIA_SWING_VERDICT_MAX_STOP_DELTA = 1`
+(`routing/tests/test_eia_penalty_sweep.py`) was fixed, with both
+branches of the verdict rule written into its own comment, in a commit
+that strictly precedes the commit that ran this measurement. The
+measured maximum delta (0) is at or under that threshold, so the
+verdict is **RATIFIED: the coupling is correct-as-designed** -- the
+fixed `$35` penalty trades off appropriately against a price that moves
+with the EIA regional index at the swing this phase tested, and no
+further change (such as scaling the penalty by the EIA factor) is
+warranted by this evidence.
+
+The full twelve-corridor x four-multiplier table lives in the
+`measure_eia_penalty_sweep` management command's output and in
+`18-07-SUMMARY.md`; `EiaPenaltyCouplingGuardTests`
+(`routing/tests/test_eia_penalty_sweep.py`) is this finding's
+CI-enforcing guard.
 """
 import bisect
 from dataclasses import dataclass
