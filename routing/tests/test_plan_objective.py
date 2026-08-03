@@ -142,7 +142,81 @@ class PlanObjectiveGuardTests(PlanObjectiveMeasurementTestCase):
             self.fail(f"dallas_tx-seattle_wa raised InfeasibleRouteError: {exc}")
 
     def test_dallas_seattle_stop_count_within_criterion_1_range(self):
-        """UPDATE 2026-08-02 -- `@unittest.expectedFailure` REMOVED because
+        """CONFIRMED 2026-08-04 (plan 18-14, gap closure) -- this guard was
+        reconciled against the DEPLOYED build, not merely the working
+        tree. `estimate_transition_count` was checked in a pinned,
+        pre-registered verdict (18-10): NOT SALVAGEABLE, and no member of
+        a closed seven-predictor family (incumbent included) qualifies as
+        a replacement either. The first deployed-hardware `Server-Timing`
+        measurement on this exact corridor was then taken (18-11).
+        `DISPATCH_RETENTION_FLOOR` was pinned and the outcome proven
+        arithmetically NOT TRACTABLE (18-12): no single
+        `DP_TRANSITION_BUDGET` value can simultaneously demote the known
+        live-breaching cell (estimate 61,912, HTTP 500 pre-hotfix) and
+        retain the cell this guard's own vehicle profile needs
+        (estimate 117,895 at this mpg) -- 117,895 > 61,912. So
+        `DP_TRANSITION_BUDGET` stays 50,000, `dallas_tx-seattle_wa`
+        remains on `penalty_aware_heuristic` at BOTH pinned tank ranges,
+        and this assertion is unchanged from the 2026-08-02 hotfix
+        reconciliation below. Re-measured twice this plan -- once locally
+        (this exact test, same `OBJECTIVE_PARAMS`) and once against the
+        now-deployed live instance (`solver_strategy` in the live JSON
+        response body, `https://tankwise.onrender.com/api/route`,
+        Dallas/Seattle at the API-default vehicle) -- both confirm
+        `strategy=penalty_aware_heuristic`. Nothing moved; the entire
+        point of this reconciliation was to CHECK the deployed build
+        before writing anything, not to assume it matched the working
+        tree.
+
+        **RE-DECORATING THIS TEST WITH `@unittest.expectedFailure` IS
+        FORBIDDEN, and here is why.** A test wrapped in that decorator
+        asserts something KNOWN FALSE and still reports green to CI --
+        it is a debt marker wearing a green checkmark, not a guard. This
+        phase already spent one such marker's worth of goodwill (the
+        original D-31 decorator below, worn from 2026-07-31 until
+        2026-08-02). If a future change ever makes this assertion false
+        again, the correct response is the same one plan 18-08 already
+        took once: reconcile ROADMAP.md criterion 1 against whatever the
+        DP or heuristic now actually returns, rewrite this assertion (and
+        this docstring) to match that reconciled truth, and only then --
+        if the new value is still worth guarding -- land a new, honestly
+        passing assertion. Never re-wrap a false assertion in a decorator
+        and call the reconciliation done.
+
+        **The four stop-count figures, side by side, never reconciled
+        into one number:**
+
+            1. ROADMAP criterion 1's ORIGINAL pinned claim
+               (`DALLAS_SEATTLE_STOP_RANGE` below): "3-4 stops" -- D-31's
+               literal reading of the criterion's own wording, fixed
+               BEFORE any DP/heuristic figure existed for this corridor.
+            2. The EXACT DP's answer (pre-hotfix,
+               `DP_TRANSITION_BUDGET=134,000`): `strategy=exact_dp`,
+               2 stops, $498.04 -- OUTSIDE the pinned range. This was
+               criterion 1's real finding (plan 18-05/18-08): the
+               original claim described a heuristic's answer, not the
+               true optimum.
+            3. The HOTFIX heuristic's answer
+               (`DP_TRANSITION_BUDGET` 134,000 -> 50,000, commit
+               `99aacdd`, applied 2026-08-02 after a live HTTP 500):
+               `strategy=penalty_aware_heuristic`, 3 stops, $552.24
+               (+$54.20 / +10.9% vs #2) -- INSIDE the pinned range,
+               coincidentally.
+            4. The SHIPPED, DEPLOYED dispatch's answer, CONFIRMED
+               2026-08-04 after the full gap-closure sweep (18-10's
+               predictor verdict, 18-11's deployed-hardware measurement,
+               18-12's NOT TRACTABLE proof): IDENTICAL to #3 --
+               `strategy=penalty_aware_heuristic`, 3 stops, $552.24. No
+               budget value exists that restores #2 without reopening the
+               live HTTP 500 -- the same inversion (117,895 > 61,912)
+               reproduces on both workstation and deployed-hardware
+               timings. This corridor is NOT provably optimal on this
+               hardware, and `solver_strategy` reports that honestly on
+               every response.
+
+        --- earlier update, retained verbatim (2026-08-02) ---
+
+        `@unittest.expectedFailure` REMOVED because
         this assertion now genuinely passes, and the docstring below called
         that out in advance as "worth investigating, not an assumed
         non-event, since it would mean the shipped solver's behaviour on
@@ -176,6 +250,13 @@ class PlanObjectiveGuardTests(PlanObjectiveMeasurementTestCase):
         returns to 2 and this assertion fails again -- at which point the
         correct move is to reconcile ROADMAP criterion 1 against the exact
         optimum, not to re-add `expectedFailure`.
+
+        [2026-08-04 note: the gap-closure work this paragraph anticipated
+        has now happened -- see the CONFIRMED section at the top of this
+        docstring. It did NOT restore exact-DP dispatch (18-12 proved
+        NOT TRACTABLE); the "provisional" hotfix is now a confirmed,
+        deployed policy, and this test remains coupled to that confirmed
+        policy rather than to a provisional one.]
 
         --- original D-31 rationale, retained verbatim ---
 
