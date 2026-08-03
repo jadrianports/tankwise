@@ -1,0 +1,264 @@
+name: Smoke test (post-deploy)
+
+# This workflow is the closing gap-closure item from `18-VERIFICATION.md`: a
+# real, live POST to /api/route for the exact corridor and vehicle ROADMAP
+# criterion 1 uses as its worked example (Dallas -> Seattle at the API
+# default vehicle) returned HTTP 500 in production, and nothing in this
+# phase -- nine plans, a full-suite gate, a green CI -- ever issued that
+# request. `18-VERIFICATION.md`'s own finding was not that the DP is wrong
+# (proven correct offline, extensively); it was that nobody ever asked the
+# live instance the one question that mattered. This file is that question,
+# asked automatically, with a policy that cannot be quietly ignored.
+#
+# ---------------------------------------------------------------------------
+# 1. THE MATRIX
+# ---------------------------------------------------------------------------
+# Every demo trip in `frontend/src/constants/presets.ts`'s `PRESET_ROUTES`,
+# sent with NO `vehicle` key (the API default: `mpg=10`, `tank_range_mi=500`,
+# `starting_fuel=1` -- `routing/serializers.py`'s `DEFAULT_MPG` /
+# `DEFAULT_TANK_RANGE_MI` / `DEFAULT_STARTING_FUEL`), plus ROADMAP criterion
+# 1's own worked example reproduced from `18-VERIFICATION.md`'s exact
+# request body (`{"start":"Dallas, TX","finish":"Seattle, WA"}`, address
+# strings, no `vehicle` key -- the literal body that 500'd, distinct from
+# the coordinate-string Dallas -> Seattle demo chip already in the matrix,
+# since an address token and a coordinate token occupy different cache-key
+# namespaces per `routing/cache.py`'s `_endpoint_token`).
+#
+#   - Los Angeles -> New York City (coords)
+#   - Dallas -> Seattle (coords, the demo chip)
+#   - Los Angeles -> Denver -> Chicago (coords, multi-stop with a waypoint)
+#   - Dallas, TX -> Seattle, WA (addresses, ROADMAP criterion 1's exact
+#     worked-example body, reproduced verbatim from `18-VERIFICATION.md`)
+#
+# WHY THE DEFAULT VEHICLE SPECIFICALLY: `.github/workflows/keep-warm.yml`
+# pins the `semi-loaded` 6.5 mpg / 1,050 mi preset on every single body it
+# sends -- so the API DEFAULT vehicle (10 mpg / 500 mi) has never been
+# exercised live by anything at all, and it is the exact profile that
+# returned the HTTP 500 (`18-VERIFICATION.md`'s reproduction used the
+# UI-default vehicle, i.e. no `vehicle` key). Warming the semi preset gives
+# zero live coverage of this profile.
+#
+# CATALINA EXCLUDED: `PRESET_ROUTES`'s "Catalina Island -> Los Angeles" chip
+# is deliberately excluded from this matrix, for the identical reason
+# `keep-warm.yml` already excludes it from its own warm POSTs: no drivable
+# route exists between those two points, `/api/route` returns a 422 for it
+# every time, and `views.py` only calls `cache.set` on the success path -- so
+# an error response is never cached and warming/gating it would spend a
+# real Mapbox Directions call on every single invocation, forever, for a
+# response this gate is not designed to assert against (a genuine
+# `infeasible_route`/`route_not_found` outcome, not a missing plan).
+#
+# ---------------------------------------------------------------------------
+# 2. THE FAILURE POLICY: FATAL
+# ---------------------------------------------------------------------------
+# Every assertion step below fails the job on a non-200 status or a
+# malformed body. This is the deliberate INVERSE of `keep-warm.yml`'s own
+# policy, and both are correct for their own job:
+#
+#   - `keep-warm.yml` swallows every exit on purpose (`|| echo '... failed
+#     (non-fatal)'`) because it is a SCHEDULED WARM job, and a scheduled job
+#     painting a red X on every transient cold-start blip is worse noise
+#     than a near-zero signal on a badge-bearing public repo.
+#   - THIS workflow is a CORRECTNESS GATE, not a warm job. A swallowed exit
+#     here would silently reproduce the EXACT blind spot this workflow
+#     exists to close: a live 500 that nothing ever notices. Stating this
+#     contrast explicitly (rather than leaving it implicit) stops a future
+#     reader from "fixing" the apparent inconsistency by copying
+#     `keep-warm.yml`'s non-fatal style into this file.
+#
+# ---------------------------------------------------------------------------
+# 3. THE WAKE STEP: THE ONE NON-FATAL EXCEPTION
+# ---------------------------------------------------------------------------
+# The wake step (below) is the single step in this job permitted to
+# swallow its own exit code, for `keep-warm.yml`'s own documented reason: a
+# cold Render free-tier boot measured ~41.95s during that workflow's own
+# planning (`.github/workflows/keep-warm.yml`'s "Ping the liveness probe"
+# step comment), and charging that boot time to the FATAL assertions below
+# would produce a false alarm on exactly the wake this step exists to
+# absorb. Its budget (90s) is `LIVE_PROBE_WAKE_TIMEOUT_SECONDS` from
+# `routing/tests/test_live_latency_probe.py`, cited by name rather than
+# re-derived, itself already reused verbatim from `keep-warm.yml`'s own
+# `--max-time 90`. Only after the wake attempt (successful or not) do the
+# fatal assertions run.
+#
+# ---------------------------------------------------------------------------
+# 4. THE CACHE-BUST RULE
+# ---------------------------------------------------------------------------
+# Every measured request below carries a `vehicle` object with the API
+# DEFAULT numbers stated explicitly (`mpg=10`, `tank_range_mi=500`) but a
+# PERTURBED `starting_fuel`, so the request misses `route:v7:` (bumped from
+# `v6` in plan 18-12, same reasoning) and genuinely reaches the solver
+# rather than serving a 1-2ms cached hit. WHY THIS MATTERS: a warm
+# `route:v7:` hit returns in 1-2ms without touching the solver at all -- a
+# check that always hit the cache would have passed cleanly on the very
+# build that was 500ing, since the failure being guarded against is a
+# SOLVER-PATH timeout, and a cache hit never reaches the solver.
+#
+# The perturbation is quantized to `FUEL_PRECISION=3` decimal places
+# (`routing/cache.py`'s `_vehicle_token`), matching
+# `LIVE_PROBE_CACHE_BUST_LADDER`'s own granularity
+# (`routing/tests/test_live_latency_probe.py`, rungs `0.99`/`0.98`/`0.97`).
+# This workflow does NOT reuse that fixed 3-rung ladder verbatim, though:
+# `LIVE_PROBE_CACHE_BUST_LADDER` was designed for a single, human-invoked
+# sweep with a small, known repeat count, whereas THIS workflow fires on
+# every successful CI run plus a daily schedule -- a fixed rung would only
+# guarantee a genuine miss on the FIRST invocation inside `CACHE_TTL_
+# SECONDS` (86400s)'s 24h window; every later invocation that same day
+# would silently degrade into a cache-hit check, exactly the failure mode
+# this rule exists to prevent. Instead, each run derives its own
+# `starting_fuel` from `${{ github.run_id }}` (unique and monotonically
+# increasing per workflow run), landing in `[0.970, 0.999]` -- the same
+# <=3%-of-a-full-tank margin `LIVE_PROBE_CACHE_BUST_LADDER`'s own docstring
+# establishes as too small to affect feasibility or flip a dispatch arm,
+# just computed to guarantee a fresh value on (almost) every invocation
+# rather than 3 fixed ones. Each distinct key costs exactly one outbound
+# Mapbox Directions call on its first hit.
+#
+# ---------------------------------------------------------------------------
+# 5. THE PER-REQUEST TIMEOUT
+# ---------------------------------------------------------------------------
+# Every measured request's client-side `--max-time` is 45s --
+# `LIVE_PROBE_REQUEST_TIMEOUT_SECONDS` from `routing/tests/
+# test_live_latency_probe.py`, cited by name -- STRICTLY GREATER than the
+# deployed `GUNICORN_TIMEOUT=30` (`render.yaml`). A client timeout AT OR
+# UNDER the worker timeout would turn an observable server-side breach
+# (HTTP 500) into an indistinguishable client-side abort -- exactly what
+# would have hidden the very gap this workflow exists to close.
+#
+# ---------------------------------------------------------------------------
+# 6. THE ASSERTIONS: BOTH REQUIRED
+# ---------------------------------------------------------------------------
+# Status must be 200, AND the body must carry a real plan: `solver_strategy`
+# present, `fuel_stops` a non-empty array, `total_cost` present. The body
+# assertion is NOT optional: a 200 carrying an error-shaped or empty payload
+# would satisfy a status-only check, and status-only checks are exactly how
+# a gate becomes decorative -- present on paper, verifying nothing.
+#
+# ---------------------------------------------------------------------------
+# 7. THE TRIGGER, WITH ITS LIMITATION STATED HONESTLY
+# ---------------------------------------------------------------------------
+# `render.yaml` sets `autoDeployTrigger: checksPass`, so Render only BEGINS
+# deploying once GitHub Actions reports success on the linked branch --
+# meaning a `workflow_run` trigger on CI's successful completion fires when
+# the deploy STARTS, not when it finishes. This workflow's `workflow_run`
+# trigger (below) cannot, by construction, know when Render's own
+# out-of-band deploy actually completes. The bounded settle-wait step gives
+# the deploy a head start, but IT IS BEST-EFFORT AND CAN RACE A SLOW
+# DEPLOY -- this is stated here rather than papered over. The daily
+# `schedule` trigger is the backstop that makes this check EVENTUALLY
+# reliable even if a given `workflow_run` firing loses that race. `workflow_
+# dispatch` is included so a human (or this project's own operator) can
+# force a run on demand. Also carried forward: `keep-warm.yml`'s own caveat
+# that GitHub disables scheduled workflows after 60 days of repository
+# inactivity (it emails the repo owner first) -- after a quiet stretch, the
+# `schedule` trigger stops firing until someone re-enables it from the
+# Actions tab.
+#
+# ---------------------------------------------------------------------------
+# 8. THE REQUEST BUDGET
+# ---------------------------------------------------------------------------
+# One invocation issues at most 6 HTTP requests: 1 wake + 4 matrix
+# assertions (task 2) -- with headroom reserved, not currently used, should
+# a future addition need it. Derived from `render.yaml`'s deployed ceilings:
+# `ROUTE_THROTTLE_SUSTAINED_RATE=200/day` and `ROUTE_THROTTLE_BURST_RATE=
+# 20/min` are both counted PER CLIENT IP (the `AnonRateThrottle` scope this
+# job's own GitHub-hosted runner would consume against) -- a GitHub-hosted
+# runner gets a fresh, ephemeral IP per job, so this budget does not
+# accumulate across separate invocations the way a single long-lived
+# machine's would. `MAPBOX_DAILY_CALL_CAP=3000` is the deployment-wide
+# outbound-Mapbox ceiling shared with every real caller; at 4 genuine
+# cache-misses per invocation (task 2's cache-bust rule, section 4 above),
+# even a busy day with 10+ `workflow_run` firings spends well under 100
+# calls -- a rounding error against both the 3,000/day and 60,000/month
+# caps, and small next to `keep-warm.yml`'s own already-accepted ~72 warm
+# POSTs/day (24 hourly cycles x 3 routes). Requests within one invocation
+# are spaced >= `LIVE_PROBE_INTER_REQUEST_SECONDS=4.0` (`routing/tests/
+# test_live_latency_probe.py`, itself derived from `ROUTE_THROTTLE_BURST_
+# RATE=20/min`'s 3.0s mathematical minimum plus a flat safety margin) apart,
+# so this gate can never throttle the very product it guards.
+#
+# ---------------------------------------------------------------------------
+# 9. HYGIENE
+# ---------------------------------------------------------------------------
+# Response bodies are captured to a temp file and NEVER echoed to the log --
+# only the trip name, HTTP status, elapsed time, and the specific asserted
+# field values (fuel-stop count, solver strategy name) are printed --
+# because a real `/api/route` response's `map_url` field carries the
+# Mapbox `pk.` (public) token, and this is a public, badge-bearing repo.
+# Least privilege: `permissions: contents: read` (below), no `actions/
+# checkout`, no secrets referenced anywhere in this file, and a job-level
+# `timeout-minutes` so a hung runner is never left to idle.
+#
+# ---------------------------------------------------------------------------
+# 10. THE NON-VACUITY REQUIREMENT
+# ---------------------------------------------------------------------------
+# A smoke check nobody has ever seen fail is an untested assertion about an
+# untested assertion. Task 2 of this plan (18-13) demonstrates this guard's
+# own assertion logic actually failing against a known-bad input (run
+# locally, not committed as a workflow step here), and records the command,
+# its non-zero exit code, and the failing assertion's own message verbatim
+# in that plan's SUMMARY.md. This requirement is pinned here, BEFORE a
+# single assertion step exists, so the demonstration cannot be skipped as
+# an afterthought once the assertions are already written and believed to
+# work.
+#
+# ---------------------------------------------------------------------------
+# SCOPE FENCE (read-only, never edited by this workflow's own existence):
+# `.github/workflows/keep-warm.yml`, `.github/workflows/ci.yml`,
+# `render.yaml`, `entrypoint.sh`. This workflow is intentionally separate
+# from `ci.yml` -- `ci.yml` runs on every push/PR and must stay hermetic
+# (no dependency on a live deploy existing or having finished); this file
+# depends entirely on a live deploy and therefore cannot live there.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    # Daily, off-the-hour for the same on-the-hour-contention reason
+    # `keep-warm.yml`'s own cron comment already states -- this is the
+    # backstop that makes the check eventually reliable even when the
+    # `workflow_run` trigger above races a slow out-of-band Render deploy
+    # (see section 7 above).
+    - cron: '23 6 * * *'
+
+# Least privilege: this job checks out no code and needs no write scope --
+# every request it makes is a plain HTTP call to the already-deployed
+# public API.
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: Post-deploy smoke test (live demo trips, API default vehicle)
+    runs-on: ubuntu-latest
+    # Only run the fatal assertions when triggered by a SUCCESSFUL CI
+    # completion (workflow_run also fires on failed/cancelled CI runs,
+    # which this gate has no reason to smoke-test); workflow_dispatch and
+    # schedule always proceed since neither carries a workflow_run
+    # conclusion to check.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    # Worst case: wake (<=90s) + settle-wait (fixed 60s) + 4 matrix
+    # assertions at <=45s client timeout each (<=180s) = 330s (~5.5min).
+    # 10 minutes gives comfortable margin without leaving a hung runner to
+    # idle indefinitely.
+    timeout-minutes: 10
+    steps:
+      # Same wake-the-service step keep-warm.yml already runs, reusing its
+      # exact invocation shape (see section 3 above) -- the ONLY step in
+      # this job permitted to swallow its own exit code.
+      - name: Wake the service (non-fatal)
+        run: |
+          curl -sS -o /dev/null -w '%{http_code} %{time_total}s\n' \
+            --max-time 90 "https://tankwise.onrender.com/api/health" \
+            || echo 'wake failed (non-fatal, see section 3 of this file''s header comment)'
+
+      # Best-effort head start for Render's own out-of-band deploy (see
+      # section 7 above) -- this cannot observe the deploy actually
+      # finishing, only reduce the odds of racing it. Bounded, and never
+      # fatal: a `sleep` cannot itself fail.
+      - name: Settle-wait for the out-of-band Render deploy (best-effort)
+        run: |
+          echo 'Waiting 60s for the out-of-band Render deploy to progress (best-effort -- see section 7 of this file''s header comment; the daily schedule trigger is the real backstop).'
+          sleep 60
