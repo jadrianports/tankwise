@@ -1,7 +1,7 @@
 import { render, screen, cleanup } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 
-import TankChart from './TankChart';
+import TankChart, { buildTankSeries } from './TankChart';
 import type { FuelStop, Leg, VehicleEcho, WaypointMarker } from '../../types/routeContract';
 
 // This file's vite config runs without vitest's `globals` option, so
@@ -79,4 +79,56 @@ test('TankChart still shows the not-enough-data message when the vehicle is miss
   render(<TankChart legs={[]} stops={[]} vehicle={null} waypoints={THREE_STOP_WAYPOINTS} />);
 
   expect(screen.getByText('Not enough trip data to draw a tank chart.')).toBeInTheDocument();
+});
+
+// Payload shaped the way the API actually emits it: `build_legs`
+// (routing/services/legs.py) attributes each purchase to the leg DEPARTING
+// the node where it was made, so leg 0 always carries 0.00 gal no matter how
+// far it runs, and leg k carries stop k-1's purchase. The fixtures above
+// predate that understanding -- their leg 0 carries 21.05 gal, exactly
+// 210.5 mi / 10 mpg -- which is why a green suite shipped a flat tank line.
+const REAL_SHAPE_LEGS = [
+  { from: 'START', to: 'PWI #525', distance_mi: '1035', duration_s: 59241, gallons: '0.00', cost: '0.00' },
+  { from: 'PWI #525', to: 'AKAL TRAVEL CENTER', distance_mi: '425', duration_s: 21596, gallons: '63.02', cost: '301.78' },
+  { from: 'AKAL TRAVEL CENTER', to: 'FINISH', distance_mi: '563', duration_s: 31292, gallons: '86.55', cost: '362.87' },
+] as unknown as Leg[];
+
+const REAL_SHAPE_STOPS = [
+  { name: 'PWI #525', station_id: 'A', distance_from_start_mi: '1035', gallons: '63.02', price_per_gallon: '4.79', cost: '301.78' },
+  { name: 'AKAL TRAVEL CENTER', station_id: 'B', distance_from_start_mi: '1460', gallons: '86.55', price_per_gallon: '4.19', cost: '362.87' },
+] as unknown as FuelStop[];
+
+const SEMI = { mpg: '6.5', tank_range_mi: '1050', starting_fuel: '1', starting_fuel_mi: '1050' } as unknown as VehicleEcho;
+
+test('buildTankSeries burns fuel across a leg instead of treating leg.gallons as consumption', () => {
+  const series = buildTankSeries(REAL_SHAPE_LEGS, REAL_SHAPE_STOPS, SEMI)!;
+  expect(series).not.toBeNull();
+
+  // 1,035 mi at 6.5 mpg burns ~159.2 gal out of a 161.54 gal tank.
+  expect(series.capacityGal).toBeCloseTo(161.54, 1);
+  expect(series.levels[0]).toBeCloseTo(161.54, 1);
+  expect(series.levels[1]).toBeCloseTo(2.31, 1);
+});
+
+test('buildTankSeries produces a sawtooth, never a flat line, on a multi-stop route', () => {
+  const series = buildTankSeries(REAL_SHAPE_LEGS, REAL_SHAPE_STOPS, SEMI)!;
+  const distinct = new Set(series.levels.map((l) => Math.round(l)));
+  expect(distinct.size).toBeGreaterThan(1);
+
+  // The tank must actually be drawn down: at least one sample well below full.
+  expect(Math.min(...series.levels)).toBeLessThan(series.capacityGal * 0.5);
+});
+
+test('buildTankSeries rises again at every stop where fuel was purchased', () => {
+  const series = buildTankSeries(REAL_SHAPE_LEGS, REAL_SHAPE_STOPS, SEMI)!;
+  const rises = series.levels.filter((lvl, i) => i > 0 && lvl > series.levels[i - 1]);
+  expect(rises).toHaveLength(REAL_SHAPE_STOPS.length);
+});
+
+test('buildTankSeries never reports a physically impossible level', () => {
+  const series = buildTankSeries(REAL_SHAPE_LEGS, REAL_SHAPE_STOPS, SEMI)!;
+  for (const lvl of series.levels) {
+    expect(lvl).toBeGreaterThanOrEqual(0);
+    expect(lvl).toBeLessThanOrEqual(series.capacityGal + 0.01);
+  }
 });
