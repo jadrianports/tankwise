@@ -157,9 +157,8 @@ name: Smoke test (post-deploy)
 # ---------------------------------------------------------------------------
 # 8. THE REQUEST BUDGET
 # ---------------------------------------------------------------------------
-# One invocation issues at most 6 HTTP requests: 1 wake + 4 matrix
-# assertions (task 2) -- with headroom reserved, not currently used, should
-# a future addition need it. Derived from `render.yaml`'s deployed ceilings:
+# One invocation issues exactly 5 HTTP requests: 1 wake + 4 matrix
+# assertions (task 2). Derived from `render.yaml`'s deployed ceilings:
 # `ROUTE_THROTTLE_SUSTAINED_RATE=200/day` and `ROUTE_THROTTLE_BURST_RATE=
 # 20/min` are both counted PER CLIENT IP (the `AnonRateThrottle` scope this
 # job's own GitHub-hosted runner would consume against) -- a GitHub-hosted
@@ -262,3 +261,171 @@ jobs:
         run: |
           echo 'Waiting 60s for the out-of-band Render deploy to progress (best-effort -- see section 7 of this file''s header comment; the daily schedule trigger is the real backstop).'
           sleep 60
+
+      # Section 4 above: derives a fresh, run-unique `starting_fuel` value
+      # in [0.970, 0.999] from `github.run_id`, quantized to the same 3
+      # decimal places `routing/cache.py`'s FUEL_PRECISION uses, so every
+      # matrix step below genuinely misses `route:v7:` instead of only the
+      # first invocation inside a 24h CACHE_TTL_SECONDS window. Computed
+      # once and shared via GITHUB_ENV so every later step in this job
+      # reads the identical value.
+      - name: Compute this run's cache-busting starting_fuel perturbation
+        run: |
+          RUN_MOD=$(( GITHUB_RUN_ID % 30 ))
+          STARTING_FUEL=$(awk -v m="$RUN_MOD" 'BEGIN { printf "%.3f", 0.970 + (m * 0.001) }')
+          echo "STARTING_FUEL=$STARTING_FUEL" >> "$GITHUB_ENV"
+          echo "This run's cache-bust starting_fuel: $STARTING_FUEL (run_id=$GITHUB_RUN_ID, run_mod=$RUN_MOD)"
+
+      # ------------------------------------------------------------------
+      # The four matrix assertions (section 1 above). Each is its own named
+      # step so a failure identifies exactly which trip broke, rather than
+      # reporting one opaque job failure. Every one is FATAL (section 2):
+      # a non-200 status, or a 200 lacking `solver_strategy` / a non-empty
+      # `fuel_stops` / `total_cost`, fails the job. Response bodies are
+      # captured to a temp file and never echoed (section 9) -- only
+      # status, elapsed time, fuel-stop count and solver_strategy are
+      # printed. Every body below carries the API default vehicle numbers
+      # (`mpg=10`, `tank_range_mi=500`) stated explicitly with this run's
+      # cache-busted `starting_fuel` (section 4) instead of an omitted
+      # `vehicle` key, so the request both stays the API-default profile
+      # AND reliably misses the cache.
+      - name: "Assert: Los Angeles -> New York City"
+        run: |
+          BODY_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+            --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data "{\"start\":\"34.0522,-118.2437\",\"finish\":\"40.7128,-74.0060\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
+          STATUS=$(echo "$RESPONSE" | awk '{print $1}')
+          ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
+          echo "trip=\"Los Angeles -> New York City\" status=$STATUS elapsed=${ELAPSED}s"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Los Angeles -> New York City: expected HTTP 200, got $STATUS"
+            exit 1
+          fi
+          SOLVER_STRATEGY=$(jq -r 'if has("solver_strategy") then .solver_strategy else "" end' "$BODY_FILE")
+          FUEL_STOPS_COUNT=$(jq -r 'if (.fuel_stops | type) == "array" then (.fuel_stops | length) else -1 end' "$BODY_FILE")
+          HAS_TOTAL_COST=$(jq -r 'has("total_cost")' "$BODY_FILE")
+          if [ -z "$SOLVER_STRATEGY" ]; then
+            echo "::error::Los Angeles -> New York City: response missing solver_strategy"
+            exit 1
+          fi
+          if [ "$FUEL_STOPS_COUNT" -le 0 ]; then
+            echo "::error::Los Angeles -> New York City: fuel_stops missing or empty"
+            exit 1
+          fi
+          if [ "$HAS_TOTAL_COST" != "true" ]; then
+            echo "::error::Los Angeles -> New York City: response missing total_cost"
+            exit 1
+          fi
+          echo "Los Angeles -> New York City: OK ($FUEL_STOPS_COUNT fuel stop(s), solver_strategy=$SOLVER_STRATEGY)"
+          # Section 8: floor spacing before the next matrix request, on top
+          # of whatever this request's own solve time already consumed.
+          sleep 4
+
+      - name: "Assert: Dallas -> Seattle (demo chip, coordinates)"
+        run: |
+          BODY_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+            --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data "{\"start\":\"32.7767,-96.7970\",\"finish\":\"47.6062,-122.3321\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
+          STATUS=$(echo "$RESPONSE" | awk '{print $1}')
+          ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
+          echo "trip=\"Dallas -> Seattle (coords)\" status=$STATUS elapsed=${ELAPSED}s"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Dallas -> Seattle (coords): expected HTTP 200, got $STATUS"
+            exit 1
+          fi
+          SOLVER_STRATEGY=$(jq -r 'if has("solver_strategy") then .solver_strategy else "" end' "$BODY_FILE")
+          FUEL_STOPS_COUNT=$(jq -r 'if (.fuel_stops | type) == "array" then (.fuel_stops | length) else -1 end' "$BODY_FILE")
+          HAS_TOTAL_COST=$(jq -r 'has("total_cost")' "$BODY_FILE")
+          if [ -z "$SOLVER_STRATEGY" ]; then
+            echo "::error::Dallas -> Seattle (coords): response missing solver_strategy"
+            exit 1
+          fi
+          if [ "$FUEL_STOPS_COUNT" -le 0 ]; then
+            echo "::error::Dallas -> Seattle (coords): fuel_stops missing or empty"
+            exit 1
+          fi
+          if [ "$HAS_TOTAL_COST" != "true" ]; then
+            echo "::error::Dallas -> Seattle (coords): response missing total_cost"
+            exit 1
+          fi
+          echo "Dallas -> Seattle (coords): OK ($FUEL_STOPS_COUNT fuel stop(s), solver_strategy=$SOLVER_STRATEGY)"
+          sleep 4
+
+      - name: "Assert: Los Angeles -> Denver -> Chicago (multi-stop)"
+        run: |
+          BODY_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+            --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data "{\"start\":\"34.0522,-118.2437\",\"finish\":\"41.8781,-87.6298\",\"waypoints\":[\"39.7392,-104.9903\"],\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
+          STATUS=$(echo "$RESPONSE" | awk '{print $1}')
+          ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
+          echo "trip=\"Los Angeles -> Denver -> Chicago\" status=$STATUS elapsed=${ELAPSED}s"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Los Angeles -> Denver -> Chicago: expected HTTP 200, got $STATUS"
+            exit 1
+          fi
+          SOLVER_STRATEGY=$(jq -r 'if has("solver_strategy") then .solver_strategy else "" end' "$BODY_FILE")
+          FUEL_STOPS_COUNT=$(jq -r 'if (.fuel_stops | type) == "array" then (.fuel_stops | length) else -1 end' "$BODY_FILE")
+          HAS_TOTAL_COST=$(jq -r 'has("total_cost")' "$BODY_FILE")
+          if [ -z "$SOLVER_STRATEGY" ]; then
+            echo "::error::Los Angeles -> Denver -> Chicago: response missing solver_strategy"
+            exit 1
+          fi
+          if [ "$FUEL_STOPS_COUNT" -le 0 ]; then
+            echo "::error::Los Angeles -> Denver -> Chicago: fuel_stops missing or empty"
+            exit 1
+          fi
+          if [ "$HAS_TOTAL_COST" != "true" ]; then
+            echo "::error::Los Angeles -> Denver -> Chicago: response missing total_cost"
+            exit 1
+          fi
+          echo "Los Angeles -> Denver -> Chicago: OK ($FUEL_STOPS_COUNT fuel stop(s), solver_strategy=$SOLVER_STRATEGY)"
+          sleep 4
+
+      # ROADMAP criterion 1's own worked example, reproduced from
+      # `18-VERIFICATION.md`'s EXACT failing request body (address strings,
+      # no `vehicle` key -- the literal body that returned HTTP 500 live).
+      # The cache-bust rule (section 4) still applies here even though it
+      # means this step's body is not byte-identical to the original 500's
+      # body: an un-busted request risks a warm cache hit that would never
+      # reach the solver at all, which would prove nothing about the exact
+      # failure this workflow exists to catch. Sent as an address-string
+      # request (not the coordinate-string demo chip above) so its cache
+      # key occupies a genuinely separate namespace (`routing/cache.py`'s
+      # `_endpoint_token` -- an `a:` address token vs a `c:` coordinate
+      # token), matching the literal input `18-VERIFICATION.md` issued.
+      - name: "Assert: Dallas, TX -> Seattle, WA (ROADMAP criterion 1's exact worked example, addresses)"
+        run: |
+          BODY_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+            --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
+            -H 'Content-Type: application/json' \
+            --data "{\"start\":\"Dallas, TX\",\"finish\":\"Seattle, WA\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
+          STATUS=$(echo "$RESPONSE" | awk '{print $1}')
+          ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
+          echo "trip=\"Dallas, TX -> Seattle, WA (addresses)\" status=$STATUS elapsed=${ELAPSED}s"
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::Dallas, TX -> Seattle, WA (addresses): expected HTTP 200, got $STATUS -- this is ROADMAP criterion 1's own worked example, the exact request that returned HTTP 500 in production on 2026-08-02"
+            exit 1
+          fi
+          SOLVER_STRATEGY=$(jq -r 'if has("solver_strategy") then .solver_strategy else "" end' "$BODY_FILE")
+          FUEL_STOPS_COUNT=$(jq -r 'if (.fuel_stops | type) == "array" then (.fuel_stops | length) else -1 end' "$BODY_FILE")
+          HAS_TOTAL_COST=$(jq -r 'has("total_cost")' "$BODY_FILE")
+          if [ -z "$SOLVER_STRATEGY" ]; then
+            echo "::error::Dallas, TX -> Seattle, WA (addresses): response missing solver_strategy"
+            exit 1
+          fi
+          if [ "$FUEL_STOPS_COUNT" -le 0 ]; then
+            echo "::error::Dallas, TX -> Seattle, WA (addresses): fuel_stops missing or empty"
+            exit 1
+          fi
+          if [ "$HAS_TOTAL_COST" != "true" ]; then
+            echo "::error::Dallas, TX -> Seattle, WA (addresses): response missing total_cost"
+            exit 1
+          fi
+          echo "Dallas, TX -> Seattle, WA (addresses): OK ($FUEL_STOPS_COUNT fuel stop(s), solver_strategy=$SOLVER_STRATEGY)"

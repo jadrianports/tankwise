@@ -1,0 +1,48 @@
+meta {
+  name: 14. Demo trip default vehicle, forced cache miss (proves the solver path, not a cached hit)
+  type: http
+  seq: 14
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "Dallas, TX",
+    "finish": "Seattle, WA",
+    "vehicle": {
+      "mpg": 10,
+      "tank_range_mi": 500,
+      "starting_fuel": 0.99
+    }
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("has a real plan: solver_strategy, non-empty fuel_stops, total_cost", function() {
+    expect(res.body).to.have.property('solver_strategy');
+    expect(res.body.solver_strategy).to.be.a('string').that.is.not.empty;
+    expect(res.body.fuel_stops).to.be.an('array').that.is.not.empty;
+    expect(res.body).to.have.property('total_cost');
+  });
+  test("Server-Timing carries a solver stage -- a genuine cache miss, not a 1-2ms cached hit", function() {
+    // #13 sends the same trip with no `vehicle` key, so a warm route:v7:
+    // entry from #13 (or from any earlier request against this exact
+    // trip) could otherwise satisfy #13's own assertions on a pure cache
+    // hit that never touches the solver at all -- the failure mode this
+    // check exists to rule out. Perturbing `starting_fuel` here forces a
+    // distinct cache key (routing/cache.py's FUEL_PRECISION=3 quantizes
+    // starting_fuel to 3 decimal places, so 0.99 != the API default 1
+    // survives rounding), so this request must reach the solver.
+    var serverTiming = res.getHeader('server-timing') || '';
+    expect(serverTiming).to.be.a('string').that.is.not.empty;
+    expect(serverTiming).to.match(/(^|,)\s*solver;/);
+  });
+}

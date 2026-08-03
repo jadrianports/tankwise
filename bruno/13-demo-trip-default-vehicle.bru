@@ -1,0 +1,30 @@
+meta {
+  name: 13. Demo trip at default vehicle (returned HTTP 500 in production on 2026-08-02)
+  type: http
+  seq: 13
+}
+
+post {
+  url: {{base_url}}/api/route
+  body: json
+  auth: none
+}
+
+body:json {
+  {
+    "start": "Dallas, TX",
+    "finish": "Seattle, WA"
+  }
+}
+
+tests {
+  test("returns 200", function() {
+    expect(res.status).to.equal(200);
+  });
+  test("has a real plan: solver_strategy, non-empty fuel_stops, total_cost", function() {
+    expect(res.body).to.have.property('solver_strategy');
+    expect(res.body.solver_strategy).to.be.a('string').that.is.not.empty;
+    expect(res.body.fuel_stops).to.be.an('array').that.is.not.empty;
+    expect(res.body).to.have.property('total_cost');
+  });
+}
