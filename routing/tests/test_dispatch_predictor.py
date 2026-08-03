@@ -54,9 +54,24 @@ wiring whichever predictor (if any) qualifies is plan 18-12's job, and
 against this module's workstation figures alone.
 """
 import bisect
+import collections
+import io
+import statistics
+import time
+from decimal import Decimal
 
-from routing.services import dp
-from routing.tests.test_solver_dispatch import CALIBRATION_CELLS
+from django.core.management import call_command
+from django.test import TestCase
+
+from routing.services import corridor, dp
+from routing.services.prune import prune_dominated_candidates
+from routing.tests.test_corridor_fixtures import (
+    PRICE_BASIS_NEUTRAL,
+    TANK_RANGES_MI,
+    factor_lookup_for_basis,
+    load_corridor_route,
+)
+from routing.tests.test_solver_dispatch import CALIBRATION_CELLS, MPG, PENALTY, STARTING_FUEL
 
 # --- PREDICTOR_CELLS -------------------------------------------------------
 #
@@ -313,3 +328,179 @@ PREDICTOR_INVERSION_BUDGET = 0
 # this sweep runs and before it is known which predictor, if any, would
 # actually clear it.
 DISPATCH_RETENTION_FLOOR = 5
+
+# --- Permanent regression guard (Task 3) -------------------------------------
+#
+# The smallest cell pair, from `measure_dispatch_predictor`'s own measured
+# table, that reproduces the incumbent's inversion: `dallas_tx-seattle_wa`
+# at its two pinned tank ranges -- the exact pair this module's docstring
+# names throughout, and the cheapest of the three discordant pairs that
+# measured table's own `estimate_transition_count` row reports (both cells
+# already run in close to a second each, unlike the two Toronto/El Paso
+# cells that dominate this file's own `PREDICTOR_CELL_BUDGET_SECONDS`
+# budget). Fresh measurement (this plan, same workstation) reproduced it
+# again: @500mi estimates 61,944 and measured 1.3935s; @1050mi estimates
+# 117,895 (90% larger) and measured 1.0904s (22% FASTER) -- the same
+# inversion, not merely the historical one.
+_INVERSION_WITNESS_SLUG = "dallas_tx-seattle_wa"
+_INVERSION_WITNESS_SMALL_TANK_MI = Decimal("500")
+_INVERSION_WITNESS_LARGE_TANK_MI = Decimal("1050")
+
+# Repeats for this guard's own median-of-N timing (mirrors
+# `SolverLatencyCeilingTests`' `_RATIO_GUARD_REPEATS` convention) -- both
+# witness cells run in close to a second each, so 3 repeats costs a few
+# seconds total, well within the ordinary suite's budget.
+_GUARD_REPEATS = 3
+
+# The minimum in-process wall-clock RATIO (smaller-estimate cell's median
+# time / larger-estimate cell's median time) this guard requires to call
+# the inversion reproduced. Freshly measured ratio (this plan):
+# 1.3935s / 1.0904s ~= 1.278x; historically recorded ratio (dp.py's own
+# calibration comment): 2.706s / 2.181s ~= 1.241x. 1.10 is pinned
+# comfortably below both of those independently-measured figures, so
+# ordinary machine noise cannot flake a genuine ~24-28% effect, while
+# still requiring a real, non-trivial inversion rather than a coin-flip
+# tie -- never an absolute wall-clock bound (the flake source D-19's own
+# module docstring already retired one of), only a same-process RATIO
+# between the two cells, mirroring the machine-independence argument
+# `LATENCY_RATIO_CEILING` (`test_solver_latency.py`) already establishes.
+_INVERSION_RATIO_FLOOR = Decimal("1.10")
+
+
+class DispatchPredictorGuardTests(TestCase):
+    """Permanent CI-enforcing guard for the finding this module's
+    docstring records: `estimate_transition_count` does not predict
+    `solve_fixed_charge`'s real runtime, so a future change to `dp.py`
+    (a further optimization pass, a state-space restructuring, or simply
+    routine maintenance) cannot silently make this finding disappear
+    without a test noticing. This is the reason
+    `DP_TRANSITION_BUDGET`'s own two successive calibrations (250,000,
+    then 134,000) both put the dispatch boundary somewhere that could not
+    actually work: the estimator they were calibrated against does not
+    order cells the way real wall-clock time does. A finding recorded
+    only in a planning artifact is invisible to a maintainer reading the
+    code; this class is the same finding recorded where the code lives.
+
+    Two assertions, both non-vacuous by construction (mirroring
+    `PruneSliverRuleRegressionTests`' own two-witness shape in
+    `test_prune_soundness.py`):
+
+    1. The inversion itself is still reproducible, on the smallest cell
+       pair known to show it.
+    2. `PREDICTOR_CELLS` cannot quietly collapse to a single tank range --
+       doing so would make assertion 1 unobservable in the first place,
+       so this must fail BEFORE assertion 1 ever could.
+
+    Reuses `RealCorridorDispatchTestCase`'s own `setUpTestData`
+    CSV-seeding pattern (`test_solver_dispatch.py`) rather than inventing
+    a second seeding path.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_stations", stdout=io.StringIO())
+        corridor.warm_index()
+
+    def test_predictor_cells_spans_both_tank_ranges_with_a_dual_range_corridor(self):
+        """Anti-vacuity guard on the measurement matrix itself: a future
+        edit that narrows `PREDICTOR_CELLS` to a single tank range would
+        make the inversion below unobservable (there would be nothing
+        left to invert AGAINST), so this must fail first, before that
+        silent narrowing could ever hide assertion 1's own regression."""
+        tank_ranges_seen = {tank for _slug, tank in PREDICTOR_CELLS}
+        self.assertEqual(
+            tank_ranges_seen,
+            set(TANK_RANGES_MI),
+            f"PREDICTOR_CELLS must span every entry of TANK_RANGES_MI "
+            f"({set(TANK_RANGES_MI)!r}); saw only {tank_ranges_seen!r}. A "
+            "matrix collapsed to one tank range cannot observe the "
+            "tank-range-dependent inversion this module exists to guard.",
+        )
+
+        slug_counts = collections.Counter(slug for slug, _tank in PREDICTOR_CELLS)
+        self.assertTrue(
+            any(count >= 2 for count in slug_counts.values()),
+            "PREDICTOR_CELLS must contain at least one corridor measured "
+            f"at BOTH tank ranges; saw per-corridor counts {dict(slug_counts)!r}.",
+        )
+
+    def test_incumbent_inversion_is_still_reproducible_on_the_smallest_pair(self):
+        """The incumbent's own estimate orders the two witness cells one
+        way (500mi's smaller estimate before 1050mi's larger one); real,
+        in-process measured DP work orders them the OTHER way (500mi
+        takes longer). Uses an in-process wall-clock RATIO between the
+        two cells, never an absolute second count -- see
+        `_INVERSION_RATIO_FLOOR`'s own comment for why."""
+        factor_for = factor_lookup_for_basis(PRICE_BASIS_NEUTRAL)
+        route = load_corridor_route(_INVERSION_WITNESS_SLUG)
+        raw_candidates = corridor.candidates(route, factor_for=factor_for)
+
+        search_small = prune_dominated_candidates(
+            raw_candidates,
+            tank_range_mi=_INVERSION_WITNESS_SMALL_TANK_MI,
+            total_route_mi=route.total_route_mi,
+        )
+        search_large = prune_dominated_candidates(
+            raw_candidates,
+            tank_range_mi=_INVERSION_WITNESS_LARGE_TANK_MI,
+            total_route_mi=route.total_route_mi,
+        )
+
+        estimate_small = dp.estimate_transition_count(
+            search_small,
+            total_route_mi=route.total_route_mi,
+            tank_range_mi=_INVERSION_WITNESS_SMALL_TANK_MI,
+            starting_fuel=STARTING_FUEL,
+        )
+        estimate_large = dp.estimate_transition_count(
+            search_large,
+            total_route_mi=route.total_route_mi,
+            tank_range_mi=_INVERSION_WITNESS_LARGE_TANK_MI,
+            starting_fuel=STARTING_FUEL,
+        )
+        self.assertLess(
+            estimate_small,
+            estimate_large,
+            "witness precondition: the small-tank cell's own incumbent "
+            "estimate must be the SMALLER of the two for this pair to be "
+            f"an inversion witness at all (got small={estimate_small}, "
+            f"large={estimate_large})",
+        )
+
+        def _median_seconds(search_set, tank_range_mi):
+            times = []
+            for _ in range(_GUARD_REPEATS):
+                started = time.perf_counter()
+                dp.solve_fixed_charge(
+                    search_set,
+                    total_route_mi=route.total_route_mi,
+                    tank_range_mi=tank_range_mi,
+                    mpg=MPG,
+                    starting_fuel=STARTING_FUEL,
+                    penalty=PENALTY,
+                )
+                times.append(time.perf_counter() - started)
+            return statistics.median(times)
+
+        time_small = _median_seconds(search_small, _INVERSION_WITNESS_SMALL_TANK_MI)
+        time_large = _median_seconds(search_large, _INVERSION_WITNESS_LARGE_TANK_MI)
+        ratio = (
+            Decimal(str(time_small)) / Decimal(str(time_large))
+            if time_large > 0
+            else Decimal("Infinity")
+        )
+
+        self.assertGreaterEqual(
+            ratio,
+            _INVERSION_RATIO_FLOOR,
+            f"expected the SMALLER-estimate cell (estimate={estimate_small}, "
+            f"tank={_INVERSION_WITNESS_SMALL_TANK_MI}mi, median={time_small}s) "
+            f"to take at least {_INVERSION_RATIO_FLOOR}x as long as the "
+            f"LARGER-estimate cell (estimate={estimate_large}, "
+            f"tank={_INVERSION_WITNESS_LARGE_TANK_MI}mi, median={time_large}s) "
+            f"-- measured ratio={ratio}. If this no longer holds, the "
+            "incumbent's inversion may have been fixed (e.g. by a DP "
+            "optimization that changed its relative cost across tank "
+            "ranges) and this guard should be reviewed, not loosened "
+            "blindly.",
+        )
