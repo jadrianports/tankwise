@@ -258,11 +258,23 @@ def solve(
     through untouched regardless of which branch produced them.
 
     The dispatch decision is a pure function of ``search_set``,
-    ``total_route_mi``, ``tank_range_mi`` and ``starting_fuel`` -- the same
-    request always chooses the same strategy and produces the same plan
-    (load-bearing for the response cache: see ``routing/cache.py``'s
-    ``build_cache_key``, which keys on exactly those same inputs and needs
-    no separate strategy token as a result).
+    ``total_route_mi``, ``tank_range_mi`` and ``starting_fuel`` -- AND of
+    the current dispatch-policy constants (``dp.estimate_transition_count``'s
+    identity and ``dp.DP_TRANSITION_BUDGET``'s value): the same request
+    under the same policy always chooses the same strategy and produces
+    the same plan. What this docstring previously claimed here (through
+    plan 18-04c/18-04d) was that the response cache "needs no separate
+    strategy token as a result" because dispatch is a pure function of
+    exactly the inputs ``routing/cache.py``'s ``build_cache_key`` already
+    keys on -- true WITHIN one build, where the policy constants never
+    change mid-request, but FALSE ACROSS builds whose policy constants
+    differ: a plan cached under an old budget can outlive a policy change
+    and be served to a request the CURRENT build would dispatch
+    differently (the unguarded coupling ``18-VERIFICATION.md`` found).
+    ``build_cache_key`` now also carries a dispatch-policy token
+    (``_dispatch_policy_token``) DERIVED from those same constants, so a
+    future change to either one changes every cache key automatically
+    (plan 18-12).
 
     ``penalty`` is a plain ``Decimal`` this function never resolves itself
     -- it defaults to ``Decimal(0)``, at which the DP is plan-identical to

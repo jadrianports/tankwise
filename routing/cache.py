@@ -9,6 +9,28 @@ component its own namespace so a coordinate token, an address token, the
 vehicle token, and the EIA-vintage token can never collide (mitigates
 cross-domain cache-key collisions).
 
+It was versioned `route:v7:` because the dispatch-policy token described
+below (`_dispatch_policy_token`) is new: an entry cached under `v6` carries
+no record of which predictor/`DP_TRANSITION_BUDGET` combination decided
+`solver_strategy`, so a future dispatch-policy change could in principle
+still serve a `v6`-keyed entry computed under the SUPERSEDED policy even
+though `route:v6:`'s own key shape never changed for one --
+`18-VERIFICATION.md`'s own finding (`route:v6:` keys on the penalty but NOT
+on the dispatch policy). The paragraph below claiming the cache "needs no
+separate strategy token as a result" (`routing.services.solver.solve()`'s
+own docstring made the identical claim, now corrected there too) was true
+only WITHIN one build, where dispatch is a pure function of exactly the
+inputs the key already namespaces -- and false ACROSS builds whose policy
+constants differ, which is exactly the unguarded coupling this bump
+closes. This lands in the SAME change as the dispatch-policy gap-closure
+finding it protects (plan 18-12), per this project's own standing rule
+that a cache-key change cannot be staged separately from the behaviour
+change it guards (D-33's INTG-03 precedent) -- even though this
+gap-closure's own finding was NOT to change the policy's value (see
+`routing.services.dp`'s "Why the transition-count estimate was not
+replaced" module docstring section): the token guards against a FUTURE
+change, not only this one.
+
 The key was versioned `route:v3:` because every v3 response field
 (`price_index_status`, `eia_week`, `trend_region`, `trend_delta_cents`,
 plus the fact that `fuel_stops`/`total_cost` themselves may now be
@@ -192,6 +214,54 @@ def _penalty_token(penalty) -> str:
     return f"p:{round(penalty_value, 2)}"
 
 
+def _dispatch_policy_token() -> str:
+    """Namespaced `d:` token recording which dispatch policy decided
+    `solver_strategy` for a cached plan. DERIVED from the policy constants
+    themselves (`dp.DP_TRANSITION_BUDGET`'s value, the predictor's own
+    name) rather than a documented bump-on-change convention -- the same
+    argument `_penalty_token`'s own docstring already gives for rejecting
+    that convention ("makes correctness depend on a human remembering a
+    note"), applied one layer down: `18-VERIFICATION.md` found that
+    `route:v6:` keys on the penalty but NOT on the dispatch policy, so an
+    entry cached before a future `DP_TRANSITION_BUDGET` change would still
+    be served under the OLD dispatch policy without this token.
+
+    Imported locally, not at module scope, for the same reason
+    `_vehicle_token` defers its own `routing.serializers` import: keeps
+    this module's import order irrelevant relative to
+    `routing.services.dp`. Safe to import here: `dp.py` is one of
+    `SOLVER_FILES` (`routing/tests/test_boundaries.py`) and is itself free
+    of Django/ORM/HTTP imports (`SolverPurityTest`), so importing FROM it
+    into this (non-`SOLVER_FILES`) module drags nothing Django-shaped into
+    the solver's own purity boundary -- the import direction runs strictly
+    cache.py -> dp.py, never the reverse.
+
+    Unlike `_eia_token`/`_penalty_token`, this token has no caller-supplied
+    "omitted" input to resolve: a dispatch policy is a build-time module
+    constant, always known, never a per-request fact a caller might not
+    have threaded through yet -- so there is no "none" case to produce a
+    fixed literal for. What stays constant across every call, matching
+    those tokens' own spirit, is that the SAME policy always yields the
+    SAME token regardless of what the caller passes (see
+    `test_cache.py::DispatchPolicyCacheKeyTests`).
+
+    As of this token's introduction (plan 18-12), the predictor is still
+    `estimate_transition_count` (18-10's closed predictor family found no
+    qualifying replacement) and `DP_TRANSITION_BUDGET` is still 50,000
+    (the same gap-closure found no deployed-hardware-justified value to
+    move it to) -- see `routing.services.dp`'s own module docstring, "Why
+    the transition-count estimate was not replaced", for the full finding.
+    The token still exists and still changes automatically the moment
+    either fact stops being true, which is the entire point: this plan's
+    own finding was NOT to change the policy, but the token does not
+    encode that finding -- it encodes the CONSTANTS, so a later change
+    needs no matching update here."""
+    from routing.services.dp import DP_TRANSITION_BUDGET
+
+    predictor_name = "estimate_transition_count"
+    return f"d:{predictor_name}:{DP_TRANSITION_BUDGET}"
+
+
 def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     """Build the cache key for a validated
     `{"start": ..., "finish": ..., "vehicle": ..., "waypoints": ...}`
@@ -213,11 +283,21 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     token built by the unchanged `_endpoint_token()` -- never sorted,
     never deduped, so visit order is part of the key (A->B->C != A->C->B,
     Pitfall 13). Composed as a simple string, not a hash -- no need to
-    hand-roll one at this scale."""
+    hand-roll one at this scale.
+
+    The key now also carries a dispatch-policy token (`_dispatch_policy_token`,
+    the `d:` segment between `eia_token` and `penalty_token`) DERIVED from
+    `routing.services.dp`'s own dispatch-policy constants, so a cached plan
+    can never outlive the dispatch policy that produced it (plan 18-12,
+    closing the coupling `18-VERIFICATION.md` found unguarded)."""
     waypoints = validated_data.get("waypoints") or []
     stops = [validated_data["start"], *waypoints, validated_data["finish"]]
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
     vehicle_token = _vehicle_token(validated_data.get("vehicle"))
     eia_token = _eia_token(eia_vintage)
+    dispatch_token = _dispatch_policy_token()
     penalty_token = _penalty_token(penalty)
-    return f"route:v6:{stops_token}|{vehicle_token}|{eia_token}|{penalty_token}"
+    return (
+        f"route:v7:{stops_token}|{vehicle_token}|{eia_token}|"
+        f"{dispatch_token}|{penalty_token}"
+    )

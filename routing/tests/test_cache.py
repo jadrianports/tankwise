@@ -1,6 +1,7 @@
 """Tests for the cache-key normalizer. No DB needed --
 pure string-formatting behavior."""
 from decimal import Decimal
+from unittest import mock
 
 from django.test import SimpleTestCase
 
@@ -111,8 +112,8 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v6: and contains exactly
-    three | separators (stops-chain|vehicle|eia|penalty)."""
+    """Every produced key starts with route:v7: and contains exactly
+    four | separators (stops-chain|vehicle|eia|dispatch|penalty)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
         key = build_cache_key(
@@ -122,8 +123,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v6:"))
-        self.assertEqual(key.count("|"), 3)
+        self.assertTrue(key.startswith("route:v7:"))
+        self.assertEqual(key.count("|"), 4)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -166,7 +167,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v6:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v7:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -297,3 +298,61 @@ class WaypointOrderingCacheKeyTests(SimpleTestCase):
         key_with_waypoint = build_cache_key(self._payload([denver]))
 
         self.assertNotEqual(key_no_waypoints, key_with_waypoint)
+
+
+class DispatchPolicyCacheKeyTests(SimpleTestCase):
+    """The `d:` dispatch-policy token (plan 18-12, INTG-03) ties a cached
+    payload to the dispatch policy (predictor identity + `DP_TRANSITION_BUDGET`)
+    that decided `solver_strategy` for it -- closing the coupling
+    `18-VERIFICATION.md` found unguarded: `route:v6:` keyed on the penalty
+    but NOT on the dispatch policy."""
+
+    def _payload(self):
+        return {
+            "start": coord("41.8781", "-87.6298"),
+            "finish": coord("38.6270", "-90.1994"),
+        }
+
+    def test_new_prefix_appears_in_a_built_key(self):
+        key = build_cache_key(self._payload())
+        self.assertTrue(key.startswith("route:v7:"))
+
+    def test_dispatch_policy_token_is_present_and_correctly_placed(self):
+        key = build_cache_key(self._payload(), eia_vintage="2026-07-20", penalty=Decimal("35"))
+        segments = key[len("route:v7:") :].split("|")
+        # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token
+        self.assertEqual(len(segments), 5)
+        dispatch_segment = segments[3]
+        self.assertTrue(
+            dispatch_segment.startswith("d:"),
+            f"expected the 4th segment to be the dispatch-policy token "
+            f"(d:...), got {dispatch_segment!r} in key {key!r}",
+        )
+        self.assertIn("estimate_transition_count", dispatch_segment)
+
+    def test_dispatch_policy_token_tracks_the_policy_constants(self):
+        """The mechanism test: a token that exists but is pinned to a
+        literal would pass the two assertions above and still leave the
+        coupling unguarded -- exactly the failure mode this token exists
+        to close. Patching the live constant must change the resulting
+        key."""
+        key_before = build_cache_key(self._payload())
+        with mock.patch("routing.services.dp.DP_TRANSITION_BUDGET", 12_345):
+            key_after = build_cache_key(self._payload())
+
+        self.assertNotEqual(key_before, key_after)
+        self.assertIn("12345", key_after.split("|")[3])
+
+    def test_dispatch_policy_token_is_stable_and_never_omittable(self):
+        """Unlike `_eia_token`/`_penalty_token`, this token has no
+        caller-supplied optional input to omit -- a dispatch policy is a
+        build-time module constant, always known, never a per-request
+        fact a caller might not have threaded through yet. There is
+        therefore no "none" literal to produce; what this asserts instead
+        is the same stability those tokens' own "omitted" tests check:
+        repeated calls under the SAME policy constants always produce the
+        SAME token, with no caller input able to vary it."""
+        key_a = build_cache_key(self._payload())
+        key_b = build_cache_key(self._payload())
+
+        self.assertEqual(key_a, key_b)
