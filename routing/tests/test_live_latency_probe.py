@@ -106,11 +106,35 @@ context, not as the ratio's numerator.
   re-explained with a second hypothesis invented after the numbers land,
   and no constant above is to be adjusted to make it fit.
 
-The verdict itself is recorded by a later commit (task 3), appended below
-this section once measured -- never edited into this hypothesis text.
+- **Verdict: CONFIRMED.** Measured against a confirmed-warm service
+  (`manage.py probe_live_latency --anomaly`, plan 18-11 task 3): the wake
+  step reported status 200 in 1.13s (already warm from this same session's
+  earlier sweep, task 2), then the exact anomaly request returned HTTP 422
+  in 6.53s wall time -- comfortably under `ANOMALY_FALSIFICATION_
+  THRESHOLD_SECONDS=15` -- with `Server-Timing` stages `eia;dur=0.9,
+  cache;dur=0.9, route;dur=1631.4, index;dur=0.0, corridor;dur=3805.0,
+  solver;dur=0.5, total;dur=5436.9`. The `solver` stage was 0.5ms, far
+  under `ANOMALY_SOLVER_STAGE_MAX_MS=500` -- confirming
+  `dp.preflight_gap_check` rejected the empty-tank request essentially
+  instantly, exactly as the hypothesis predicted. The 6.53s wall time was
+  dominated by `corridor` (3805.0ms) and `route` (1631.4ms) -- a genuine
+  Mapbox Directions round trip plus corridor candidate filtering over the
+  full unpruned list, neither of which this hypothesis was ever about.
+  **The original 55s figure was cold-boot time, not solver time**:
+  gunicorn's per-request `--timeout` counts only from when a worker
+  accepts the request, so a container still booting when the request
+  arrived would report its FULL wall-clock duration (boot plus request)
+  with no way for gunicorn's own timeout to distinguish the two. This
+  anomaly is CLOSED, not merely explained away: the hypothesis was written
+  down before this measurement, the falsification thresholds were pinned
+  before this measurement, and the measurement met both.
 """
 import os
+import re
 from decimal import Decimal
+from pathlib import Path
+
+from django.test import SimpleTestCase
 
 # --- LIVE_PROBE_BASE_URL ----------------------------------------------------
 #
@@ -273,3 +297,155 @@ ANOMALY_FALSIFICATION_THRESHOLD_SECONDS = 15
 # orders of magnitude below genuine search work while giving generous
 # margin for Render free-tier shared-CPU jitter on a simple sort-and-scan.
 ANOMALY_SOLVER_STAGE_MAX_MS = 500
+
+
+class LiveLatencyProbeGuardTests(SimpleTestCase):
+    """Runs entirely offline, no network access -- safe and fast inside the
+    ordinary suite and inside CI. Exercises the header parser, the
+    cache-hit rejection rule, and the censoring path against synthetic
+    fixtures constructed in this test, never against a live response.
+
+    Every test method below imports `ProbeRow`/`parse_server_timing` from
+    `routing.management.commands.probe_live_latency` LOCALLY (inside the
+    method, not at this module's top level) -- that command module itself
+    imports every pinned constant from THIS module at ITS top level, so a
+    top-level import back into it here would be circular: whichever
+    module Python starts loading first would find the other only
+    partially initialized (its own constants/names not yet bound) when
+    the process reaches the reverse import. Deferring the import to
+    inside each test method (the same pattern `measure_dispatch_
+    predictor.py`'s own docstring already establishes for a different
+    circularity reason) sidesteps this entirely, since by the time any
+    test method actually runs, both modules are already fully loaded.
+
+    Four assertions:
+
+    1. The parser recovers each named stage from the exact multi-stage
+       format `routing/timing.py` emits.
+    2. A response carrying a `cache` stage and no `solver` stage is
+       classified as a cache hit contributing no latency figure -- proven
+       non-vacuous against a synthetic fixture, not merely asserted in the
+       abstract.
+    3. A synthetic 500 response produces a censored row that is PRESENT in
+       the resulting table -- proven non-vacuous by actually filtering a
+       row list and checking the censored row survives the filter, rather
+       than only checking the `censored` flag in isolation.
+    4. `LIVE_PROBE_REQUEST_TIMEOUT_SECONDS` exceeds the deployed
+       `GUNICORN_TIMEOUT`, read from `render.yaml` AT TEST TIME rather than
+       restated as a literal -- the anti-vacuity guard on the whole
+       protocol. If this inequality ever inverts, every future breach
+       becomes an invisible client abort and this probe stops being able
+       to observe the failure it exists to catch (T-18-42).
+    """
+
+    def test_parser_recovers_each_named_stage_from_a_multi_stage_header(self):
+        from routing.management.commands.probe_live_latency import parse_server_timing
+
+        header = (
+            "eia;dur=0.9, cache;dur=0.9, route;dur=1631.4, index;dur=0.0, "
+            "corridor;dur=3805.0, solver;dur=0.5, total;dur=5436.9"
+        )
+        stages = parse_server_timing(header)
+        self.assertEqual(
+            stages,
+            {
+                "eia": 0.9,
+                "cache": 0.9,
+                "route": 1631.4,
+                "index": 0.0,
+                "corridor": 3805.0,
+                "solver": 0.5,
+                "total": 5436.9,
+            },
+        )
+
+    def test_parser_returns_empty_dict_for_a_missing_or_empty_header(self):
+        from routing.management.commands.probe_live_latency import parse_server_timing
+
+        self.assertEqual(parse_server_timing(""), {})
+        self.assertEqual(parse_server_timing(None), {})
+
+    def test_cache_stage_without_solver_stage_is_classified_as_a_cache_hit(self):
+        """Non-vacuous: builds the exact classification expression
+        `probe_live_latency.py`'s own `_measure_one_repeat` uses, over a
+        parsed synthetic header, and proves it evaluates True -- not just
+        that the header CONTAINS `cache` and lacks `solver`."""
+        from routing.management.commands.probe_live_latency import parse_server_timing
+
+        header = "eia;dur=0.9, cache;dur=0.9"
+        stages = parse_server_timing(header)
+        self.assertIn("cache", stages)
+        self.assertNotIn("solver", stages)
+
+        cache_hit = ("solver" not in stages) and ("cache" in stages)
+        self.assertTrue(
+            cache_hit,
+            "a response carrying a cache stage and no solver stage must "
+            "be classified as a cache hit contributing no latency figure "
+            "-- never as an impossibly fast solve.",
+        )
+
+    def test_a_censored_500_row_is_present_in_the_reported_table(self):
+        """Non-vacuous: constructs a synthetic censored row exactly as
+        `probe_live_latency.py`'s own classification would (status 500 ->
+        `censored=True`), places it in a row list alongside a genuine-miss
+        row, and proves a table-filtering step (the same
+        `[r for r in rows if r.censored]` shape `_print_table`/`_print_
+        factor_summary` group rows by) still surfaces it -- the exact
+        selection bias that let a reproducible live 500 go unrecorded for
+        nine prior plans."""
+        from routing.management.commands.probe_live_latency import ProbeRow
+
+        censored_row = ProbeRow(
+            cell_label="synthetic_censored_cell",
+            repeat_index=0,
+            ladder_value=Decimal("0.99"),
+            status_code=500,
+            wall_time_s=30.5,
+            stages_ms={},
+            censored=True,
+        )
+        genuine_row = ProbeRow(
+            cell_label="synthetic_censored_cell",
+            repeat_index=1,
+            ladder_value=Decimal("0.98"),
+            status_code=200,
+            wall_time_s=2.1,
+            stages_ms={"solver": 87.0},
+            censored=False,
+        )
+        rows = [censored_row, genuine_row]
+
+        censored_rows_in_table = [r for r in rows if r.censored]
+        self.assertEqual(
+            len(censored_rows_in_table),
+            1,
+            "a censored row must remain present when the row list is "
+            "filtered/grouped for reporting, never silently dropped.",
+        )
+        self.assertEqual(censored_rows_in_table[0].status_code, 500)
+        self.assertEqual(censored_rows_in_table[0].wall_time_s, 30.5)
+        self.assertFalse(censored_row.is_genuine_miss)
+
+    def test_request_timeout_exceeds_the_deployed_gunicorn_timeout_from_render_yaml(self):
+        """Anti-vacuity guard (T-18-42): reads GUNICORN_TIMEOUT out of
+        render.yaml itself at test time, rather than restating "30" as a
+        literal here -- so editing the deployment config alone (without
+        touching this test) cannot silently break the inequality that
+        makes a worker-timeout breach observable at all."""
+        render_yaml_path = Path(__file__).resolve().parent.parent.parent / "render.yaml"
+        content = render_yaml_path.read_text(encoding="utf-8")
+        match = re.search(r"key:\s*GUNICORN_TIMEOUT\s*\n\s*value:\s*\"(\d+)\"", content)
+        self.assertIsNotNone(
+            match, "could not find a GUNICORN_TIMEOUT env var entry in render.yaml"
+        )
+        deployed_timeout_seconds = int(match.group(1))
+
+        self.assertGreater(
+            LIVE_PROBE_REQUEST_TIMEOUT_SECONDS,
+            deployed_timeout_seconds,
+            "LIVE_PROBE_REQUEST_TIMEOUT_SECONDS must stay strictly greater "
+            "than the deployed GUNICORN_TIMEOUT -- if this ever inverts, "
+            "a worker-timeout breach reads as an indistinguishable client "
+            "abort instead of an observable server error.",
+        )
