@@ -85,10 +85,17 @@ function bypassedCheaperText(stop: FuelStop): string | null {
   } here rather than pay for another stop${saving}.`;
 }
 
+// `price_percentile` arrives from the API as a percentage number already
+// (the serializer's `_percent_repr` renders the solver's 0-to-1 fraction as
+// `0.125 -> 12.5`), so it must NOT be scaled again here. It counts the
+// candidates priced strictly BELOW this stop, which is the complement of
+// what "beats" claims -- the cheapest station in range scores 0 and beats
+// everything. Both conversions are applied in the one place that renders
+// the sentence.
 function percentileText(stop: FuelStop): string | null {
   const { price_percentile, corridor_avg_price } = stop.rationale;
   if (price_percentile === null) return null;
-  const pct = Math.round(price_percentile * 100);
+  const pct = Math.round(100 - price_percentile);
   const avg = corridor_avg_price ? ` (corridor average: $${corridor_avg_price}/gal)` : '';
   return `This price beats ${pct}% of the corridor's candidate stations${avg}.`;
 }

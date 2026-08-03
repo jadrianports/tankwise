@@ -86,3 +86,38 @@ test('rewords the skipped sentence to describe rejected cheaper candidates, not 
   render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
   expect(screen.getByText(/rejected 1 cheaper station in range from here/i)).toBeInTheDocument();
 });
+
+// `price_percentile` crosses the wire as a percentage number, not a 0-to-1
+// fraction -- `_percent_repr` in routing/serializers.py renders `0.25 -> 25.0`,
+// pinned by test_serializers.py. Scaling it again here produced a live
+// "beats 2500%" on the Dallas->Seattle demo. The field also counts candidates
+// priced strictly BELOW this stop, so it must be inverted to support "beats".
+test('treats price_percentile as an already-scaled percentage, not a fraction', () => {
+  const stop = makeStop({ purchase_reason: 'reach_finish', price_percentile: 25 });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  expect(screen.getByText(/beats 75% of the corridor's candidate stations/i)).toBeInTheDocument();
+});
+
+test('reports the cheapest station in range as beating every candidate, not none', () => {
+  const stop = makeStop({ purchase_reason: 'top_up_at_cheapest', price_percentile: 0 });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  expect(screen.getByText(/beats 100% of the corridor's candidate stations/i)).toBeInTheDocument();
+});
+
+test('reports the most expensive candidate as beating none of them', () => {
+  const stop = makeStop({ purchase_reason: 'reach_finish', price_percentile: 100 });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  expect(screen.getByText(/beats 0% of the corridor's candidate stations/i)).toBeInTheDocument();
+});
+
+test('never renders a percentile outside 0-100 for any in-contract API value', () => {
+  for (const value of [0, 12.5, 25, 50, 99.9, 100]) {
+    const stop = makeStop({ purchase_reason: 'reach_finish', price_percentile: value });
+    render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+    const rendered = screen.getByText(/beats \d+% of the corridor/i).textContent ?? '';
+    const pct = Number(rendered.match(/beats (\d+)%/)?.[1]);
+    expect(pct).toBeGreaterThanOrEqual(0);
+    expect(pct).toBeLessThanOrEqual(100);
+    cleanup();
+  }
+});
