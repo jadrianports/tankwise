@@ -405,6 +405,82 @@ deterministic pure functions of the same validated input, so which branch
 fires is itself deterministic and cache-key-stable: identical requests
 always choose the same strategy and produce the same plan.
 
+## Why the transition-count estimate was not replaced (2026-08-04 gap-closure finding)
+
+**The mechanism.** `solver.solve()` dispatches by comparing a single scalar
+against `DP_TRANSITION_BUDGET` -- a THRESHOLD. When two cells' true DP
+runtimes invert relative to their estimates (a smaller estimate takes
+LONGER to solve than a larger one), no threshold value can simultaneously
+retain the fast, large-estimate cell and demote the slow, small-estimate
+one: either both land on the same side of the boundary, or the boundary
+puts the slow cell on the "exact_dp" side and the fast one on the
+"heuristic" side -- backwards. This is a property of the estimator itself,
+never of any particular budget number.
+
+**Both inversion witnesses, workstation and live.** Workstation (this
+module's own historical `DP_TRANSITION_BUDGET` calibration comment,
+`dallas_tx-seattle_wa`): @500mi estimates 61,944, worst-of-3 raw DP
+2.706s; @1050mi estimates 117,895 -- 90% larger -- worst-of-3 raw DP
+2.181s, 19% FASTER. Live, deployed hardware, PRE-HOTFIX (commit
+`8946567`, same corridor): @500mi estimates 61,912, HTTP 500 reproduced
+5/5 at 30.5-35.7s (right-censored at `GUNICORN_TIMEOUT=30`); @1050mi
+estimates 117,852 -- again the larger estimate -- HTTP 200 in ~12s. The
+SAME inversion recurs on deployed hardware, at a larger absolute
+magnitude than the workstation figures showed.
+
+**18-10's measured scores.** Plan 18-10 pinned a zero-tolerance
+discordant-pair rule (`PREDICTOR_INVERSION_BUDGET=0`,
+`routing/tests/test_dispatch_predictor.py`) and measured a closed,
+seven-member predictor family -- the incumbent `estimate_transition_count`
+plus six structural challengers -- against it. Every member, incumbent
+included, clears the rank-correlation floor (rank correlation >= 0.90) but
+FAILS the zero-discordant-pair condition (2-4 discordant pairs each,
+against a budget of 0). **The qualifying shortlist is EMPTY.** No
+predictor in the closed family can be proven free of the exact structural
+failure the witnesses above show. Per that plan's own explicit handoff,
+this cannot be fixed by "swapping in a better scalar predictor over this
+cell matrix -- that path is now closed by measurement, not by assumption."
+This plan (18-12) therefore does not introduce a replacement predictor:
+`estimate_transition_count` remains the dispatch input, not because it
+qualifies, but because no alternative in the closed family does either,
+and dispatch must continue on some scalar.
+
+**18-11's deployed-hardware figures, and why `DP_TRANSITION_BUDGET` does
+not move.** Plan 18-11 measured two cells live at the API-default vehicle:
+`sacramento_ca-salt_lake_city_ut` (estimate 120, `exact_dp`, 5.0-5.3ms --
+comfortably live-fine) and `dallas_tx-seattle_wa`@500mi post-hotfix
+(estimate 61,912, `penalty_aware_heuristic`, 88-92ms -- fast, but not
+evidence about the exact_dp path, since the current budget never routes
+this cell there). Combined with the already-recorded pre-hotfix
+`dallas_tx-seattle_wa`@1050mi figure above (estimate 117,852, `exact_dp`,
+live, ~12s -- comfortably inside `GUNICORN_TIMEOUT=30`, though with less
+margin than sacramento's millisecond-scale figure), the full set of cells
+with genuine DEPLOYED `exact_dp` live-fine evidence is exactly TWO:
+`sacramento_ca-salt_lake_city_ut` (estimate 120) and
+`dallas_tx-seattle_wa`@1050mi (estimate 117,852). Pinned as
+`DISPATCH_RETENTION_FLOOR = 2` below, BEFORE checking any threshold
+against it: a policy must retain `exact_dp` on BOTH of these known-fine
+cells to qualify, not merely one -- admitting only the trivially-tiny
+`sacramento` cell into the required set would let a policy pass without
+ever being tested against the corridor that actually matters
+(`dallas_tx-seattle_wa` is ROADMAP criterion 1's own worked example).
+
+ADOPTing a new budget requires a value strictly below 61,912 (to demote
+the one known-live-breaching cell) AND at or above 117,852 (to retain
+both `DISPATCH_RETENTION_FLOOR` cells) -- SIMULTANEOUSLY. 117,852 >
+61,912 -- **no such value exists.** This is the identical inversion
+18-10 proved on workstation timings, now reproduced with DEPLOYED-hardware
+figures on both sides of the comparison. **NOT TRACTABLE applies.**
+`DP_TRANSITION_BUDGET` stays 50,000, unchanged -- the conservative
+boundary already demotes the one known-breaching cell and already retains
+`exact_dp` on `sacramento_ca-salt_lake_city_ut`; it simply cannot ALSO
+retain `dallas_tx-seattle_wa`@1050mi, and no single-threshold policy over
+this estimator ever could. This is a legitimate, honest result, not a
+failure: the exact DP is not tractable, under this estimator, for
+`dallas_tx-seattle_wa`@1050mi on this hardware, and the correction belongs
+in the product-facing record (18-14), not in a threshold chosen to imply
+otherwise.
+
 ## EIA x penalty coupling
 
 **The mechanism (D-23).** `routing/services/corridor.py`'s `factor_for`
@@ -689,8 +765,85 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
 # real fix measures the dispatch boundary against deployed hardware and
 # guards it with a test that would have caught this. That is gap-closure
 # work, tracked in 18-VERIFICATION.md.
+#
+# CONFIRMED, 2026-08-04 (plan 18-12, gap-closure): evaluated against 18-10's
+# predictor verdict and 18-11's deployed-hardware measurement -- see the
+# module docstring's "Why the transition-count estimate was not replaced"
+# section and the DISPATCH_RETENTION_FLOOR block below for the full
+# derivation. No replacement predictor qualifies, and the deployed evidence
+# proves the identical inversion this comment already describes, this time
+# with LIVE figures on both sides of the comparison. This value (50,000) is
+# CONFIRMED, not superseded: no threshold value could ever have restored
+# dallas_tx-seattle_wa@1050mi to exact_dp while also demoting
+# dallas_tx-seattle_wa@500mi, so there was nothing a different number here
+# could have fixed.
 # ---------------------------------------------------------------------------
 DP_TRANSITION_BUDGET = 50_000
+
+# ---------------------------------------------------------------------------
+# DISPATCH_RETENTION_FLOOR -- pinned 2026-08-04 (plan 18-12), BEFORE
+# evaluating the concrete deployed-hardware figures below against it. See
+# the module docstring's "Why the transition-count estimate was not
+# replaced" section for the full derivation this block only summarises.
+#
+# Plan 18-10 measured a closed, seven-member family of candidate dispatch
+# predictors (estimate_transition_count included) against a pinned
+# zero-discordant-pair rule and found the QUALIFYING SHORTLIST EMPTY -- no
+# member, incumbent included, can be proven free of the structural
+# inversion this module's own HOTFIX comment above already documents. Per
+# 18-10's own handoff ("it cannot get there by swapping in a better scalar
+# predictor over this cell matrix -- that path is now closed by measurement,
+# not by assumption"), this plan does not introduce a replacement
+# predictor: estimate_transition_count remains the dispatch input.
+#
+# DISPATCH_RETENTION_FLOOR is the anti-vacuity condition: a boundary that
+# demotes every cell trivially satisfies "nothing breaches". Pinned here at
+# the full set of cells with genuine DEPLOYED-hardware evidence of
+# exact_dp running comfortably inside GUNICORN_TIMEOUT=30:
+#
+#   1. sacramento_ca-salt_lake_city_ut (estimate 120): exact_dp, live,
+#      5.0-5.3ms (plan 18-11-SUMMARY.md).
+#   2. dallas_tx-seattle_wa @1050mi (estimate 117,852): exact_dp, live,
+#      HTTP 200 in ~12s, pre-hotfix -- budget was 134,000 at the time, so
+#      this cell genuinely ran exact_dp in production (18-10-PLAN.md,
+#      18-10-SUMMARY.md and 18-11-SUMMARY.md all cite this figure).
+#
+# DISPATCH_RETENTION_FLOOR = 2 -- BOTH cells, not a padded-down subset of
+# one. dallas_tx-seattle_wa is ROADMAP criterion 1's own worked example;
+# admitting only the far-from-boundary sacramento cell into the required
+# set would let a policy "pass" without ever being tested against the one
+# cell that actually matters. This is deliberately NOT 18-10's own
+# workstation-derived floor (5, routing/tests/test_dispatch_predictor.py)
+# reused verbatim -- that floor was built from seven WORKSTATION-comfortable
+# figures, and this plan's own must-haves require the floor to be pinned
+# against cells measured comfortably LIVE-fine, of which only these two
+# exist in this gap-closure's evidence base as of 2026-08-04.
+#
+# Both outcome branches, pinned before the numbers below are compared
+# against any threshold:
+#
+#   * ADOPT -- a single DP_TRANSITION_BUDGET value exists that is (a)
+#     strictly below every estimate measured or known to breach
+#     GUNICORN_TIMEOUT=30 live, AND (b) at or above the estimate of every
+#     cell in the DISPATCH_RETENTION_FLOOR set above. Wire it.
+#   * NOT TRACTABLE -- no such value exists. The floor is not lowered, the
+#     budget is not widened past the known-breaching estimate, and the
+#     honest finding is recorded: the exact DP is not tractable for the
+#     affected corridor on this hardware under this estimator, the
+#     conservative boundary stands, and the product claims are corrected in
+#     18-14. This is a legitimate result, not a failure.
+#
+# THE VERDICT: the one known-live-breaching cell, dallas_tx-seattle_wa
+# @500mi, estimates 61,912 -- SMALLER than dallas_tx-seattle_wa @1050mi's
+# 117,852, which is IN the retention-floor set and live-fine. ADOPT would
+# require a budget strictly below 61,912 (to demote the breaching cell) AND
+# at or above 117,852 (to retain the floor set in full) SIMULTANEOUSLY.
+# 117,852 > 61,912, so no such budget exists: this is the identical
+# inversion 18-10 proved on workstation timings, reproduced here with
+# DEPLOYED-hardware figures on both sides of the comparison. NOT TRACTABLE
+# applies. DP_TRANSITION_BUDGET is not moved.
+# ---------------------------------------------------------------------------
+DISPATCH_RETENTION_FLOOR = 2
 
 
 def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
