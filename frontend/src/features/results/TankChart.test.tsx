@@ -1,7 +1,8 @@
 import { render, screen, cleanup } from '@testing-library/react';
 import { afterAll, afterEach, beforeAll, expect, test } from 'vitest';
 
-import TankChart, { buildTankSeries } from './TankChart';
+import TankChart from './TankChart';
+import { buildTankSeries } from './tankSeries';
 import type { FuelStop, Leg, VehicleEcho, WaypointMarker } from '../../types/routeContract';
 
 // This file's vite config runs without vitest's `globals` option, so
