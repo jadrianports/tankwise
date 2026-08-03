@@ -96,7 +96,13 @@ function LegBreakdown({ legs, totalDurationS, fuelStopCount, waypoints = [] }: L
             <TableCell>Leg</TableCell>
             <TableCell align="right">Distance</TableCell>
             <TableCell align="right">Duration</TableCell>
-            <TableCell align="right">Gallons</TableCell>
+            {/* "Fuel bought", not "Gallons": build_legs attributes each
+                purchase to the leg DEPARTING the node where it was made, so
+                this column is what was bought at the leg's origin, never what
+                the leg burned. Leg 0 departs START and is always 0.00 gal
+                however long it runs. Reading it as consumption is what broke
+                the tank chart. */}
+            <TableCell align="right">Fuel bought</TableCell>
             <TableCell align="right">Cost</TableCell>
           </TableRow>
         </TableHead>
