@@ -239,10 +239,16 @@ def solve(
     to ``heuristic.solve_penalty_aware_heuristic`` over the FULL, unpruned
     ``candidates`` (``strategy=SolverStrategy.PENALTY_AWARE_HEURISTIC`` --
     see ``routing.services.dp``'s "Pre-flight transition-count estimate
-    and the greedy fallback" module docstring section for why this
+    and the penalty-aware fallback" module docstring section for why this
     dispatch exists and how its threshold was calibrated, and
     ``routing.services.heuristic``'s own module docstring for what the
-    fallback algorithm itself does and does not guarantee); (5) rebuild every
+    fallback algorithm itself does and does not guarantee). The predictor
+    (``dp.estimate_transition_count``) and the budget
+    (``dp.DP_TRANSITION_BUDGET``, 50,000) are both unchanged as of plan
+    18-12's gap-closure: no replacement predictor qualified (18-10) and no
+    deployed-hardware figure justified moving the budget (18-11) -- see
+    ``routing.services.dp``'s "Why the transition-count estimate was not
+    replaced" module docstring section for the full, dated finding; (5) rebuild every
     returned stop's reporting statistics (``corridor_avg_price``,
     ``price_percentile``, ``skipped_count``, ``skipped_avg_price``) over
     the FULL, unpruned ``candidates`` argument (D-20, inherited from Phase

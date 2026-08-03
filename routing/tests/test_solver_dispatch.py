@@ -19,6 +19,7 @@ from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
 from routing.services import corridor, dp
+from routing.services.prune import prune_dominated_candidates
 from routing.services.solver import Candidate, SolverStrategy, solve
 from routing.tests.test_corridor_fixtures import (
     factor_lookup_for_basis,
@@ -246,3 +247,156 @@ class CorridorLatencyGuardTests(RealCorridorDispatchTestCase):
                     f"{plan.strategy}, exceeding the {LATENCY_CEILING_S}s "
                     "ceiling",
                 )
+
+
+class DeployedHardwareDispatchTests(RealCorridorDispatchTestCase):
+    """Plan 18-12, Task 2 -- per-cell dispatch assertions against plan
+    18-11's DEPLOYED-hardware measurement, at the API-default vehicle
+    (``solve()``'s own defaults: mpg=10, tank_range_mi=500,
+    starting_fuel=1), the exact vehicle 18-11's live probe used -- NOT
+    ``CALIBRATION_CELLS``' own starting_fuel=0.5 vehicle.
+
+    18-10's own qualifying predictor shortlist is EMPTY (see ``dp.py``'s
+    "Why the transition-count estimate was not replaced" docstring
+    section), so this plan changes no dispatch code. This test class pins,
+    as a permanent regression guard, the CURRENT (unchanged) policy's
+    classification against real deployed evidence, so a future edit that
+    silently changes it is caught here rather than discovered live again.
+    """
+
+    def test_dallas_seattle_matches_18_11s_live_heuristic_classification(self):
+        route, candidates = self._route_and_candidates("dallas_tx-seattle_wa")
+        plan = solve(candidates, route.total_route_mi)  # API defaults
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
+
+    def test_sacramento_slc_matches_18_11s_live_exact_dp_classification(self):
+        route, candidates = self._route_and_candidates(
+            "sacramento_ca-salt_lake_city_ut"
+        )
+        plan = solve(candidates, route.total_route_mi)  # API defaults
+        self.assertEqual(plan.strategy, SolverStrategy.EXACT_DP)
+
+
+class DispatchDemotionGuardTests(RealCorridorDispatchTestCase):
+    """Plan 18-12, Task 2's demotion guard (T-18-47's second half): every
+    cell 18-11 measured or recorded as breaching must NOT reach
+    ``exact_dp``. Paired with ``DispatchRetentionFloorGuardTests`` below --
+    either guard alone is satisfiable vacuously (a demote-everything policy
+    passes this one trivially; a retain-everything policy would pass that
+    one trivially); together they are not.
+    """
+
+    def test_known_live_breaching_cell_does_not_reach_exact_dp(self):
+        route, candidates = self._route_and_candidates("dallas_tx-seattle_wa")
+        plan = solve(candidates, route.total_route_mi)  # API defaults: 500mi tank
+        self.assertNotEqual(
+            plan.strategy,
+            SolverStrategy.EXACT_DP,
+            "dallas_tx-seattle_wa@500mi (API-default vehicle) reproduced "
+            "HTTP 500 5/5 at 30.5-35.7s live under exact_dp pre-hotfix "
+            "(18-VERIFICATION.md, commit 8946567) -- it must never "
+            "dispatch to exact_dp again.",
+        )
+
+
+class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
+    """Plan 18-12, Task 2's anti-vacuity retention guard (T-18-47's first
+    half). ``dp.DISPATCH_RETENTION_FLOOR`` (imported, never redeclared)
+    names the full set of cells with genuine deployed-hardware ``exact_dp``
+    live-fine evidence: ``sacramento_ca-salt_lake_city_ut`` (estimate ~120)
+    and ``dallas_tx-seattle_wa``@1050mi (estimate 117,852). The one known
+    live-breaching cell, ``dallas_tx-seattle_wa``@500mi, estimates 61,912 --
+    SMALLER than the retention-floor cell it would need to coexist with
+    under a single threshold, which is exactly why ``dp.py``'s own pinned
+    comment proves NOT TRACTABLE: no budget can retain both floor cells
+    while also demoting the breaching one.
+
+    Three assertions, none satisfiable vacuously by construction:
+
+    1. This test's own retention-evidence set tracks
+       ``dp.DISPATCH_RETENTION_FLOOR`` in SIZE -- so a future change to the
+       constant cannot silently drift apart from what this test actually
+       checks.
+    2. The inversion the NOT TRACTABLE verdict depends on is still
+       present: the breaching cell's estimate is still smaller than the
+       retention-floor cell's estimate. If this ever flips, the verdict
+       must be re-derived, not assumed still true.
+    3. The CURRENT (unchanged) dispatch policy still retains ``exact_dp``
+       on the achievable maximum of the floor set (exactly one:
+       ``sacramento_ca-salt_lake_city_ut`` -- ``dallas_tx-seattle_wa``
+       @1050mi is provably NOT retainable alongside demoting the breaching
+       @500mi cell) -- so a future change that silently demotes even that
+       one achievable cell is caught here.
+    """
+
+    _RETENTION_SET = (
+        ("sacramento_ca-salt_lake_city_ut", Decimal(500)),
+        ("dallas_tx-seattle_wa", Decimal(1050)),
+    )
+
+    def test_retention_set_size_matches_the_pinned_floor(self):
+        self.assertEqual(
+            len(self._RETENTION_SET),
+            dp.DISPATCH_RETENTION_FLOOR,
+            "this test's own retention-evidence set must track "
+            "dp.DISPATCH_RETENTION_FLOOR exactly -- imported, never "
+            "redeclared, so the two cannot silently drift apart.",
+        )
+
+    def test_the_inversion_the_not_tractable_verdict_depends_on_still_holds(self):
+        route, candidates = self._route_and_candidates("dallas_tx-seattle_wa")
+        search_500 = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=Decimal(500),
+            total_route_mi=route.total_route_mi,
+        )
+        search_1050 = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=Decimal(1050),
+            total_route_mi=route.total_route_mi,
+        )
+        estimate_500 = dp.estimate_transition_count(
+            search_500,
+            total_route_mi=route.total_route_mi,
+            tank_range_mi=Decimal(500),
+            starting_fuel=Decimal(1),
+        )
+        estimate_1050 = dp.estimate_transition_count(
+            search_1050,
+            total_route_mi=route.total_route_mi,
+            tank_range_mi=Decimal(1050),
+            starting_fuel=Decimal(1),
+        )
+        self.assertLess(
+            estimate_500,
+            estimate_1050,
+            "the NOT TRACTABLE verdict's inversion precondition no longer "
+            "holds (dallas_tx-seattle_wa@500mi's estimate is no longer "
+            "smaller than @1050mi's) -- re-derive dp.py's pinned finding "
+            "rather than assume it is still true.",
+        )
+
+    def test_current_policy_retains_the_achievable_maximum_of_the_floor_set(self):
+        route_sac, candidates_sac = self._route_and_candidates(
+            "sacramento_ca-salt_lake_city_ut"
+        )
+        plan_sac = solve(candidates_sac, route_sac.total_route_mi)
+        self.assertEqual(plan_sac.strategy, SolverStrategy.EXACT_DP)
+
+        route_dallas, candidates_dallas = self._route_and_candidates(
+            "dallas_tx-seattle_wa"
+        )
+        plan_dallas_1050 = solve(
+            candidates_dallas,
+            route_dallas.total_route_mi,
+            tank_range_mi=Decimal(1050),
+        )
+        self.assertEqual(
+            plan_dallas_1050.strategy,
+            SolverStrategy.PENALTY_AWARE_HEURISTIC,
+            "dallas_tx-seattle_wa@1050mi is demoted under the current "
+            "policy -- this is the NOT TRACTABLE finding's direct, proven "
+            "consequence (dp.py's own pinned comment), not a bug. If this "
+            "ever changes to EXACT_DP, dp.DISPATCH_RETENTION_FLOOR's own "
+            "proof must be re-checked, not silently accepted.",
+        )
