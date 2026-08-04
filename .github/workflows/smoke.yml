@@ -135,6 +135,32 @@ name: Smoke test (post-deploy)
 # a gate becomes decorative -- present on paper, verifying nothing.
 #
 # ---------------------------------------------------------------------------
+# 6B. TIMING RECORDED, NEVER ASSERTED
+# ---------------------------------------------------------------------------
+# Every matrix step below also captures its response's `Server-Timing`
+# header (`routing/timing.py`'s `ServerTiming.header_value()`) alongside the
+# wall time it already measures, and echoes both into the run output --
+# including a `dp_deadline_breach` entry if one is present, the only live
+# signal a DP wall-clock-deadline breach has under D-08. NEITHER of these
+# figures gains a new pass-or-fail condition: this section adds recording,
+# not gating.
+#
+# WHY NOT ASSERT: plan 18-11 proved gunicorn's per-request `--timeout`
+# cannot distinguish a still-booting container from a slow request -- a
+# 55-second response was a CORRECT 422, not a fault, because the timeout
+# only starts counting once a worker accepts the request. A fatal latency
+# assertion here would therefore fail a deploy for a reason unrelated to
+# the code, under this repository's `autoDeployTrigger: checksPass` (a red
+# gate here blocks the next deploy from ever going out). Section 2's own
+# FATAL-by-design policy stays exactly as strict as it already is for
+# STATUS and BODY shape -- this section only widens what is RECORDED.
+#
+# WHEN THIS BECOMES VIABLE: once this service leaves Render's free tier
+# (whose cold boots are what confound the measurement above), a genuine
+# request-latency ceiling could be asserted here without risking exactly
+# the false alarm this section exists to avoid.
+#
+# ---------------------------------------------------------------------------
 # 7. THE TRIGGER, WITH ITS LIMITATION STATED HONESTLY
 # ---------------------------------------------------------------------------
 # `render.yaml` sets `autoDeployTrigger: checksPass`, so Render only BEGINS
@@ -354,13 +380,20 @@ jobs:
       - name: "Assert: Los Angeles -> New York City"
         run: |
           BODY_FILE=$(mktemp)
-          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+          HEADER_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -D "$HEADER_FILE" -w '%{http_code} %{time_total}' \
             --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
             -H 'Content-Type: application/json' \
             --data "{\"start\":\"34.0522,-118.2437\",\"finish\":\"40.7128,-74.0060\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
           STATUS=$(echo "$RESPONSE" | awk '{print $1}')
           ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
-          echo "trip=\"Los Angeles -> New York City\" status=$STATUS elapsed=${ELAPSED}s"
+          # Section 6B: recorded, never asserted.
+          SERVER_TIMING=$(grep -i '^server-timing:' "$HEADER_FILE" | tail -1 | sed -E 's/^[Ss]erver-[Tt]iming: *//' | tr -d '\r')
+          BREACH_NOTE=""
+          case "$SERVER_TIMING" in
+            *dp_deadline_breach*) BREACH_NOTE=" dp_deadline_breach=present" ;;
+          esac
+          echo "trip=\"Los Angeles -> New York City\" status=$STATUS elapsed=${ELAPSED}s Server-Timing=\"$SERVER_TIMING\"$BREACH_NOTE"
           if [ "$STATUS" != "200" ]; then
             echo "::error::Los Angeles -> New York City: expected HTTP 200, got $STATUS"
             exit 1
@@ -388,13 +421,20 @@ jobs:
       - name: "Assert: Dallas -> Seattle (demo chip, coordinates)"
         run: |
           BODY_FILE=$(mktemp)
-          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+          HEADER_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -D "$HEADER_FILE" -w '%{http_code} %{time_total}' \
             --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
             -H 'Content-Type: application/json' \
             --data "{\"start\":\"32.7767,-96.7970\",\"finish\":\"47.6062,-122.3321\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
           STATUS=$(echo "$RESPONSE" | awk '{print $1}')
           ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
-          echo "trip=\"Dallas -> Seattle (coords)\" status=$STATUS elapsed=${ELAPSED}s"
+          # Section 6B: recorded, never asserted.
+          SERVER_TIMING=$(grep -i '^server-timing:' "$HEADER_FILE" | tail -1 | sed -E 's/^[Ss]erver-[Tt]iming: *//' | tr -d '\r')
+          BREACH_NOTE=""
+          case "$SERVER_TIMING" in
+            *dp_deadline_breach*) BREACH_NOTE=" dp_deadline_breach=present" ;;
+          esac
+          echo "trip=\"Dallas -> Seattle (coords)\" status=$STATUS elapsed=${ELAPSED}s Server-Timing=\"$SERVER_TIMING\"$BREACH_NOTE"
           if [ "$STATUS" != "200" ]; then
             echo "::error::Dallas -> Seattle (coords): expected HTTP 200, got $STATUS"
             exit 1
@@ -420,13 +460,20 @@ jobs:
       - name: "Assert: Los Angeles -> Denver -> Chicago (multi-stop)"
         run: |
           BODY_FILE=$(mktemp)
-          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+          HEADER_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -D "$HEADER_FILE" -w '%{http_code} %{time_total}' \
             --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
             -H 'Content-Type: application/json' \
             --data "{\"start\":\"34.0522,-118.2437\",\"finish\":\"41.8781,-87.6298\",\"waypoints\":[\"39.7392,-104.9903\"],\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
           STATUS=$(echo "$RESPONSE" | awk '{print $1}')
           ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
-          echo "trip=\"Los Angeles -> Denver -> Chicago\" status=$STATUS elapsed=${ELAPSED}s"
+          # Section 6B: recorded, never asserted.
+          SERVER_TIMING=$(grep -i '^server-timing:' "$HEADER_FILE" | tail -1 | sed -E 's/^[Ss]erver-[Tt]iming: *//' | tr -d '\r')
+          BREACH_NOTE=""
+          case "$SERVER_TIMING" in
+            *dp_deadline_breach*) BREACH_NOTE=" dp_deadline_breach=present" ;;
+          esac
+          echo "trip=\"Los Angeles -> Denver -> Chicago\" status=$STATUS elapsed=${ELAPSED}s Server-Timing=\"$SERVER_TIMING\"$BREACH_NOTE"
           if [ "$STATUS" != "200" ]; then
             echo "::error::Los Angeles -> Denver -> Chicago: expected HTTP 200, got $STATUS"
             exit 1
@@ -464,13 +511,20 @@ jobs:
       - name: "Assert: Dallas, TX -> Seattle, WA (ROADMAP criterion 1's exact worked example, addresses)"
         run: |
           BODY_FILE=$(mktemp)
-          RESPONSE=$(curl -sS -o "$BODY_FILE" -w '%{http_code} %{time_total}' \
+          HEADER_FILE=$(mktemp)
+          RESPONSE=$(curl -sS -o "$BODY_FILE" -D "$HEADER_FILE" -w '%{http_code} %{time_total}' \
             --max-time 45 -X POST "https://tankwise.onrender.com/api/route" \
             -H 'Content-Type: application/json' \
             --data "{\"start\":\"Dallas, TX\",\"finish\":\"Seattle, WA\",\"vehicle\":{\"mpg\":10,\"tank_range_mi\":500,\"starting_fuel\":$STARTING_FUEL}}")
           STATUS=$(echo "$RESPONSE" | awk '{print $1}')
           ELAPSED=$(echo "$RESPONSE" | awk '{print $2}')
-          echo "trip=\"Dallas, TX -> Seattle, WA (addresses)\" status=$STATUS elapsed=${ELAPSED}s"
+          # Section 6B: recorded, never asserted.
+          SERVER_TIMING=$(grep -i '^server-timing:' "$HEADER_FILE" | tail -1 | sed -E 's/^[Ss]erver-[Tt]iming: *//' | tr -d '\r')
+          BREACH_NOTE=""
+          case "$SERVER_TIMING" in
+            *dp_deadline_breach*) BREACH_NOTE=" dp_deadline_breach=present" ;;
+          esac
+          echo "trip=\"Dallas, TX -> Seattle, WA (addresses)\" status=$STATUS elapsed=${ELAPSED}s Server-Timing=\"$SERVER_TIMING\"$BREACH_NOTE"
           if [ "$STATUS" != "200" ]; then
             echo "::error::Dallas, TX -> Seattle, WA (addresses): expected HTTP 200, got $STATUS -- this is ROADMAP criterion 1's own worked example, the exact request that returned HTTP 500 in production on 2026-08-02"
             exit 1
