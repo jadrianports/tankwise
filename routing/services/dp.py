@@ -76,6 +76,17 @@ in turn is itself a feasible plan. Consequently the recurrence in
 exactly one source in the codebase: `preflight_gap_check`, run by the
 caller before the recurrence is ever invoked (D-17).
 
+**Update, 2026-08-04 (phase 18.1): this claim now has one narrow
+exception, and it is stated here so "total" stays accurate rather than
+quietly false.** `solve_fixed_charge` has exactly one raise path,
+`DeadlineExceededError`, reachable only when a caller passes a non-`None`
+`deadline`. Every existing direct caller passes no `deadline` (the
+default is `None`, unlimited) and therefore never observes this path --
+the totality claim above holds exactly as written for all of them. Only a
+caller that opts into a wall-clock budget can ever see this exception, and
+even then only when that budget is actually exceeded before FINISH is
+reached.
+
 ## Determinism
 
 No `set` or `dict` iteration order may influence the recurrence's
@@ -552,11 +563,12 @@ The full twelve-corridor x four-multiplier table lives in the
 CI-enforcing guard.
 """
 import bisect
+import time
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 
-from routing.services.exceptions import InfeasibleRouteError
+from routing.services.exceptions import DeadlineExceededError, InfeasibleRouteError
 from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
 
 # D-12's tolerance band for the DP's own relaxation and winner-selection
@@ -948,7 +960,7 @@ DP_DEADLINE_SECONDS = Decimal("2.8")
 # sum is the number the response budget above is actually derived against.
 #
 # Grounding figures (18.1-RESEARCH.md, measured live in that session, NOT
-# assumed): roughly 45 nanoseconds per `time.monotonic()` call; roughly
+# assumed): roughly 45 nanoseconds per monotonic-clock read; roughly
 # 77.7 microseconds per `_reachable_ticks`-call-granularity check on
 # atlanta_ga-denver_co@500mi, and roughly 99.2 microseconds on
 # jacksonville_fl-bangor_me@500mi. Both are MODERATE-density cells, not the
@@ -1204,7 +1216,14 @@ def _pareto_frontier(states_at_node, key_less):
 
 
 def solve_fixed_charge(
-    candidates, *, total_route_mi, tank_range_mi, mpg, starting_fuel, penalty
+    candidates,
+    *,
+    total_route_mi,
+    tank_range_mi,
+    mpg,
+    starting_fuel,
+    penalty,
+    deadline=None,
 ) -> FuelPlan:
     """Return the `FuelPlan` minimising fuel dollars plus `penalty` times
     the count of stations bought at strictly more than zero, over a
@@ -1268,6 +1287,20 @@ def solve_fixed_charge(
     computed fresh from the reconstructed stops rather than reused from
     internal DP bookkeeping.
 
+    `deadline`: optional wall-clock budget in seconds (a `Decimal` or
+    anything `Decimal(str(...))` can parse), same style as `solve()`'s own
+    `prune` keyword. `None` means unlimited -- the default, precisely so
+    every existing direct caller is unaffected by construction: the
+    fixed-charge oracle differentials, the frozen-greedy referee, and
+    `measure_dispatch_predictor`'s spawned worker all call this function
+    without passing `deadline` and therefore never see a behaviour change.
+    When a deadline is given, the check runs at a granularity of one clock
+    read per `_DEADLINE_CHECK_STRIDE` `(state, level)` pairs examined, and
+    raises `DeadlineExceededError` when the deadline is exceeded. The real
+    guarantee this provides is `deadline` plus a measured overshoot, never
+    `deadline` alone -- see `_DEADLINE_CHECK_STRIDE`'s own module-level
+    comment for that overshoot's derivation.
+
     ## Implementation note: the fuel/position domain runs on exact integer
     ## ticks, never on `Decimal` arithmetic, in the O(states x levels x
     ## targets) inner loop
@@ -1311,6 +1344,18 @@ def solve_fixed_charge(
     mpg = _as_decimal(mpg)
     starting_fuel = _as_decimal(starting_fuel)
     penalty = _as_decimal(penalty)
+
+    # D-05/D-06: a single absolute cutoff, computed once here at the
+    # boundary -- never inside the loop below. `None` means unlimited, so
+    # every existing direct caller (which never passes `deadline`) pays
+    # nothing extra: `deadline_at` stays `None` and the strided check
+    # below becomes a single cheap `is not None` test per stride interval.
+    # The `Decimal` deadline is coerced to `float` exactly once here,
+    # matching the monotonic clock's own return type.
+    deadline_at = (
+        None if deadline is None else time.monotonic() + float(deadline)
+    )
+    _transitions_examined = 0
 
     ordered = sorted(
         candidates,
@@ -1567,6 +1612,27 @@ def solve_fixed_charge(
                 target_range = _reachable_ticks(node_index, pos_ticks + level_ticks)
                 if not target_range:
                     continue
+
+                # D-06: one clock read per _DEADLINE_CHECK_STRIDE (state,
+                # level) pairs examined -- this granularity, not the
+                # innermost per-target loop (too hot: it would pay on
+                # every transition, including cells that complete
+                # comfortably) and not the outer per-node boundary (too
+                # coarse: the bound exists but is not a number that can be
+                # stated, and it is worst exactly where the DP is
+                # slowest).
+                _transitions_examined += 1
+                if (
+                    deadline_at is not None
+                    and _transitions_examined % _DEADLINE_CHECK_STRIDE == 0
+                ):
+                    now = time.monotonic()
+                    if now >= deadline_at:
+                        raise DeadlineExceededError(
+                            deadline_seconds=deadline,
+                            elapsed_seconds=now - (deadline_at - float(deadline)),
+                            transitions_examined=_transitions_examined,
+                        )
 
                 buy_ticks = level_ticks - fuel_on_arrival_ticks
                 is_purchase = buy_ticks > 0
