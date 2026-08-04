@@ -242,6 +242,7 @@ class SolverLatencyCeilingTests(TestCase):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=Decimal("35"),
+                deadline=None,  # D-05: untimed -- a latency measurement that time-boxes itself measures the cap, not the solver
             )
             dp_times_s.append(time.perf_counter() - started)
 

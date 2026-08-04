@@ -236,6 +236,7 @@ class Command(BaseCommand):
                         mpg=mpg,
                         starting_fuel=starting_fuel,
                         penalty=penalty,
+                        deadline=None,  # D-05: untimed -- measures the DP's own solve time, not a capped one
                     )
                     times_s.append(time.perf_counter() - started)
                     strategy = plan.strategy

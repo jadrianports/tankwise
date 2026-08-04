@@ -1,3 +1,11 @@
+"""Every `solve()` call below passes `deadline=None` (plan 18.1-05's
+call-site audit): each one runs over a tiny, hand-built synthetic
+candidate list and asserts what the DP computes (a cost, a stop, an
+exception) -- never how long it took. `solve()`'s default deadline is
+now production-on (D-05), so this file's calls would otherwise inherit
+the production cap by accident; `deadline=None` opts them out explicitly,
+the same rollback hatch `prune=False` already provides for `prune`.
+"""
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -22,7 +30,7 @@ class BoundaryAndFeasibilityTests(SimpleTestCase):
     def test_exact_500_boundary_is_feasible_not_infeasible(self):
         candidates = [make_candidate("3.00", "500", name="EDGE", opis_id=1)]
 
-        plan = solve(candidates, Decimal("1000"))
+        plan = solve(candidates, Decimal("1000"), deadline=None)
 
         self.assertEqual(plan.total_cost, Decimal("150.00"))
         self.assertEqual(plan.total_gallons, Decimal("50"))
@@ -31,14 +39,14 @@ class BoundaryAndFeasibilityTests(SimpleTestCase):
     def test_single_candidate_buys_only_enough_to_finish(self):
         candidates = [make_candidate("3.00", "400", name="ONLY", opis_id=1)]
 
-        plan = solve(candidates, Decimal("800"))
+        plan = solve(candidates, Decimal("800"), deadline=None)
 
         self.assertEqual(len(plan.stops), 1)
         self.assertEqual(plan.stops[0].gallons, Decimal("30"))
         self.assertEqual(plan.total_cost, Decimal("90.00"))
 
     def test_sub_500_trip_needs_no_stop(self):
-        plan = solve([], Decimal("480"))
+        plan = solve([], Decimal("480"), deadline=None)
 
         self.assertEqual(plan.stops, [])
         self.assertEqual(plan.total_cost, Decimal("0"))
@@ -52,7 +60,7 @@ class InfeasibleRouteTests(SimpleTestCase):
 
     def test_infeasible_gap_from_start_to_finish(self):
         with self.assertRaises(InfeasibleRouteError) as ctx:
-            solve([], Decimal("600"))
+            solve([], Decimal("600"), deadline=None)
 
         err = ctx.exception
         self.assertEqual(err.from_station, "START")
@@ -64,7 +72,7 @@ class InfeasibleRouteTests(SimpleTestCase):
         candidates = [make_candidate("3.00", "600", name="TOO_FAR", opis_id=1)]
 
         with self.assertRaises(InfeasibleRouteError) as ctx:
-            solve(candidates, Decimal("900"))
+            solve(candidates, Decimal("900"), deadline=None)
 
         err = ctx.exception
         self.assertEqual(err.from_station, "START")
@@ -83,7 +91,7 @@ class GreedyOptimalityTests(SimpleTestCase):
             make_candidate("2.00", "800", name="FAR_CHEAP", opis_id=2),
         ]
 
-        plan = solve(candidates, Decimal("1000"))
+        plan = solve(candidates, Decimal("1000"), deadline=None)
 
         self.assertEqual(plan.total_cost, Decimal("130.00"))
         self.assertEqual(plan.total_gallons, Decimal("50"))
@@ -94,7 +102,7 @@ class GreedyOptimalityTests(SimpleTestCase):
             make_candidate("3.00", "400", name="NEAR_EXPENSIVE", opis_id=1),
         ]
 
-        plan = solve(candidates, Decimal("1000"))
+        plan = solve(candidates, Decimal("1000"), deadline=None)
 
         self.assertEqual(plan.total_cost, Decimal("130.00"))
         self.assertEqual(plan.total_gallons, Decimal("50"))
@@ -105,7 +113,7 @@ class GreedyOptimalityTests(SimpleTestCase):
             make_candidate("2.80", "700", name="SECOND", opis_id=2),
         ]
 
-        plan = solve(candidates, Decimal("800"))
+        plan = solve(candidates, Decimal("800"), deadline=None)
 
         self.assertEqual(plan.total_cost, Decimal("88.00"))
 
@@ -120,7 +128,7 @@ class TieBreakAndEndpointTests(SimpleTestCase):
             make_candidate("2.00", "300", name="NEAR_TIE", opis_id=2),
         ]
 
-        plan = solve(candidates, Decimal("800"))
+        plan = solve(candidates, Decimal("800"), deadline=None)
 
         self.assertEqual(len(plan.stops), 1)
         self.assertEqual(plan.stops[0].distance_from_start_mi, Decimal("300"))
@@ -129,7 +137,7 @@ class TieBreakAndEndpointTests(SimpleTestCase):
     def test_end_of_trip_no_overbuy(self):
         candidates = [make_candidate("3.00", "400", name="LAST", opis_id=1)]
 
-        plan = solve(candidates, Decimal("850"))
+        plan = solve(candidates, Decimal("850"), deadline=None)
 
         self.assertEqual(len(plan.stops), 1)
         self.assertEqual(plan.stops[0].gallons, Decimal("35"))
@@ -143,7 +151,7 @@ class PrecisionTests(SimpleTestCase):
     def test_total_cost_is_not_rounded_to_cents(self):
         candidates = [make_candidate("2.87912345", "400", name="PRECISE", opis_id=1)]
 
-        plan = solve(candidates, Decimal("850"))
+        plan = solve(candidates, Decimal("850"), deadline=None)
 
         self.assertEqual(plan.total_cost, Decimal("100.76932075"))
         self.assertNotEqual(plan.total_cost, Decimal("100.77"))
@@ -154,29 +162,29 @@ class InvalidInputTests(SimpleTestCase):
 
     def test_negative_total_route_mi_is_invalid(self):
         with self.assertRaises(InvalidRouteInputError):
-            solve([], Decimal("-5"))
+            solve([], Decimal("-5"), deadline=None)
 
     def test_zero_total_route_mi_is_invalid(self):
         with self.assertRaises(InvalidRouteInputError):
-            solve([], Decimal("0"))
+            solve([], Decimal("0"), deadline=None)
 
     def test_negative_candidate_price_is_invalid(self):
         candidates = [make_candidate("-1", "100", name="BAD_PRICE", opis_id=1)]
 
         with self.assertRaises(InvalidRouteInputError):
-            solve(candidates, Decimal("500"))
+            solve(candidates, Decimal("500"), deadline=None)
 
     def test_candidate_distance_beyond_route_is_invalid(self):
         candidates = [make_candidate("3.00", "600", name="TOO_FAR", opis_id=1)]
 
         with self.assertRaises(InvalidRouteInputError):
-            solve(candidates, Decimal("500"))
+            solve(candidates, Decimal("500"), deadline=None)
 
     def test_negative_candidate_distance_is_invalid(self):
         candidates = [make_candidate("3.00", "-10", name="NEGATIVE_POS", opis_id=1)]
 
         with self.assertRaises(InvalidRouteInputError):
-            solve(candidates, Decimal("500"))
+            solve(candidates, Decimal("500"), deadline=None)
 
 
 class StartingFuelTests(SimpleTestCase):
@@ -189,8 +197,8 @@ class StartingFuelTests(SimpleTestCase):
             make_candidate("2.00", "800", name="FAR_CHEAP", opis_id=2),
         ]
 
-        explicit = solve(candidates, Decimal("1000"), starting_fuel=Decimal(1))
-        omitted = solve(candidates, Decimal("1000"))
+        explicit = solve(candidates, Decimal("1000"), starting_fuel=Decimal(1), deadline=None)
+        omitted = solve(candidates, Decimal("1000"), deadline=None)
 
         self.assertEqual(explicit.stops, omitted.stops)
         self.assertEqual(explicit.total_cost, omitted.total_cost)
@@ -205,7 +213,7 @@ class StartingFuelTests(SimpleTestCase):
 
         for starting_fuel in (Decimal("0.25"), Decimal("0.5"), Decimal("0.99")):
             with self.subTest(starting_fuel=starting_fuel):
-                plan = solve(candidates, Decimal("520"), starting_fuel=starting_fuel)
+                plan = solve(candidates, Decimal("520"), starting_fuel=starting_fuel, deadline=None)
 
                 self.assertTrue(all(s.opis_id is not None for s in plan.stops))
                 self.assertEqual(len(plan.stops), 1)
@@ -215,7 +223,7 @@ class StartingFuelTests(SimpleTestCase):
         # Zero fuel at a non-purchasable origin is genuinely infeasible --
         # the old solver would instead have granted a free full tank.
         with self.assertRaises(InfeasibleRouteError):
-            solve([], Decimal("100"), starting_fuel=Decimal("0.0"))
+            solve([], Decimal("100"), starting_fuel=Decimal("0.0"), deadline=None)
 
     def test_reduced_reachability_raises_with_partial_range_not_tank_capacity(self):
         candidates = [make_candidate("3.00", "400", name="A", opis_id=1)]
@@ -227,6 +235,7 @@ class StartingFuelTests(SimpleTestCase):
                 tank_range_mi=Decimal("500"),
                 mpg=Decimal("10"),
                 starting_fuel=Decimal("0.5"),
+                deadline=None,
             )
 
         err = ctx.exception
@@ -244,6 +253,7 @@ class StartingFuelTests(SimpleTestCase):
             tank_range_mi=Decimal("500"),
             mpg=Decimal("10"),
             starting_fuel=Decimal("0.5"),
+            deadline=None,
         )
 
         self.assertEqual(len(plan.stops), 1)
@@ -254,11 +264,11 @@ class StartingFuelTests(SimpleTestCase):
 
     def test_starting_fuel_below_zero_is_invalid(self):
         with self.assertRaises(InvalidRouteInputError):
-            solve([], Decimal("100"), starting_fuel=Decimal("-0.1"))
+            solve([], Decimal("100"), starting_fuel=Decimal("-0.1"), deadline=None)
 
     def test_starting_fuel_above_one_is_invalid(self):
         with self.assertRaises(InvalidRouteInputError):
-            solve([], Decimal("100"), starting_fuel=Decimal("1.5"))
+            solve([], Decimal("100"), starting_fuel=Decimal("1.5"), deadline=None)
 
 
 class RationaleTests(SimpleTestCase):
@@ -276,6 +286,7 @@ class RationaleTests(SimpleTestCase):
             Decimal("540"),
             tank_range_mi=Decimal("300"),
             mpg=Decimal("10"),
+            deadline=None,
         )
 
         self.assertEqual(len(plan.stops), 3)
@@ -326,6 +337,7 @@ class RationaleTests(SimpleTestCase):
             Decimal("400"),
             tank_range_mi=Decimal("200"),
             mpg=Decimal("10"),
+            deadline=None,
         )
 
         self.assertEqual(len(plan.stops), 2)
@@ -371,6 +383,7 @@ class RationaleTests(SimpleTestCase):
             Decimal("900"),
             tank_range_mi=Decimal("500"),
             mpg=Decimal("10"),
+            deadline=None,
         )
 
         # Only X2 is ever purchased -- the solver hops directly to it from
@@ -405,6 +418,7 @@ class RationaleTests(SimpleTestCase):
             mpg=Decimal("10"),
             starting_fuel=Decimal("0.02"),
             penalty=Decimal("35"),
+            deadline=None,
         )
 
         self.assertEqual(len(bypass_plan.stops), 2)

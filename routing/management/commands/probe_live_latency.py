@@ -292,7 +292,16 @@ class Command(BaseCommand):
         `test_live_latency_probe.py`'s module docstring, "Why the
         workstation baseline is measured fresh, not cited verbatim", for
         why this is not simply read off `dp.py`'s own calibration
-        comment. Costs no network call and no live-service budget."""
+        comment. Costs no network call and no live-service budget.
+
+        `solver.solve()` below passes `deadline=None` (plan 18.1-05's
+        call-site audit): this baseline must report the DP's true,
+        untimed solve time so the workstation-to-live transfer factor
+        this command derives compares like with like -- a workstation
+        run capped at the production deadline would silently understate
+        how much slower the deployed hardware really is on a cell whose
+        untimed time exceeds that cap.
+        """
         import io
 
         from django.core.management import call_command
@@ -327,6 +336,7 @@ class Command(BaseCommand):
                     mpg=Decimal(vehicle["mpg"]),
                     starting_fuel=Decimal(vehicle["starting_fuel"]),
                     penalty=settings.FUEL_STOP_PENALTY_USD,
+                    deadline=None,  # D-05: untimed -- the workstation baseline must report the DP's true solve time so the workstation-to-live transfer factor compares like with like
                 )
                 times_s.append(time.perf_counter() - started)
                 strategy = plan.strategy

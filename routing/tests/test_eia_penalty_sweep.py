@@ -151,6 +151,7 @@ class EiaPenaltyCouplingGuardTests(TestCase):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=OBJECTIVE_PARAMS.penalty,
+                deadline=None,  # D-05: untimed -- the coupling verdict is about station selection, not timing
             )
             stop_counts[multiplier] = len(plan.stops)
 

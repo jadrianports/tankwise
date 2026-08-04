@@ -1,3 +1,10 @@
+"""Every fixed-charge `solve()` call below passes `deadline=None` (plan
+18.1-05's call-site audit): each one compares the DP's plan against the
+price-blind baseline over a tiny synthetic candidate list -- the
+assertion is about computed cost/gallons, never timing. `solve()`'s
+default deadline is now production-on (D-05), so these calls would
+otherwise inherit the production cap by accident.
+"""
 from decimal import Decimal
 
 from django.test import SimpleTestCase
@@ -115,7 +122,7 @@ class SavingsTests(SimpleTestCase):
     def test_compute_savings_zero_naive_cost_returns_none_percent(self):
         candidates = []
         naive = naive_baseline.solve(candidates, Decimal("100"))
-        optimal = solve(candidates, Decimal("100"))
+        optimal = solve(candidates, Decimal("100"), deadline=None)
 
         savings = compute_savings(optimal, naive)
 
@@ -137,7 +144,7 @@ class BaselineIsUpperBoundTests(SimpleTestCase):
         ]
 
         naive_plan = naive_baseline.solve(candidates, Decimal("900"))
-        optimal_plan = solve(candidates, Decimal("900"))
+        optimal_plan = solve(candidates, Decimal("900"), deadline=None)
 
         self.assertGreaterEqual(naive_plan.total_cost, optimal_plan.total_cost)
 
@@ -172,7 +179,7 @@ class NeverBuysUnburnedFuelTests(SimpleTestCase):
         total = Decimal("900")
 
         naive_plan = naive_baseline.solve(candidates, total)
-        optimal_plan = solve(candidates, total)
+        optimal_plan = solve(candidates, total, deadline=None)
 
         self.assertEqual(naive_plan.total_gallons, optimal_plan.total_gallons)
 
@@ -188,7 +195,7 @@ class NeverBuysUnburnedFuelTests(SimpleTestCase):
         total = Decimal("511")
 
         naive_plan = naive_baseline.solve(candidates, total)
-        optimal_plan = solve(candidates, total)
+        optimal_plan = solve(candidates, total, deadline=None)
         savings = compute_savings(optimal_plan, naive_plan)
 
         self.assertLess(savings.amount, Decimal("1"))

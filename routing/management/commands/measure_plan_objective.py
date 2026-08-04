@@ -217,8 +217,13 @@ class Command(BaseCommand):
         row.greedy_savings_percent = greedy_savings.percent
 
         # The DP arm -- the real production seam (solver.solve()), never
-        # dp.solve_fixed_charge called directly, so this measures exactly
-        # what a live request would return, strategy dispatch included.
+        # dp.solve_fixed_charge called directly, so the estimate-vs-budget
+        # dispatch decision (heuristic vs exact_dp) still matches a live
+        # request exactly. `deadline=None` (plan 18.1-05) opts this call
+        # out of the production wall-clock cap specifically, because this
+        # command's own figures must describe what the DP actually
+        # computes for an admitted cell, not how far it got before a
+        # deadline would have cut it off.
         try:
             dp_plan = solver.solve(
                 candidates,
@@ -227,6 +232,7 @@ class Command(BaseCommand):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=penalty,
+                deadline=None,  # D-05: untimed -- this offline figure must describe the DP's objective, not the cap
             )
         except InfeasibleRouteError:
             row.dp_infeasible = True
@@ -366,6 +372,7 @@ class Command(BaseCommand):
                     mpg=OBJECTIVE_PARAMS.mpg,
                     starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                     penalty=penalty,
+                    deadline=None,  # D-05: untimed -- this offline figure must describe the DP's objective, not the cap
                 )
             except InfeasibleRouteError:
                 infeasible += 1

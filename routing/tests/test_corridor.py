@@ -522,4 +522,6 @@ class ZeroLengthRouteTests(CorridorTestCase):
         cands = candidates(route)
 
         with self.assertRaises(InvalidRouteInputError):
-            solve(cands, route.total_route_mi)
+            # D-05: untimed -- this asserts _validate's own input guard,
+            # never reached far enough to time-box anything.
+            solve(cands, route.total_route_mi, deadline=None)

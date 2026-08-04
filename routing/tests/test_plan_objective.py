@@ -109,6 +109,7 @@ class PlanObjectiveMeasurementTestCase(TestCase):
             mpg=OBJECTIVE_PARAMS.mpg,
             starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
             penalty=penalty,
+            deadline=None,  # D-05: untimed -- the D-31 stop-count guard asserts what the objective produces
         )
 
 

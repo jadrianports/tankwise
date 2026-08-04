@@ -140,6 +140,7 @@ class Command(BaseCommand):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=OBJECTIVE_PARAMS.penalty,
+                deadline=None,  # D-05: untimed -- the coupling verdict is about station selection, not timing
             )
             station_ids = tuple(sorted(s.opis_id for s in plan.stops))
             if multiplier == Decimal("1.0"):

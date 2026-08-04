@@ -841,7 +841,9 @@ class RouteViewBaselineSavingsUnitTests(SimpleTestCase):
             name="Only", opis_id=1, price_per_gallon=Decimal("3.00"),
             distance_from_start_mi=Decimal("400"),
         )
-        optimal_plan = solver.solve([candidate], Decimal("600"), **_UNIT_VEHICLE)
+        # D-05: untimed -- a single-candidate unit test of
+        # `_baseline_savings`'s own comparison logic, not of dispatch timing.
+        optimal_plan = solver.solve([candidate], Decimal("600"), **_UNIT_VEHICLE, deadline=None)
         winner = self._winner([candidate], optimal_plan)
 
         view = self._view()

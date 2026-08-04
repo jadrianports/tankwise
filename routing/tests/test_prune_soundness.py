@@ -828,6 +828,7 @@ class PruneGreedyDifferentialTests(SimpleTestCase):
                 tank_range_mi=tank_range_mi,
                 mpg=mpg,
                 starting_fuel=starting_fuel,
+                deadline=None,  # D-05: untimed -- this property compares the DP's exact answer, never its wall clock
             )
             unpruned_feasible = True
         except InfeasibleRouteError:
@@ -841,6 +842,7 @@ class PruneGreedyDifferentialTests(SimpleTestCase):
                 tank_range_mi=tank_range_mi,
                 mpg=mpg,
                 starting_fuel=starting_fuel,
+                deadline=None,  # D-05: untimed -- this property compares the DP's exact answer, never its wall clock
             )
             pruned_feasible = True
         except InfeasibleRouteError:
@@ -1068,6 +1070,7 @@ class PruneHeuristicReceivesFullCandidateListTests(TestCase):
                 mpg=Decimal(10),
                 starting_fuel=Decimal("0.5"),
                 penalty=Decimal(35),
+                deadline=None,  # D-05: untimed -- this property compares the DP's exact answer, never its wall clock
             )
 
         self.assertEqual(
