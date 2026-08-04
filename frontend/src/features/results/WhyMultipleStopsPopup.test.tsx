@@ -18,16 +18,28 @@ test('renders a dialog with an accessible name naming the multiple-stops questio
   expect(screen.getByRole('dialog', { name: /why multiple fuel stops/i })).toBeInTheDocument();
 });
 
-test('states that the solver minimizes total dollars rather than stop count', () => {
+test('states that a stop is only taken when the cheaper fuel beats the cost of stopping', () => {
   render(<WhyMultipleStopsPopup open onClose={() => {}} />);
   expect(
-    screen.getByText(/minimizes total dollars spent on fuel, not the number of stops/i)
+    screen.getByText(/only takes a stop when the cheaper fuel there beats the cost of pulling over/i)
   ).toBeInTheDocument();
 });
 
-test('explains that stops beyond the range floor are opportunistic cheap-fuel purchases', () => {
+test('explains the physical tank-range floor and that the remaining stops pay for themselves', () => {
   render(<WhyMultipleStopsPopup open onClose={() => {}} />);
-  expect(screen.getByText(/fuel was cheap enough there to lower the trip total/i)).toBeInTheDocument();
+  expect(
+    screen.getByText(/some stops are unavoidable no matter how the fuel is bought/i)
+  ).toBeInTheDocument();
+});
+
+test('states the roughly $35 per-stop charge and its industry provenance', () => {
+  render(<WhyMultipleStopsPopup open onClose={() => {}} />);
+  expect(screen.getByText(/about \$35 on industry operating-cost figures/i)).toBeInTheDocument();
+});
+
+test('discloses that the cost shown is fuel only', () => {
+  render(<WhyMultipleStopsPopup open onClose={() => {}} />);
+  expect(screen.getByText(/The cost shown is fuel only/i)).toBeInTheDocument();
 });
 
 test('clicking the Close control invokes onClose exactly once', () => {
