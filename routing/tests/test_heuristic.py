@@ -20,6 +20,7 @@ from routing.services import corridor, dp, greedy, heuristic
 from routing.services.dp import preflight_gap_check
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
+from routing.services.solver import PurchaseReason
 from routing.tests.test_corridor_fixtures import (
     factor_lookup_for_basis,
     load_corridor_route,
@@ -355,3 +356,71 @@ class QualityGapAgainstTheExactDPTests(TestCase):
                     f"{self._MAX_PENALIZED_OBJECTIVE_RATIO}x the DP's "
                     f"{dp_plan.penalised_objective}",
                 )
+
+
+class TerminalRationaleInvariantTests(TestCase):
+    """A plan's terminal stop must never carry a rationale naming a station
+    that is not actually in the plan. `dallas_tx-seattle_wa` at the SPA's
+    Sedan preset (32 mpg / 450 mi tank -- `frontend/src/constants/
+    presets.ts`) reproduces this OFFLINE, on the "neutral" price basis, with
+    the same station names the live 2026-08-04 browser sweep recorded (see
+    `.planning/todos/pending/final-stop-names-a-station-not-in-the-plan.md`
+    before it was closed) -- so this is an anchored regression test against a
+    corridor fixture, not a constructed witness. The heuristic's own module
+    constants `STARTING_FUEL`/`PENALTY` are reused rather than the Sedan
+    preset's own `starting_fuel: 1`, matching this file's existing
+    convention (`FewerStopsThanGreedyOnHeavyCorridorsTests` etc.) -- the
+    defect reproduces at both `starting_fuel` values, so the module default
+    is sufficient and keeps this test consistent with its siblings.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_stations", stdout=io.StringIO())
+        corridor.warm_index()
+
+    def setUp(self):
+        self.factor_for = factor_lookup_for_basis("neutral")
+
+    # Sedan preset literals, transcribed from frontend/src/constants/
+    # presets.ts -- there is no loop-over-vehicle-presets helper in this
+    # file, so these are passed explicitly.
+    _SEDAN_MPG = Decimal(32)
+    _SEDAN_TANK_RANGE_MI = Decimal(450)
+
+    def test_terminal_stop_never_names_an_unvisited_target_on_dallas_seattle_sedan(self):
+        route = load_corridor_route("dallas_tx-seattle_wa")
+        candidates = corridor.candidates(route, factor_for=self.factor_for)
+        plan = heuristic.solve_penalty_aware_heuristic(
+            candidates,
+            route.total_route_mi,
+            tank_range_mi=self._SEDAN_TANK_RANGE_MI,
+            mpg=self._SEDAN_MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+        )
+        last = plan.stops[-1]
+        self.assertNotEqual(
+            last.purchase_reason,
+            PurchaseReason.REACH_CHEAPER_STOP,
+            f"terminal stop {last.name!r} (opis_id={last.opis_id}) carries "
+            f"purchase_reason={last.purchase_reason!r}, naming "
+            f"{last.reason_target_name!r} (opis_id={last.reason_target_opis_id!r}) "
+            "as its target -- but that station is not in this plan's own "
+            "fuel_stops[], so the plan is telling the driver to fuel up to "
+            "reach somewhere they will never visit. A terminal stop must "
+            "carry a terminal-appropriate reason (e.g. reach_finish) with "
+            "no target.",
+        )
+        self.assertIsNone(
+            last.reason_target_opis_id,
+            f"terminal stop {last.name!r} still names a target opis_id "
+            f"{last.reason_target_opis_id!r} after the reason check -- both "
+            "target fields must be null on a terminal stop",
+        )
+        self.assertIsNone(
+            last.reason_target_name,
+            f"terminal stop {last.name!r} still names a target station "
+            f"{last.reason_target_name!r} after the reason check -- both "
+            "target fields must be null on a terminal stop",
+        )
