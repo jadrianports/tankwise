@@ -261,6 +261,106 @@ LIVE_PROBE_CACHE_BUST_LADDER = (Decimal("0.99"), Decimal("0.98"), Decimal("0.97"
 # sample.
 LIVE_PROBE_REPEATS = 2
 
+# --- RECOVERY_PROBE_CELLS (D-16/D-17) ----------------------------------------
+#
+# The COMMITTED OUTPUT of `select_live_probe_cells()`
+# (`routing.tests.test_dispatch_recovery`), applied to plan 18.1-07's
+# measured 26-cell offline rows (`18.1-07-SUMMARY.md`'s verbatim per-cell
+# table) at plan 18.1-08's ADOPTED rung -- 130,000, the genuine
+# `adopt_budget_rung()` result plan 18.1-08 measured against real
+# DP-attempt timings and recorded verbatim in `dp.py`'s own
+# `DP_TRANSITION_BUDGET` comment, even though `DP_TRANSITION_BUDGET` itself
+# was NOT raised to that value (stays 50,000 -- MEASURED, NOT SHIPPED; see
+# `18.1-08-SUMMARY.md`). D-17's rule is applied to the rung the pinned
+# `adopt_budget_rung()` genuinely selected, not to the currently-shipped
+# constant -- the rung is what decides which cell counts as "newly
+# admitted" for the third probe slot; the shipped constant is a separate,
+# deliberately unresolved shipping decision.
+#
+# Reproduced by direct call, not by hand: `select_live_probe_cells(rows,
+# 130_000)` returns, in order:
+#
+#   1. Both `_LIVE_PROBE_RETENTION_FLOOR_CELLS`, always, first:
+#      `sacramento_ca-salt_lake_city_ut`@500mi, `dallas_tx-seattle_wa`
+#      @1050mi.
+#   2. A third cell chosen from whatever is newly admitted in the
+#      (70,000, 130,000] band relative to the 50,000 baseline. The only
+#      row in that band is `dallas_tx-seattle_wa`@1050mi itself (estimate
+#      117,895) -- already present as a retention-floor member, so the
+#      rule's own "already in the set" branch applies and it is not
+#      selected twice. No OTHER row falls in that band (the next-lowest
+#      newly-admitted estimate above 70,000 is 150,905, at rung 200,000 --
+#      outside the (70,000, 130,000] window this rung opens). With no
+#      distinct cell available in-band, the rule's own fallback applies:
+#      the demo cell (`is_demo_cell=True`) with the largest
+#      `offline_untimed_solve_seconds` among plan 07's rows --
+#      `demo_la_ca-denver_co-chicago_il`@1050mi (0.0818s), ranked above
+#      `demo_la_ca-new_york_ny`@1050mi (0.0021s).
+#
+# Stated plainly, per this plan's own instruction: `dallas_tx-seattle_wa`
+# IS in this set. It is selected mechanically, by rule, as one of the two
+# mandatory D-17 retention-floor cells -- not because it separately won
+# the third-slot ranking (it did not; it was already present when that
+# ranking's fallback ran). No cell was added or removed by hand after
+# seeing this output.
+#
+# `demo_la_ca-denver_co-chicago_il` is a multi-leg demo chip (one
+# waypoint, Denver CO) -- its `waypoints` tuple is threaded through
+# unchanged by `probe_live_latency.py`'s `--recovery` sweep, the one
+# extension `_post_route`/`_measure_one_repeat` needed to stay reusable
+# for a cell shape the main probe matrix (below) never carries.
+#
+# `vehicle` mpg/tank_range_mi per entry matches the exact vehicle plan
+# 07's `estimate`/`offline_untimed_solve_seconds` figures above were
+# measured against for that cell (`ADMISSION_MANIFEST_VEHICLE`: mpg=10 for
+# the two corridor cells; `DEMO_CHIP_VEHICLE`: mpg=6.5 for the demo cell) --
+# `starting_fuel` in each entry is a placeholder, unconditionally
+# overridden per-repeat by `LIVE_PROBE_CACHE_BUST_LADDER`, exactly as the
+# main probe matrix's own entries already work.
+#
+# `pre_phase_shipped_arm` is `recovery_verdict()`'s own
+# `shipped_policy_strategy` input -- each cell's `ADMISSION_MANIFEST`
+# boolean (`routing/tests/test_solver_dispatch.py`) translated to a
+# `SolverStrategy` string: `sacramento_ca-salt_lake_city_ut`@500mi and
+# `demo_la_ca-denver_co-chicago_il`@1050mi are both already `True`
+# (`exact_dp`) under the unchanged 50,000 boundary; `dallas_tx-seattle_wa`
+# @1050mi is `False` (`penalty_aware_heuristic`) -- the one cell this
+# probe exists to check for recovery.
+RECOVERY_PROBE_CELLS = (
+    {
+        "slug": "sacramento_ca-salt_lake_city_ut",
+        "label": "Sacramento, CA -> Salt Lake City, UT",
+        "start": "38.567694,-121.468161",
+        "finish": "40.776928,-111.930991",
+        "tank_range_mi": Decimal(500),
+        "vehicle": {"mpg": "10", "tank_range_mi": "500", "starting_fuel": "0.5"},
+        "known_dispatch_arm": "exact_dp",
+        "pre_phase_shipped_arm": "exact_dp",
+    },
+    {
+        "slug": "dallas_tx-seattle_wa",
+        "label": "Dallas, TX -> Seattle, WA",
+        "start": "32.7767,-96.7970",
+        "finish": "47.6062,-122.3321",
+        "tank_range_mi": Decimal(1050),
+        "vehicle": {"mpg": "10", "tank_range_mi": "1050", "starting_fuel": "0.5"},
+        "known_dispatch_arm": "penalty_aware_heuristic",
+        "pre_phase_shipped_arm": "penalty_aware_heuristic",
+    },
+    {
+        "slug": "demo_la_ca-denver_co-chicago_il",
+        "label": "Los Angeles, CA -> Denver, CO -> Chicago, IL",
+        "start": "34.0522,-118.2437",
+        "waypoints": ("39.7392,-104.9903",),
+        "finish": "41.8781,-87.6298",
+        "tank_range_mi": Decimal(1050),
+        "vehicle": {"mpg": "6.5", "tank_range_mi": "1050", "starting_fuel": "1"},
+        "known_dispatch_arm": "exact_dp",
+        "pre_phase_shipped_arm": "exact_dp",
+    },
+)
+
+
 # --- The 422-after-55s anomaly reproduction ----------------------------------
 #
 # The exact request `18-VERIFICATION.md`'s own hotfix record and this
@@ -449,3 +549,51 @@ class LiveLatencyProbeGuardTests(SimpleTestCase):
             "a worker-timeout breach reads as an indistinguishable client "
             "abort instead of an observable server error.",
         )
+
+    def test_recovery_probe_cells_stay_within_the_pinned_cell_and_request_budget(self):
+        """D-17: `RECOVERY_PROBE_CELLS` must never grow past
+        `LIVE_PROBE_MAX_CELLS`, and its own implied worst-case request
+        count (entries * repeats * ladder rungs + one wake) must stay at
+        or below `LIVE_PROBE_MAX_REQUESTS` -- the same budget arithmetic
+        `test_dispatch_recovery.py`'s own well-formedness guard already
+        checks for the rule in the abstract, re-checked here against the
+        actual committed cell set."""
+        from routing.tests.test_dispatch_recovery import LIVE_PROBE_MAX_CELLS
+
+        self.assertLessEqual(len(RECOVERY_PROBE_CELLS), LIVE_PROBE_MAX_CELLS)
+
+        implied_requests = (
+            len(RECOVERY_PROBE_CELLS) * LIVE_PROBE_REPEATS * len(LIVE_PROBE_CACHE_BUST_LADDER)
+            + 1
+        )
+        self.assertLessEqual(
+            implied_requests,
+            LIVE_PROBE_MAX_REQUESTS,
+            "RECOVERY_PROBE_CELLS' own implied request count must stay "
+            "inside the existing live-probe request budget.",
+        )
+
+    def test_every_recovery_probe_cell_carries_a_known_solver_strategy_value(self):
+        """Every `known_dispatch_arm` and `pre_phase_shipped_arm` on
+        `RECOVERY_PROBE_CELLS` must be one of the two real
+        `SolverStrategy` values `solve()` actually emits -- catches a
+        typo'd or stale strategy string that would silently never match
+        anything `recovery_verdict()` compares against."""
+        from routing.services.solver import SolverStrategy
+
+        known_values = {SolverStrategy.EXACT_DP, SolverStrategy.PENALTY_AWARE_HEURISTIC}
+        for cell in RECOVERY_PROBE_CELLS:
+            self.assertIn(cell["known_dispatch_arm"], known_values)
+            self.assertIn(cell["pre_phase_shipped_arm"], known_values)
+
+    def test_recovery_probe_cells_carry_the_shape_live_probe_cells_entries_carry(self):
+        """Every `RECOVERY_PROBE_CELLS` entry carries the same base shape
+        the main probe matrix's entries already use (slug, label, start,
+        finish, vehicle, known_dispatch_arm), plus the two D-17/D-18
+        additions (tank_range_mi, pre_phase_shipped_arm) this plan's own
+        verdict rule needs."""
+        base_shape = {"slug", "label", "start", "finish", "vehicle", "known_dispatch_arm"}
+        for cell in RECOVERY_PROBE_CELLS:
+            self.assertTrue(base_shape.issubset(cell.keys()))
+            self.assertIn("tank_range_mi", cell)
+            self.assertIn("pre_phase_shipped_arm", cell)
