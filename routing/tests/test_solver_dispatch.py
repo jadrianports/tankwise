@@ -22,6 +22,8 @@ from routing.services import corridor, dp
 from routing.services.prune import prune_dominated_candidates
 from routing.services.solver import Candidate, SolverStrategy, solve
 from routing.tests.test_corridor_fixtures import (
+    CORRIDORS,
+    TANK_RANGES_MI,
     factor_lookup_for_basis,
     load_corridor_route,
 )
@@ -399,4 +401,182 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
             "consequence (dp.py's own pinned comment), not a bug. If this "
             "ever changes to EXACT_DP, dp.DISPATCH_RETENTION_FLOOR's own "
             "proof must be re-checked, not silently accepted.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# ADMISSION_MANIFEST_VEHICLE -- D-14's match-then-represent rule. THREE
+# distinct vehicles exist across this phase's evidence base and must never
+# be conflated:
+#
+#   1. THIS manifest's corridor vehicle (below): mpg=10, starting_fuel=0.5,
+#      neutral price basis -- the same vehicle CALIBRATION_CELLS above
+#      already measures against (MPG, STARTING_FUEL, PENALTY at the top of
+#      this module), chosen specifically so the admission figures here are
+#      comparable to the 41.7% figure (non-scalar-dispatch-rule.md) they
+#      replace, not a fresh, incomparable measurement.
+#   2. The SPA hero preset used for the two demo-chip cells this manifest
+#      does NOT cover: Semi loaded -- 6.5 mpg / 1050 mi tank / full tank.
+#      That is literally what a visitor clicking the demo chip sends.
+#   3. The API default used by DeployedHardwareDispatchTests above and the
+#      post-deploy smoke gate: 10 mpg / 500 mi tank / full tank
+#      (starting_fuel=1, NOT 0.5 -- do not confuse with #1 above; the mpg
+#      figure happens to coincide, the starting fuel does not).
+# ---------------------------------------------------------------------------
+ADMISSION_MANIFEST_VEHICLE = {
+    "mpg": MPG,
+    "starting_fuel": STARTING_FUEL,
+    "price_basis": "neutral",
+}
+
+# ---------------------------------------------------------------------------
+# ADMISSION_MANIFEST -- D-15: hand-pinned constants, HUMAN-EDITED ONLY.
+#
+# 24 cells: the full cross product of CORRIDORS (twelve slugs) and
+# TANK_RANGES_MI (two pinned tank ranges), at ADMISSION_MANIFEST_VEHICLE's
+# vehicle. Each value is the deterministic admission decision -- `estimate
+# <= dp.DP_TRANSITION_BUDGET`, computed over the pruned search set exactly
+# as solver.solve() computes it -- derived by running the computation once
+# (2026-08-04) and transcribing the result by hand. The trailing comment on
+# each entry carries that cell's measured estimate.
+#
+# There is NO regenerate path anywhere in this repository: no command
+# writes this table, and none should ever be added. A `--regenerate` flag
+# would collapse "make the test pass" into a single command, which is
+# precisely the failure mode criterion 1 exists to prevent (D-15). Changing
+# a pinned value here is a deliberate human edit in a reviewable diff, the
+# same discipline every other pinned threshold in this codebase already
+# follows (DP_TRANSITION_BUDGET, DISPATCH_RETENTION_FLOOR, PENALTY_LADDER,
+# ...).
+#
+# Cross-checked 2026-08-04 against 18.1-RESEARCH.md's own "D-03 ladder
+# grounding" 24-cell table (measured the same session, same vehicle, same
+# pruned-search-set method): every estimate below reproduces that table's
+# figure exactly, byte-for-byte -- zero discrepancies found. See
+# 18.1-02-SUMMARY.md for the full side-by-side record.
+# ---------------------------------------------------------------------------
+ADMISSION_MANIFEST = {
+    ("houston_tx-chicago_il", 1050): True,  # estimate 23
+    ("nashville_tn-buffalo_ny", 1050): True,  # estimate 23
+    ("sacramento_ca-salt_lake_city_ut", 1050): True,  # estimate 117
+    ("sacramento_ca-salt_lake_city_ut", 500): True,  # estimate 124
+    ("fargo_nd-amarillo_tx", 1050): True,  # estimate 812
+    ("phoenix_az-minneapolis_mn", 1050): True,  # estimate 4,809
+    ("nashville_tn-buffalo_ny", 500): True,  # estimate 8,168
+    ("san_diego_ca-jacksonville_fl", 1050): True,  # estimate 15,738
+    ("phoenix_az-minneapolis_mn", 500): True,  # estimate 16,322
+    ("miami_fl-boston_ma", 1050): True,  # estimate 19,827
+    ("jacksonville_fl-bangor_me", 1050): True,  # estimate 23,013
+    ("atlanta_ga-denver_co", 1050): True,  # estimate 32,487
+    ("fargo_nd-amarillo_tx", 500): True,  # estimate 41,832
+    ("houston_tx-chicago_il", 500): True,  # estimate 48,926
+    # --------------------------- 50,000 boundary (dp.DP_TRANSITION_BUDGET)
+    ("dallas_tx-seattle_wa", 500): False,  # estimate 61,944 -- known live-breaching cell (pre-hotfix)
+    ("san_diego_ca-jacksonville_fl", 500): False,  # estimate 66,571
+    ("dallas_tx-seattle_wa", 1050): False,  # estimate 117,895 -- ROADMAP criterion 1's worked example, live-fine
+    ("atlanta_ga-denver_co", 500): False,  # estimate 150,905
+    ("miami_fl-boston_ma", 500): False,  # estimate 182,506
+    ("jacksonville_fl-bangor_me", 500): False,  # estimate 356,085
+    ("el_paso_tx-portland_me", 500): False,  # estimate 552,755
+    ("el_paso_tx-portland_me", 1050): False,  # estimate 685,744
+    ("toronto_oh-hillsboro_or", 500): False,  # estimate 1,384,311
+    ("toronto_oh-hillsboro_or", 1050): False,  # estimate 2,970,562
+}
+
+
+class DispatchAdmissionManifestTests(RealCorridorDispatchTestCase):
+    """D-12's silent-demotion-hole guard (plan 18.1-02, Task 1).
+
+    **What is asserted, and why:** the deterministic ADMISSION decision per
+    cell -- `estimate <= dp.DP_TRANSITION_BUDGET`, computed over the pruned
+    search set exactly as `solver.solve()` computes it -- against the
+    hand-pinned `ADMISSION_MANIFEST` above. This is a pure function of the
+    committed CSV dataset, the committed route geometry fixture, and the
+    `DP_TRANSITION_BUDGET` constant: reproducible on any machine, never
+    flaky. A CSV change shifts candidate density, which shifts the
+    estimate, which flips a cell's admission, and this test fails --
+    exactly the Overture-expansion hole
+    `.planning/todos/pending/non-scalar-dispatch-rule.md` names as its own
+    stated minimum bar before that expansion may merge.
+
+    **What is deliberately NOT asserted, and why:** end-to-end
+    `plan.strategy` per cell. Once the DP is time-boxed (this phase's
+    later plans), which arm an ADMITTED cell actually lands on stops being
+    deterministic -- an admitted cell can still breach the wall-clock
+    deadline on a slow box and fall back to the heuristic. A per-cell
+    strategy assertion here would therefore flake by construction the
+    moment time-boxing ships. Strategy is instead RECORDED (not asserted)
+    by `measure_dispatch_grid` (plan 07).
+
+    **The named, accepted limitation:** this guard does not catch
+    "admitted but always breaches on this hardware" -- a cell can be
+    correctly admitted here and still never actually complete live. The
+    D-08 breach log line and plan 07's measurement round are what cover
+    that gap; this guard only covers the admission decision itself.
+
+    **Why `DispatchDemotionGuardTests`/`DispatchRetentionFloorGuardTests`
+    above are KEPT alongside this class, not absorbed into it:** those two
+    assert LIVE dispatch outcomes on the two cells with real deployed
+    evidence, and their mutual anti-vacuity property (a demote-everything
+    policy passes the demotion guard trivially, a retain-everything policy
+    would pass the retention guard trivially, neither passes both) is a
+    different property from this manifest's per-cell exactness over the
+    full 24-cell grid. Both guards stay; neither replaces the other.
+    """
+
+    def test_admission_decision_matches_the_pinned_manifest(self):
+        for (slug, tank_range_mi), expected_admitted in ADMISSION_MANIFEST.items():
+            with self.subTest(slug=slug, tank_range_mi=tank_range_mi):
+                route, candidates = self._route_and_candidates(slug)
+                tank = Decimal(tank_range_mi)
+                search_set = prune_dominated_candidates(
+                    candidates,
+                    tank_range_mi=tank,
+                    total_route_mi=route.total_route_mi,
+                )
+                estimate = dp.estimate_transition_count(
+                    search_set,
+                    total_route_mi=route.total_route_mi,
+                    tank_range_mi=tank,
+                    starting_fuel=ADMISSION_MANIFEST_VEHICLE["starting_fuel"],
+                )
+                actual_admitted = estimate <= dp.DP_TRANSITION_BUDGET
+                self.assertEqual(
+                    actual_admitted,
+                    expected_admitted,
+                    f"{slug}@{tank_range_mi}mi: admission decision flipped -- "
+                    f"pinned {expected_admitted}, but the actual estimate is "
+                    f"{estimate} against dp.DP_TRANSITION_BUDGET="
+                    f"{dp.DP_TRANSITION_BUDGET} (admitted={actual_admitted}). "
+                    "Re-derive ADMISSION_MANIFEST deliberately (D-15: there is "
+                    "no regenerate path) rather than update this number "
+                    "reflexively -- a flip means the committed dataset, route "
+                    "geometry, or dispatch rule genuinely changed.",
+                )
+
+    def test_manifest_covers_every_corridor_and_tank_range(self):
+        expected_keys = {(c.slug, tank) for c in CORRIDORS for tank in TANK_RANGES_MI}
+        self.assertEqual(
+            set(ADMISSION_MANIFEST.keys()),
+            expected_keys,
+            "ADMISSION_MANIFEST must cover exactly the full cross product "
+            "of CORRIDORS x TANK_RANGES_MI -- a corridor added or removed "
+            "later must not silently slip through uncovered.",
+        )
+
+    def test_manifest_is_not_vacuous_in_either_direction(self):
+        values = set(ADMISSION_MANIFEST.values())
+        self.assertIn(
+            True,
+            values,
+            "ADMISSION_MANIFEST contains no admitted cell -- an all-False "
+            "manifest is satisfiable by a degenerate demote-everything "
+            "policy and would prove nothing.",
+        )
+        self.assertIn(
+            False,
+            values,
+            "ADMISSION_MANIFEST contains no demoted cell -- an all-True "
+            "manifest is satisfiable by a degenerate admit-everything "
+            "policy and would prove nothing.",
         )
