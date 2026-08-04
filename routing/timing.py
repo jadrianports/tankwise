@@ -19,6 +19,28 @@ class ServerTiming:
     def stage(self, name):
         return _Stage(self, name)
 
+    def record(self, name, elapsed_ms):
+        """Record a duration that was already measured elsewhere, rather
+        than timed by wrapping a block of code in `stage()`.
+
+        Some signals are a duration a caller measured itself -- e.g. a DP
+        deadline breach, measured inside the pure solver
+        (`routing.services.dp`), which has no `ServerTiming` object and
+        must never be given one (the solver stays free of any timing side
+        channel; see `routing.services.dp`/`solver.py`'s purity docstrings
+        and `SolverPurityTest`). `record()` is the public entry point for
+        exactly that case: the caller reads its own already-computed
+        elapsed figure and hands it in directly.
+
+        Accumulation semantics are unchanged from `stage()` -- calling
+        `record()` more than once under the same `name` in one request
+        sums into a single running total, not the last call's value alone.
+        This is the desired behaviour when more than one route alternative
+        breaches within the same request: the header reports the total
+        breach time across all of them.
+        """
+        self._record(name, elapsed_ms)
+
     def _record(self, name, elapsed_ms):
         if name not in self._durations_ms:
             self._durations_ms[name] = 0.0

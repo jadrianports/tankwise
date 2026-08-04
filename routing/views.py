@@ -44,6 +44,7 @@ per-view (`routing.throttles.RouteBurstThrottle` +
 `RouteSustainedThrottle`) rather than through a global DRF default, so
 `HealthView`/`ReadyView` are never throttled.
 """
+import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -68,13 +69,17 @@ from routing.serializers import (
     RouteResponseSerializer,
     price_freshness,
 )
-from routing.services import corridor, eia, naive_baseline, regions, solver
+from routing.services import corridor, dp, eia, naive_baseline, regions, solver
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.legs import build_legs, build_waypoint_markers
 from routing.services.mapbox import Route, geocode, get_routes
 from routing.services.multi_leg import flatten_route
 from routing.throttles import RouteBurstThrottle, RouteSustainedThrottle
 from routing.timing import ServerTiming
+
+# Standard Django per-module logger (18.1-06's D-08 breach signal is the
+# first thing in this file to need one).
+logger = logging.getLogger(__name__)
 
 # Sentinel substituted for a `None` route duration in `_select_winner`'s
 # tie-break key -- keeps the four-level comparison total even if a
@@ -773,6 +778,39 @@ class RouteView(APIView):
                         mpg=vehicle["mpg"],
                         starting_fuel=vehicle["starting_fuel"],
                         penalty=settings.FUEL_STOP_PENALTY_USD,
+                    )
+                if plan.deadline_breached:
+                    # D-08: the breach is visible via a Server-Timing
+                    # metric and a structured log line ONLY -- no response
+                    # field, no new `solver_strategy` value, no frontend
+                    # touch. The demoted-vs-breached distinction is already
+                    # DERIVABLE from the (estimate, strategy) pair (see
+                    # `FuelPlan`/`DeadlineExceededError`'s own docstrings
+                    # for the full reasoning), so nothing needs to carry it
+                    # on the wire -- a response field would store what can
+                    # already be derived, the weakest possible
+                    # justification for permanent public API surface under
+                    # an additive-only contract. Named, accepted cost: a
+                    # cached breach plan carries no marker, because
+                    # Server-Timing is per-request and a cache hit performs
+                    # no solve.
+                    self._timing.record(
+                        "dp_deadline_breach",
+                        plan.deadline_breach_elapsed_s * 1000,
+                    )
+                    # Hygiene (matches probe_live_latency.py's own rule
+                    # that only status, wall time and parsed stage
+                    # durations ever reach stdout/logs): only the
+                    # route-alternative index and the exception's own
+                    # measured numbers are logged -- no request body, no
+                    # endpoint coordinates, no address string, no Mapbox
+                    # token.
+                    logger.warning(
+                        "DP deadline breach on route alternative %d: "
+                        "%.3fs elapsed against a %ss deadline",
+                        index,
+                        plan.deadline_breach_elapsed_s,
+                        dp.DP_DEADLINE_SECONDS,
                     )
             except InfeasibleRouteError as exc:
                 results.append(

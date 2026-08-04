@@ -83,3 +83,41 @@ class ServerTimingMsConversionTests(SimpleTestCase):
                 pass
 
         self.assertIn("route;dur=50.0", t.header_value())
+
+
+class ServerTimingRecordTests(SimpleTestCase):
+    """Coverage for the public `record()` entry point (18.1-06) -- a
+    duration measured elsewhere (a DP deadline breach, read from the pure
+    solver's own exception) rather than a block of code `stage()` times
+    directly."""
+
+    def test_a_single_record_call_appears_in_header_value_with_the_expected_shape(self):
+        t = ServerTiming()
+
+        t.record("dp_deadline_breach", 123.4)
+
+        header = t.header_value()
+        self.assertRegex(header, r"dp_deadline_breach;dur=123\.4")
+
+    def test_two_record_calls_under_the_same_name_accumulate(self):
+        t = ServerTiming()
+
+        t.record("dp_deadline_breach", 100.0)
+        t.record("dp_deadline_breach", 50.0)
+
+        header = t.header_value()
+        self.assertEqual(header.count("dp_deadline_breach"), 1)
+        self.assertIn("dp_deadline_breach;dur=150.0", header)
+
+    def test_record_interleaved_with_stage_preserves_first_seen_ordering(self):
+        t = ServerTiming()
+
+        with t.stage("route"):
+            pass
+        t.record("dp_deadline_breach", 200.0)
+        with t.stage("solver"):
+            pass
+
+        header = t.header_value()
+        names = [part.split(";")[0] for part in header.split(", ")]
+        self.assertEqual(names, ["route", "dp_deadline_breach", "solver"])
