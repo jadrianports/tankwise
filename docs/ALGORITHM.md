@@ -15,11 +15,12 @@ estimated or rounded for effect.
 ## Overview
 
 The problem: given a start and finish location within the continental US, find a
-valid driving route and the cheapest feasible sequence of fuel stops along it,
-respecting a vehicle's tank range and fuel efficiency. The API's unchanged
-default vehicle profile is **10 mpg / 500-mile tank range / a full starting
-tank** (the frontend's Semi-loaded preset overrides this per-request via the
-optional `vehicle` field, but the API contract's own default never changed).
+valid driving route and the fueling plan that minimizes fuel cost plus a flat
+per-stop charge along it, respecting a vehicle's tank range and fuel efficiency.
+The API's unchanged default vehicle profile is **10 mpg / 500-mile tank range /
+a full starting tank** (the frontend's Semi-loaded preset overrides this
+per-request via the optional `vehicle` field, but the API contract's own
+default never changed).
 
 The station dataset behind every candidate fuel stop is a fixed OPIS truck-stop
 diesel price snapshot, geocoded offline in three stages:
