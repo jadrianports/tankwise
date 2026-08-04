@@ -8,11 +8,11 @@ export interface CandidateToggleProps {
   onToggle: () => void;
 }
 
-// On-by-default control that shows/hides the candidate price layer
-// + its legend together. The price landscape is the most impressive thing
-// on the map, so it defaults to visible; this stays a one-click strip-back
-// to route + chosen stops for a viewer who wants a cleaner view. >=44px
-// touch target, matching the spacing used for other icon-only controls.
+// Off-by-default control that shows/hides the candidate price layer
+// + its legend together. The layer starts hidden so a solved route reads
+// as only the stops the solver chose; this is the one-click way to reveal
+// the price landscape for a viewer who wants to see it. >=44px touch
+// target, matching the spacing used for other icon-only controls.
 function CandidateToggle({ visible, onToggle }: CandidateToggleProps) {
   const label = visible ? 'Hide candidate station prices' : 'Show candidate station prices';
 
