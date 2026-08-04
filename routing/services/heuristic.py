@@ -80,6 +80,7 @@ Request-path math only -- no Django, no DB, no HTTP client, exactly as
 `solver.py`/`dp.py`/`greedy.py`/`prune.py`.
 """
 import bisect
+from dataclasses import replace
 from decimal import Decimal
 
 from routing.services.exceptions import InfeasibleRouteError
@@ -373,6 +374,28 @@ def solve_penalty_aware_heuristic(
         price_here = target.price_per_gallon
         current_name = target.name
         current_opis_id = target.opis_id
+
+    # The walk above commits to a cheaper `target` and advances
+    # `current_name`/`current_opis_id` to it before checking whether the
+    # walk terminates there needing no purchase (`buy_mi <= 0`, so the
+    # "Worth the extra stop" branch never appended a `FuelStop` for it).
+    # When that happens, the PREVIOUS stop is left naming, as its
+    # `reason_target_*`, a station that never earns its own entry in
+    # `stops` -- a plan that tells the driver they are fuelling to reach
+    # somewhere they will never visit. Correcting it here, once, after the
+    # loop, covers every termination path uniformly without touching the
+    # loop body itself.
+    if stops and stops[-1].purchase_reason == PurchaseReason.REACH_CHEAPER_STOP:
+        dangling_target_id = stops[-1].reason_target_opis_id
+        if dangling_target_id is not None and dangling_target_id not in {
+            s.opis_id for s in stops
+        }:
+            stops[-1] = replace(
+                stops[-1],
+                purchase_reason=PurchaseReason.REACH_FINISH,
+                reason_target_opis_id=None,
+                reason_target_name=None,
+            )
 
     total_cost = sum((s.cost for s in stops), Decimal(0))
     total_gallons = sum((s.gallons for s in stops), Decimal(0))
