@@ -63,30 +63,25 @@ export const HERO_VEHICLE_PRESET_ID = 'semi-loaded';
 // coordinate strings, never addresses, so a repeat click always hits the
 // same normalized cache key.
 //
-// Resolved (not an open question): stop counts were re-measured against
-// the final v3 build -- EIA-indexed prices, multi-stop routing, and
-// elevation all live -- via the showcase capture script
+// Resolved (not an open question): stop counts were re-measured on
+// 2026-08-05 against deployed commit 445d730dc89b9c7eec5761717321e8fd007948cd
+// (https://tankwise.onrender.com), at the hero vehicle preset ('semi-loaded'
+// -- see HERO_VEHICLE_PRESET_ID above), via the showcase capture script
 // (frontend/scripts/showcase.capture.ts), which reads the count straight
-// out of the rendered itinerary rather than assuming it. At the hero
-// preset (LA->NYC, Semi-loaded) that measured count is 10, well above
-// both the ~6 pre-EIA-indexing figure this comment previously carried
-// and the 2-3 assumed while planning; the multi-stop chip (LA->Denver->
-// Chicago) measures 6. Both are accepted as correct solver behaviour
-// rather than something to fix. The solver minimizes total dollars, not
-// stop count, so it takes opportunistic `top_up_at_cheapest` purchases
-// wherever fuel is cheap. LA->NYC is ~2,790 mi on a ~1,050 mi range, so 2
-// stops is only the physical floor -- every stop beyond that is the
-// optimizer buying cheap. The user-facing copy below stays count-agnostic
-// for exactly this reason, and the product now explains the behaviour
-// in-app through the WhyMultipleStopsPopup dialog mounted above the
-// itinerary in ResultsSection, so a reviewer reads the count as
-// intelligence rather than a bug.
-//
-// Flagged, not rewritten (Phase 18): the 10/6 counts above predate the
-// fixed-charge (per-stop-penalty) objective swap and will move once the
-// live solver charges a flat fee per stop instead of optimizing on fuel
-// dollars alone. Re-measuring them is Phase 19's job (HON-01/HON-03),
-// alongside the count-agnostic copy this comment already describes.
+// out of the rendered "Fuel stops" itinerary rather than assuming it. The
+// hero chip (LA->NYC) measures 4 stops; the multi-stop chip (LA->Denver->
+// Chicago) measures 2. Both are accepted as correct solver behaviour
+// rather than something to fix. The shipped solver now weighs a flat
+// per-stop charge against the fuel it would save, so a stop earns its
+// place in the plan rather than being taken just because fuel happens to
+// be cheap there. The user-facing copy below stays count-agnostic
+// because the count is vehicle-dependent -- the same corridor measures
+// differently on the sedan, RV and semi presets -- so pinning one number
+// into copy that doesn't vary by vehicle would recreate exactly the kind
+// of drift this comment exists to guard against. The product also
+// explains the behaviour in-app through the WhyMultipleStopsPopup dialog
+// mounted above the itinerary in ResultsSection, so a reviewer reads the
+// count as intelligence rather than a bug.
 export interface DemoTrip {
   label: string;
   description: string;
