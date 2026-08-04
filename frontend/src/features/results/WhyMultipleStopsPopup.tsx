@@ -30,15 +30,20 @@ function WhyMultipleStopsPopup({ open, onClose }: WhyMultipleStopsPopupProps) {
       </DialogTitle>
       <DialogContent>
         <Typography variant="body1" sx={{ mb: 1 }}>
-          The planner minimizes total dollars spent on fuel, not the number of stops -- a shorter
-          itinerary that costs more is never chosen over a longer one that costs less.
+          Stopping isn't free. Beyond the fuel itself, a stop costs driver time, a detour off the
+          highway, and idling -- about $35 on industry operating-cost figures. The planner counts
+          that charge, so it only takes a stop when the cheaper fuel there beats the cost of
+          pulling over.
         </Typography>
         <Typography variant="body1" sx={{ mb: 1 }}>
-          A long haul has a physical floor set by tank range: Los Angeles to New York City is about
-          2,790 driving miles against a loaded semi's roughly 1,050-mile range, so two stops are
-          unavoidable no matter how the fuel is bought. Any stop beyond that floor exists because
-          fuel was cheap enough there to lower the trip total -- an opportunistic top-up, not a
-          detour.
+          A long haul still has a physical floor. Los Angeles to New York City is about 2,790
+          driving miles against a loaded semi's roughly 1,050-mile range, so some stops are
+          unavoidable no matter how the fuel is bought. The rest are there because they pay for
+          themselves.
+        </Typography>
+        <Typography variant="body1" sx={{ mb: 1 }}>
+          The cost shown is fuel only -- the stop charge shapes the plan but isn't added to your
+          total.
         </Typography>
         <Typography variant="body1">
           Tap a numbered stop marker or its row in the itinerary to see the specific reasoning
