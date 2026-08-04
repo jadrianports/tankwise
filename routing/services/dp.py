@@ -946,29 +946,69 @@ DISPATCH_RETENTION_FLOOR = 2
 DP_DEADLINE_SECONDS = Decimal("2.8")
 
 # ---------------------------------------------------------------------------
-# _DEADLINE_CHECK_STRIDE -- PROVISIONAL, pinned 2026-08-04 (plan 18.1-04),
-# BEFORE the overshoot it bounds is ever measured (D-06). Set to
+# _DEADLINE_CHECK_STRIDE -- pinned 2026-08-04 (plan 18.1-04) at
 # `routing.tests.test_dispatch_recovery.DEADLINE_CHECK_STRIDE_LADDER`'s
-# smallest rung -- the most conservative choice: most frequent clock reads,
-# smallest overshoot, highest per-call cost.
+# smallest rung (500, most conservative: most frequent clock reads,
+# smallest overshoot, highest per-call cost) as a provisional placeholder,
+# BEFORE the overshoot it bounds was ever measured (D-06).
 #
-# Plan 18.1-08 measures the worst observed overshoot on the densest
-# ADMITTED cell at each ladder rung and adopts the largest rung inside
-# DEADLINE_OVERSHOOT_BUDGET_SECONDS via that module's own
-# `adopt_stride_rung()`. The deadline's real guarantee is
-# `DP_DEADLINE_SECONDS + overshoot`, not `DP_DEADLINE_SECONDS` alone -- that
-# sum is the number the response budget above is actually derived against.
+# Grounding figures at plan 18.1-04 time (18.1-RESEARCH.md, measured live
+# in that session): roughly 45 nanoseconds per monotonic-clock read;
+# roughly 77.7 microseconds per `_reachable_ticks`-call-granularity check
+# on atlanta_ga-denver_co@500mi, and roughly 99.2 microseconds on
+# jacksonville_fl-bangor_me@500mi. Both are MODERATE-density cells, not
+# the densest a raised budget rung might admit -- Pitfall 3
+# (18.1-RESEARCH.md) required re-measuring on the densest ADMITTED cell
+# before a rung could be adopted.
 #
-# Grounding figures (18.1-RESEARCH.md, measured live in that session, NOT
-# assumed): roughly 45 nanoseconds per monotonic-clock read; roughly
-# 77.7 microseconds per `_reachable_ticks`-call-granularity check on
-# atlanta_ga-denver_co@500mi, and roughly 99.2 microseconds on
-# jacksonville_fl-bangor_me@500mi. Both are MODERATE-density cells, not the
-# densest a raised budget rung might admit -- the densest ADMITTED cell has
-# NOT yet been measured, and this value must not be assumed safe there
-# without that re-measurement.
+# ADOPTED, 2026-08-04 (plan 18.1-08), by
+# `routing.tests.test_dispatch_recovery.adopt_stride_rung()` applied
+# exactly as pinned in plan 18.1-01, BEFORE this measurement existed.
+#
+# Densest cell measured: jacksonville_fl-bangor_me@500mi (estimate
+# 356,085) -- the densest cell any FINITE DP_TRANSITION_BUDGET_LADDER rung
+# admits (adopted at rung 400,000; see that ladder's own comment above
+# `DispatchAdmissionManifestTests`' import site), deliberately NOT
+# toronto_oh-hillsboro_or (no sane rung ever admits it) and NOT a
+# moderate-density cell (the grounding figures above are insufficient by
+# Pitfall 3's own account).
+#
+# Method: `dp.solve_fixed_charge` called DIRECTLY (bypassing `solve()`'s
+# budget gate, which would otherwise demote this cell to the heuristic
+# before ever attempting the DP -- the exact measurement-artifact trap
+# plan 18.1-07's own SUMMARY warns against) with `deadline=1` (well under
+# this cell's genuine ~19.327s untimed solve time, RESEARCH.md's own D-06
+# grounding data), 3 repeats per rung, worst overshoot kept
+# (`elapsed_seconds - deadline`, from the raised
+# `DeadlineExceededError`), one-off script, not a permanent test:
+#
+#   stride=500:   worst_overshoot_seconds=0.000
+#   stride=1,000: worst_overshoot_seconds=0.031
+#   stride=2,000: worst_overshoot_seconds=0.047
+#   stride=5,000: worst_overshoot_seconds=0.359
+#
+# (Workstation caveat: the four values above cluster near multiples of
+# ~15.6ms -- Windows' default ~64Hz timer-resolution quantum -- rather
+# than forming a smooth line; the ORDER and rough SCALE still track
+# `_DEADLINE_CHECK_STRIDE` as expected, but the exact figures are a
+# property of this workstation's clock, not a portable constant, same as
+# every other "measured live in that session" figure elsewhere in this
+# module.)
+#
+# Every rung's worst overshoot sits inside
+# `DEADLINE_OVERSHOOT_BUDGET_SECONDS` (0.5s), so `adopt_stride_rung` walks
+# the full ladder without breaking and adopts its LARGEST rung, 5,000 --
+# not a degenerate result: it is the genuine outcome of measuring on the
+# actual densest admitted cell rather than assuming the moderate-cell
+# figures above extrapolate safely.
+#
+# The deadline's REAL guarantee, stated as the number the response budget
+# (`RESPONSE_BAR_SECONDS`, `DEADLINE_OVERSHOOT_BUDGET_SECONDS` itself) is
+# actually derived against: `DP_DEADLINE_SECONDS + 0.359s` worst-observed
+# overshoot at this stride, on this cell -- not `DP_DEADLINE_SECONDS`
+# alone.
 # ---------------------------------------------------------------------------
-_DEADLINE_CHECK_STRIDE = 500
+_DEADLINE_CHECK_STRIDE = 5_000
 
 
 def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
