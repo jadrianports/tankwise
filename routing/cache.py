@@ -9,6 +9,30 @@ component its own namespace so a coordinate token, an address token, the
 vehicle token, and the EIA-vintage token can never collide (mitigates
 cross-domain cache-key collisions).
 
+It was versioned `route:v8:` (plan 18.1-05) because the dispatch policy
+itself grew a second layer (D-01): a wall-clock `DP_DEADLINE_SECONDS` now
+backstops the pre-flight `DP_TRANSITION_BUDGET` estimate, catching
+whatever the estimate alone cannot -- an entry cached under `v7` records
+only half the policy that produced it, the estimate-vs-budget half, with
+no record of the deadline that decided whether an ADMITTED cell's exact
+DP was actually allowed to finish. `_dispatch_policy_token` is extended
+to derive from BOTH constants together (see its own docstring), so this
+bump and that extension land in the SAME change, per this project's own
+standing same-change rule (INTG-03, the `v6` -> `v7` precedent directly
+above). A plan produced by a deadline breach is cached normally, not
+specially marked or excluded: a breach is a property of the CELL (how
+long its exact DP genuinely takes on this hardware), not of the moment
+the request happened to arrive, so caching it means the slowest routes
+pay the full deadline once and are fast thereafter -- not caching it
+would leave the cells with the worst worst-case as the only ones that
+never get any cache relief at all. Because the token DERIVES from the
+constants rather than encoding this plan's own finding, a later
+re-derivation of either `DP_TRANSITION_BUDGET` or `DP_DEADLINE_SECONDS`
+(plan 18.1-08) changes every cache key automatically, with no matching
+edit needed here -- the entire point of deriving rather than documenting
+a bump-on-change convention, exactly as the `v7` paragraph below already
+argues for the budget alone.
+
 It was versioned `route:v7:` because the dispatch-policy token described
 below (`_dispatch_policy_token`) is new: an entry cached under `v6` carries
 no record of which predictor/`DP_TRANSITION_BUDGET` combination decided
@@ -217,14 +241,15 @@ def _penalty_token(penalty) -> str:
 def _dispatch_policy_token() -> str:
     """Namespaced `d:` token recording which dispatch policy decided
     `solver_strategy` for a cached plan. DERIVED from the policy constants
-    themselves (`dp.DP_TRANSITION_BUDGET`'s value, the predictor's own
-    name) rather than a documented bump-on-change convention -- the same
-    argument `_penalty_token`'s own docstring already gives for rejecting
-    that convention ("makes correctness depend on a human remembering a
-    note"), applied one layer down: `18-VERIFICATION.md` found that
-    `route:v6:` keys on the penalty but NOT on the dispatch policy, so an
-    entry cached before a future `DP_TRANSITION_BUDGET` change would still
-    be served under the OLD dispatch policy without this token.
+    themselves (`dp.DP_TRANSITION_BUDGET`'s value, `dp.DP_DEADLINE_SECONDS`'s
+    value, the predictor's own name) rather than a documented
+    bump-on-change convention -- the same argument `_penalty_token`'s own
+    docstring already gives for rejecting that convention ("makes
+    correctness depend on a human remembering a note"), applied one layer
+    down: `18-VERIFICATION.md` found that `route:v6:` keys on the penalty
+    but NOT on the dispatch policy, so an entry cached before a future
+    `DP_TRANSITION_BUDGET` or `DP_DEADLINE_SECONDS` change would still be
+    served under the OLD dispatch policy without this token.
 
     Imported locally, not at module scope, for the same reason
     `_vehicle_token` defers its own `routing.serializers` import: keeps
@@ -255,11 +280,24 @@ def _dispatch_policy_token() -> str:
     either fact stops being true, which is the entire point: this plan's
     own finding was NOT to change the policy, but the token does not
     encode that finding -- it encodes the CONSTANTS, so a later change
-    needs no matching update here."""
-    from routing.services.dp import DP_TRANSITION_BUDGET
+    needs no matching update here.
+
+    As of plan 18.1-05, the dispatch policy grew a second layer (D-01):
+    a wall-clock `DP_DEADLINE_SECONDS` now backstops the pre-flight
+    `DP_TRANSITION_BUDGET` estimate, catching what the estimate alone
+    cannot. `DP_DEADLINE_SECONDS` is folded into this token for the
+    identical reason `DP_TRANSITION_BUDGET` is: a plan produced under one
+    deadline value must never be served, unchanged, to a request the
+    CURRENT build's deadline would have handled differently. Deriving the
+    token from BOTH constants (rather than adding a second, separate
+    token) means plan 18.1-08's later re-derivation of either one changes
+    every cache key automatically, with no matching edit required here --
+    exactly the same "encodes the CONSTANTS, not the finding" property
+    this token already had for `DP_TRANSITION_BUDGET` alone."""
+    from routing.services.dp import DP_DEADLINE_SECONDS, DP_TRANSITION_BUDGET
 
     predictor_name = "estimate_transition_count"
-    return f"d:{predictor_name}:{DP_TRANSITION_BUDGET}"
+    return f"d:{predictor_name}:{DP_TRANSITION_BUDGET}:{DP_DEADLINE_SECONDS}"
 
 
 def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
@@ -287,9 +325,11 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
 
     The key now also carries a dispatch-policy token (`_dispatch_policy_token`,
     the `d:` segment between `eia_token` and `penalty_token`) DERIVED from
-    `routing.services.dp`'s own dispatch-policy constants, so a cached plan
-    can never outlive the dispatch policy that produced it (plan 18-12,
-    closing the coupling `18-VERIFICATION.md` found unguarded)."""
+    `routing.services.dp`'s own dispatch-policy constants (as of plan
+    18.1-05, both `DP_TRANSITION_BUDGET` and `DP_DEADLINE_SECONDS`), so a
+    cached plan can never outlive the dispatch policy that produced it
+    (plan 18-12, closing the coupling `18-VERIFICATION.md` found
+    unguarded; plan 18.1-05, extending it to the deadline)."""
     waypoints = validated_data.get("waypoints") or []
     stops = [validated_data["start"], *waypoints, validated_data["finish"]]
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
@@ -298,6 +338,6 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     dispatch_token = _dispatch_policy_token()
     penalty_token = _penalty_token(penalty)
     return (
-        f"route:v7:{stops_token}|{vehicle_token}|{eia_token}|"
+        f"route:v8:{stops_token}|{vehicle_token}|{eia_token}|"
         f"{dispatch_token}|{penalty_token}"
     )

@@ -112,7 +112,7 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v7: and contains exactly
+    """Every produced key starts with route:v8: and contains exactly
     four | separators (stops-chain|vehicle|eia|dispatch|penalty)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
@@ -123,7 +123,7 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v7:"))
+        self.assertTrue(key.startswith("route:v8:"))
         self.assertEqual(key.count("|"), 4)
 
 
@@ -167,7 +167,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v7:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v8:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -305,7 +305,20 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
     payload to the dispatch policy (predictor identity + `DP_TRANSITION_BUDGET`)
     that decided `solver_strategy` for it -- closing the coupling
     `18-VERIFICATION.md` found unguarded: `route:v6:` keyed on the penalty
-    but NOT on the dispatch policy."""
+    but NOT on the dispatch policy.
+
+    Extended by plan 18.1-05 (D-01/D-07): the dispatch policy grew a
+    second layer, a wall-clock `DP_DEADLINE_SECONDS` that backstops
+    `DP_TRANSITION_BUDGET`'s pre-flight estimate, so the token now derives
+    from BOTH constants together. `test_dispatch_policy_token_tracks_the_policy_constants`
+    above already proves the budget's influence;
+    `test_dispatch_policy_token_tracks_the_deadline_constant_alone` below
+    proves the SAME property for the deadline alone -- changing only
+    `DP_DEADLINE_SECONDS`, with `DP_TRANSITION_BUDGET` untouched, must
+    still change the resulting key. A token that tracked the budget but
+    not the deadline would pass every assertion above and still leave
+    half the policy unguarded, exactly the failure mode this extension
+    exists to close."""
 
     def _payload(self):
         return {
@@ -315,11 +328,11 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
 
     def test_new_prefix_appears_in_a_built_key(self):
         key = build_cache_key(self._payload())
-        self.assertTrue(key.startswith("route:v7:"))
+        self.assertTrue(key.startswith("route:v8:"))
 
     def test_dispatch_policy_token_is_present_and_correctly_placed(self):
         key = build_cache_key(self._payload(), eia_vintage="2026-07-20", penalty=Decimal("35"))
-        segments = key[len("route:v7:") :].split("|")
+        segments = key[len("route:v8:") :].split("|")
         # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token
         self.assertEqual(len(segments), 5)
         dispatch_segment = segments[3]
@@ -342,6 +355,20 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
 
         self.assertNotEqual(key_before, key_after)
         self.assertIn("12345", key_after.split("|")[3])
+
+    def test_dispatch_policy_token_tracks_the_deadline_constant_alone(self):
+        """The deadline half of the mechanism test (plan 18.1-05, D-07):
+        `DP_TRANSITION_BUDGET` is left untouched here -- only
+        `DP_DEADLINE_SECONDS` is patched -- so this isolates the deadline's
+        own contribution to the token from the budget's, already proven
+        above. A token derived from the budget alone would pass every
+        other assertion in this class and still fail this one."""
+        key_before = build_cache_key(self._payload())
+        with mock.patch("routing.services.dp.DP_DEADLINE_SECONDS", Decimal("99")):
+            key_after = build_cache_key(self._payload())
+
+        self.assertNotEqual(key_before, key_after)
+        self.assertIn("99", key_after.split("|")[3])
 
     def test_dispatch_policy_token_is_stable_and_never_omittable(self):
         """Unlike `_eia_token`/`_penalty_token`, this token has no
