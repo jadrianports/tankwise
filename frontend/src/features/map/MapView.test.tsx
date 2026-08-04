@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle } from 'react';
 import type { ReactNode } from 'react';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 
 // This test file needs a Marker/Map mock capable of real assertions
@@ -120,6 +120,31 @@ test('a 2-point response renders exactly two lettered pins (A, B) with the uncha
     [-118.2437, 34.0522],
     [-87.6298, 41.8781],
   ]);
+});
+
+const THREE_STOP_WITH_CANDIDATES_DATA = {
+  ...THREE_STOP_DATA,
+  candidate_stations: [
+    { station_id: 's1', lat: 36.1, lng: -110.2, price_per_gallon: '3.19', distance_from_start_mi: '80.0' },
+    { station_id: 's2', lat: 38.4, lng: -106.5, price_per_gallon: '3.45', distance_from_start_mi: '250.0' },
+    { station_id: 's3', lat: 40.7, lng: -95.1, price_per_gallon: '3.32', distance_from_start_mi: '420.0' },
+  ],
+} as unknown as RouteResponse;
+
+test('starts a solved route with the candidate price layer hidden and reveals it on toggle', () => {
+  render(<MapView data={THREE_STOP_WITH_CANDIDATES_DATA} token="pk.test" tokenStatus="ready" />);
+
+  const toggle = screen.getByRole('button', { name: /show candidate station prices/i });
+  expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  expect(screen.queryByRole('group', { name: /candidate station price legend/i })).not.toBeInTheDocument();
+
+  fireEvent.click(toggle);
+
+  expect(screen.getByRole('button', { name: /hide candidate station prices/i })).toHaveAttribute(
+    'aria-pressed',
+    'true',
+  );
+  expect(screen.getByRole('group', { name: /candidate station price legend/i })).toBeInTheDocument();
 });
 
 test('the camera holds position on a re-solve that lands on the identical stop coordinates', () => {
