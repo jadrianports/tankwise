@@ -251,6 +251,96 @@ _MIN_COORDINATE_COUNT = 500
 _MILEAGE_TOLERANCE_FRACTION = Decimal("0.25")
 
 
+@dataclass(frozen=True)
+class DemoChip:
+    """One demo-trip chip from the SPA's own `PRESET_ROUTES` (Phase 18.1
+    D-13/D-14), registered here rather than appended to `CORRIDORS`.
+    `CorridorFixtureTests` pins the corridor set at exactly twelve and
+    asserts every corridor is single-leg -- both properties are
+    load-bearing for the twelve-corridor evidence base -- and a demo chip
+    is neither: it plays no part in that evidence base, and the
+    multi-stop chip is deliberately NOT single-leg, so `DEMO_CHIPS` gets
+    its own registry and its own guard class instead.
+
+    `waypoints` is a tuple of (latitude, longitude) Decimal pairs, empty
+    for a single-leg chip, matching `fetch_corridor_geometry --waypoints`'s
+    own visit-order contract.
+    """
+
+    slug: str
+    label: str
+    start: tuple[Decimal, Decimal]
+    waypoints: tuple
+    finish: tuple[Decimal, Decimal]
+    estimated_driving_mi: int
+
+
+# Two demo chips (D-13/D-14). Coordinates transcribed verbatim from
+# frontend/src/constants/presets.ts's PRESET_ROUTES (READ-ONLY for this
+# phase) -- never independently re-derived.
+DEMO_CHIPS = (
+    DemoChip(
+        slug="demo_la_ca-new_york_ny",
+        label="Los Angeles, CA -> New York City, NY",
+        start=_pt("34.0522", "-118.2437"),
+        waypoints=(),
+        finish=_pt("40.7128", "-74.0060"),
+        estimated_driving_mi=2790,
+    ),
+    DemoChip(
+        slug="demo_la_ca-denver_co-chicago_il",
+        label="Los Angeles, CA -> Denver, CO -> Chicago, IL",
+        start=_pt("34.0522", "-118.2437"),
+        waypoints=(_pt("39.7392", "-104.9903"),),
+        finish=_pt("41.8781", "-87.6298"),
+        estimated_driving_mi=2000,
+    ),
+)
+
+# D-14: DEMO_CHIP_VEHICLE is the SPA hero preset from frontend/src/
+# constants/presets.ts VEHICLE_PRESETS['semi-loaded'] -- 6.5 mpg / 1050 mi
+# tank / full tank (starting_fuel=1) -- because that is literally what a
+# visitor clicking a demo chip actually sends. DEMO_CHIP_VEHICLE is a
+# DIFFERENT vehicle from both:
+#   - ADMISSION_MANIFEST_VEHICLE (routing/tests/test_solver_dispatch.py):
+#     mpg=10, starting_fuel=0.5, the stale-41.7%-figure vehicle the 24
+#     corridor cells are measured at for comparability with that figure.
+#   - the API default (10 mpg / 500 mi tank / full tank, starting_fuel=1),
+#     used by DeployedHardwareDispatchTests and the smoke gate for any
+#     request that omits `vehicle`.
+# Named here explicitly so the three are never conflated.
+DEMO_CHIP_VEHICLE = {
+    "mpg": Decimal("6.5"),
+    "tank_range_mi": Decimal(1050),
+    "starting_fuel": Decimal(1),
+    "price_basis": PRICE_BASIS_NEUTRAL,
+}
+
+
+def load_demo_chip_route(slug):
+    """Load demo chip `slug`'s committed Mapbox Directions fixture and
+    replay it through the existing, already-tested parser -- same shape
+    and same fixture directory as `load_corridor_route`.
+
+    Raises `FileNotFoundError` naming the `fetch_corridor_geometry`
+    invocation that captures it (plain `--corridor <slug>` for the
+    single-leg chip; `--corridor <slug> --waypoints lat,lng` for the
+    multi-stop chip).
+    """
+    fixture_path = CORRIDOR_GEOMETRY_DIR / f"{slug}.json"
+    if not fixture_path.exists():
+        raise FileNotFoundError(
+            f"No committed geometry fixture for demo chip {slug!r} at "
+            f"{fixture_path}. Run `manage.py fetch_corridor_geometry "
+            f"--corridor {slug} [--waypoints lat,lng ...]` to capture it "
+            "(one-time, online, see fetch_corridor_geometry.py)."
+        )
+    with open(fixture_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    routes = _parse_directions_response(raw)
+    return routes[0]
+
+
 class CorridorFixtureTests(SimpleTestCase):
     """CI-side guard that the twelve committed corridor fixtures (D-15)
     stay valid: present, parseable, single-leg, geometrically plausible,
@@ -318,6 +408,81 @@ class CorridorFixtureTests(SimpleTestCase):
                     abs(route.total_route_mi - pinned),
                     tolerance,
                     f"{corridor.slug}: measured {route.total_route_mi} mi vs "
+                    f"pinned estimate {pinned} mi exceeds the "
+                    f"{_MILEAGE_TOLERANCE_FRACTION:.0%} sanity band",
+                )
+
+
+class DemoChipFixtureTests(SimpleTestCase):
+    """CI-side guard that the two demo-chip geometry fixtures (D-13/D-14)
+    stay valid: present, parseable, CONUS-bounded, geometrically
+    plausible, and consumed by production's own flattening path. Mirrors
+    `CorridorFixtureTests`' shape but with the leg assertion INVERTED for
+    the multi-stop chip -- it must parse to exactly two legs and flatten
+    through `multi_leg.flatten_route` into two lines, never a merged
+    single line, honouring the standing "multi-leg routes never merge"
+    constraint the same way production does.
+    """
+
+    def test_both_fixture_files_exist_and_parse(self):
+        for chip in DEMO_CHIPS:
+            with self.subTest(slug=chip.slug):
+                route = load_demo_chip_route(chip.slug)
+                self.assertIsNotNone(route)
+
+    def test_single_leg_chip_parses_to_at_most_one_leg(self):
+        route = load_demo_chip_route("demo_la_ca-new_york_ny")
+        self.assertLessEqual(len(route.leg_distances_mi), 1)
+
+    def test_multi_stop_chip_parses_to_exactly_two_legs(self):
+        route = load_demo_chip_route("demo_la_ca-denver_co-chicago_il")
+        self.assertEqual(len(route.leg_distances_mi), 2)
+        self.assertEqual(len(route.leg_annotation_lengths), 2)
+        for length in route.leg_annotation_lengths:
+            self.assertGreater(length, 0)
+
+    def test_multi_stop_chip_flattens_into_two_lines_not_a_merged_line(self):
+        from routing.services.multi_leg import flatten_route
+
+        route = load_demo_chip_route("demo_la_ca-denver_co-chicago_il")
+        flattened = flatten_route(route)
+        self.assertEqual(len(flattened.leg_lines), 2)
+        self.assertEqual(len(flattened.leg_boundaries_mi), 2)
+        self.assertEqual(flattened.leg_boundaries_mi[0], Decimal(0))
+        self.assertGreater(flattened.leg_boundaries_mi[1], Decimal(0))
+
+    def test_every_demo_chip_coordinate_is_a_conus_bounded_pair(self):
+        min_lng, max_lng = _CONUS_LNG_RANGE
+        min_lat, max_lat = _CONUS_LAT_RANGE
+        for chip in DEMO_CHIPS:
+            with self.subTest(slug=chip.slug):
+                route = load_demo_chip_route(chip.slug)
+                for coord in route.raw_coordinates:
+                    self.assertEqual(len(coord), 2)
+                    lng, lat = Decimal(str(coord[0])), Decimal(str(coord[1]))
+                    self.assertGreaterEqual(lng, min_lng)
+                    self.assertLessEqual(lng, max_lng)
+                    self.assertGreaterEqual(lat, min_lat)
+                    self.assertLessEqual(lat, max_lat)
+
+    def test_every_demo_chip_coordinate_count_at_or_above_floor(self):
+        for chip in DEMO_CHIPS:
+            with self.subTest(slug=chip.slug):
+                route = load_demo_chip_route(chip.slug)
+                self.assertGreaterEqual(
+                    len(route.raw_coordinates), _MIN_COORDINATE_COUNT
+                )
+
+    def test_every_demo_chip_measured_mileage_within_loose_sanity_band(self):
+        for chip in DEMO_CHIPS:
+            with self.subTest(slug=chip.slug):
+                route = load_demo_chip_route(chip.slug)
+                pinned = Decimal(chip.estimated_driving_mi)
+                tolerance = pinned * _MILEAGE_TOLERANCE_FRACTION
+                self.assertLessEqual(
+                    abs(route.total_route_mi - pinned),
+                    tolerance,
+                    f"{chip.slug}: measured {route.total_route_mi} mi vs "
                     f"pinned estimate {pinned} mi exceeds the "
                     f"{_MILEAGE_TOLERANCE_FRACTION:.0%} sanity band",
                 )
