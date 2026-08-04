@@ -75,3 +75,62 @@ class InvalidRouteInputError(SolverError):
 
     def __init__(self, message):
         super().__init__(message)
+
+
+class DeadlineExceededError(SolverError):
+    """The exact DP exceeded its wall-clock budget before reaching FINISH,
+    and produced no plan.
+
+    This is NOT an error condition in the request: `solver.solve()` catches
+    it internally and falls back to the penalty-aware heuristic, so a
+    caller of `solve()` never sees this exception -- it never crosses the
+    solver's own boundary.
+
+    `elapsed_seconds` is a plain `float` (`time.monotonic()` differences),
+    unlike every money and position value elsewhere in this codebase,
+    which is exact `Decimal`. That standing exact-arithmetic rule exists to
+    keep dollars, gallons and positions free of representation error; this
+    value never enters a monetary, gallon or position computation at all --
+    it is diagnostic only, reported in a log line and a Server-Timing
+    entry -- so the rule does not reach it.
+
+    Contrast with `InfeasibleRouteError`: that one is a legitimate "no plan
+    exists" outcome that maps to an HTTP 422 at the response boundary. This
+    one is "no plan was found IN TIME" -- it is caught internally and
+    produces no contract change of any kind. The response's
+    `solver_strategy` stays `penalty_aware_heuristic` on a breach, which is
+    true, because the heuristic did produce the returned plan.
+
+    Why no `deadline_exceeded` field was added to the response (the
+    reasoning that settled this, recorded here rather than only in a
+    planning document): under the two-layer dispatch policy, dispatch has
+    exactly two deterministic inputs -- the transition-count estimate over
+    the pruned search set, and the pinned budget. For any returned plan, an
+    estimate above budget together with the heuristic strategy means the
+    cell was demoted outright and never attempted; an estimate at or below
+    budget together with the heuristic strategy means it was attempted and
+    breached. No other path produces the second combination, and the
+    estimate is recomputable offline from the same committed dataset and
+    route -- it is derived, not stored. A response field would therefore
+    STORE what can already be DERIVED and recomputable offline, which is
+    the weakest possible justification for permanent public API surface
+    given this project's additive-only contract rule.
+
+    Attributes:
+        deadline_seconds: the wall-clock deadline that was in force for
+            this solve, as passed to `solve_fixed_charge`.
+        elapsed_seconds: wall-clock seconds actually spent when the check
+            that raised this fired, a plain float difference of two
+            `time.monotonic()` reads.
+        transitions_examined: the stride counter's value -- the count of
+            `(state, level)` pairs examined -- at the moment of the raise.
+    """
+
+    def __init__(self, *, deadline_seconds, elapsed_seconds, transitions_examined):
+        self.deadline_seconds = deadline_seconds
+        self.elapsed_seconds = elapsed_seconds
+        self.transitions_examined = transitions_examined
+        super().__init__(
+            f"DP exceeded its {deadline_seconds}s deadline: {elapsed_seconds}s "
+            f"elapsed after examining {transitions_examined} transitions"
+        )
