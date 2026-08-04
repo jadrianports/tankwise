@@ -150,3 +150,142 @@ class DeadlineIdentityGuardTests(RealCorridorDispatchTestCase):
             "dp.DP_DEADLINE_SECONDS must be strictly positive -- a zero "
             "or negative deadline deletes the exact DP outright.",
         )
+
+
+# The deliberately tiny deadline both tests below pass -- small enough
+# that any admitted cell whose DP run reaches even one
+# `dp._DEADLINE_CHECK_STRIDE` window breaches, but not literally zero
+# (that degenerate belongs to `DeadlineIdentityGuardTests`'s own mutation
+# check above, not to this class's fixed test data).
+_TINY_DEADLINE = Decimal("0.0001")
+
+
+class DeadlineBreachGuardTests(RealCorridorDispatchTestCase):
+    """D-04's BREACH half: with a deliberately tiny deadline, a real
+    corridor provably takes the fallback path and the exception is
+    caught, not leaked. Paired with `DeadlineIdentityGuardTests` above --
+    either guard alone is satisfiable vacuously (an effectively-infinite
+    deadline passes every one of `DeadlineIdentityGuardTests`'s
+    assertions while never actually time-boxing anything; a policy that
+    always raises internally, uncaught, would pass this class's first
+    test while breaking every production request); together they are
+    not. This class alone cannot prove the deadline leaves a completing
+    cell's answer unchanged -- that is `DeadlineIdentityGuardTests`'s
+    job.
+    """
+
+    def test_a_tiny_deadline_raises_inside_the_dp(self):
+        # houston_tx-chicago_il@500mi estimates 48,926 transitions
+        # (ADMISSION_MANIFEST, test_solver_dispatch.py) -- the densest
+        # ADMITTED cell measured in this phase's own evidence (~98% of
+        # dp.DP_TRANSITION_BUDGET's 50,000 boundary), so its DP run
+        # genuinely takes measurable time (625ms, measured directly
+        # against dp.DP_DEADLINE_SECONDS) rather than completing before a
+        # single check stride.
+        route, candidates = self._route_and_candidates("houston_tx-chicago_il")
+        search_set = prune_dominated_candidates(
+            candidates, tank_range_mi=Decimal(500), total_route_mi=route.total_route_mi
+        )
+
+        with self.assertRaises(DeadlineExceededError) as ctx:
+            dp.solve_fixed_charge(
+                search_set,
+                total_route_mi=route.total_route_mi,
+                tank_range_mi=Decimal(500),
+                mpg=MPG,
+                starting_fuel=STARTING_FUEL,
+                penalty=PENALTY,
+                deadline=_TINY_DEADLINE,
+            )
+
+        exc = ctx.exception
+        self.assertGreater(
+            exc.transitions_examined,
+            0,
+            "a raise that fires before any work happened cannot pass -- "
+            "transitions_examined must be strictly positive.",
+        )
+        self.assertGreater(
+            exc.elapsed_seconds,
+            0,
+            "a raise that fires before any work happened cannot pass -- "
+            "elapsed_seconds must be strictly positive.",
+        )
+
+    def test_a_tiny_deadline_falls_back_through_solve_without_leaking(self):
+        # Same corridor, through the public solve() seam this time --
+        # D-04's "caught, not leaked" made machine-checkable: no
+        # DeadlineExceededError escapes solve()'s own boundary.
+        route, candidates = self._route_and_candidates("houston_tx-chicago_il")
+
+        plan = solve(
+            candidates,
+            route.total_route_mi,
+            tank_range_mi=Decimal(500),
+            mpg=MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+            deadline=_TINY_DEADLINE,
+        )
+
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
+        self.assertGreater(len(plan.stops), 0)
+        self.assertTrue(plan.deadline_breached)
+        self.assertIsNotNone(plan.deadline_breach_elapsed_s)
+
+    def test_a_breach_does_not_introduce_a_new_strategy_value(self):
+        # D-08's no-new-value fence, enforced rather than trusted: a
+        # breach must report one of the two EXISTING SolverStrategy
+        # values, never a third.
+        route, candidates = self._route_and_candidates("houston_tx-chicago_il")
+
+        plan = solve(
+            candidates,
+            route.total_route_mi,
+            tank_range_mi=Decimal(500),
+            mpg=MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+            deadline=_TINY_DEADLINE,
+        )
+
+        self.assertIn(
+            plan.strategy,
+            (SolverStrategy.EXACT_DP, SolverStrategy.PENALTY_AWARE_HEURISTIC),
+        )
+        public_string_constants = [
+            name
+            for name, value in vars(SolverStrategy).items()
+            if not name.startswith("_") and isinstance(value, str)
+        ]
+        self.assertEqual(
+            len(public_string_constants),
+            2,
+            "SolverStrategy must carry exactly two public string "
+            f"constants; found {sorted(public_string_constants)} -- a "
+            "breach must never introduce a third wire value.",
+        )
+
+    def test_the_pinned_deadline_is_inside_its_derived_band(self):
+        # The closed-form half that catches the infinite-deadline
+        # degenerate: dp.DP_DEADLINE_SECONDS must sit at or below the
+        # largest value its own pinned derivation
+        # (derive_dp_deadline_seconds, test_dispatch_recovery.py) could
+        # ever produce -- computed here from the imported constants,
+        # never restated as a literal.
+        upper_bound = (
+            RESPONSE_BAR_SECONDS
+            - DEADLINE_OVERSHOOT_BUDGET_SECONDS
+            - HEURISTIC_FALLBACK_ALLOWANCE_SECONDS
+        ) / ROUTE_ALTERNATIVES_FANOUT
+
+        self.assertLessEqual(
+            dp.DP_DEADLINE_SECONDS,
+            upper_bound,
+            f"dp.DP_DEADLINE_SECONDS ({dp.DP_DEADLINE_SECONDS}s) exceeds "
+            f"the band its own derivation permits ({upper_bound}s) -- a "
+            "deadline outside this band means the 15-second cold "
+            "cache-miss bar cannot hold on a request whose alternatives "
+            "all breach. See dp.DP_DEADLINE_SECONDS's own derivation "
+            "comment in routing/services/dp.py.",
+        )
