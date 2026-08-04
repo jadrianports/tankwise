@@ -819,22 +819,12 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
 # dallas_tx-seattle_wa@500mi, so there was nothing a different number here
 # could have fixed.
 #
-# RAISED, 2026-08-04 (plan 18.1-08): 50,000 -> 130,000, chosen by
-# `routing.tests.test_dispatch_recovery.adopt_budget_rung()`, a rule
-# committed in plan 18.1-01, BEFORE the measurement below existed. This
-# is the resolution D-01 makes possible: with `DP_DEADLINE_SECONDS` now
-# backstopping every DP attempt, the estimate no longer has to demote a
-# cell on its own to protect the worker -- it only has to admit the
-# attempt; the wall-clock deadline is what actually bounds it. This does
-# NOT reopen or overturn the CONFIRMED paragraph immediately above, or
-# 18-12's NOT TRACTABLE proof: that proof was, and remains, about whether
-# a SINGLE estimate THRESHOLD alone (with no clock behind it) can
-# simultaneously demote dallas_tx-seattle_wa@500mi and retain
-# dallas_tx-seattle_wa@1050mi -- it cannot (117,895 > 61,944), and this
-# raise does not change that arithmetic or attempt to. This plan adds a
-# SECOND layer behind the same threshold rather than finding a better
-# threshold; NOT TRACTABLE stands, unchanged, for the single-threshold
-# question it answered.
+# MEASURED, NOT SHIPPED -- 2026-08-04 (plan 18.1-08). `adopt_budget_rung()`
+# (`routing.tests.test_dispatch_recovery`, a rule committed in plan
+# 18.1-01, BEFORE any of the measurement below existed) was applied to
+# GENUINE evidence and returned 130,000, above this baseline. That
+# measurement is recorded below in full, verbatim, exactly as taken --
+# nothing here is hidden or softened. It was NOT wired into this constant.
 #
 # Method: every cell newly admitted at each `DP_TRANSITION_BUDGET_LADDER`
 # rung was measured with a GENUINE DP attempt -- `dp.solve_fixed_charge`
@@ -867,13 +857,44 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
 #        worst=3.156s BREACHED 3/3 -- also measured, also would have
 #        failed) and rung=None were never reached by the walk.
 #
-# Adopted: 130,000. This RECOVERS dallas_tx-seattle_wa@1050mi -- ROADMAP
-# criterion 1's own worked example -- to a genuinely ADMITTED cell; see
-# `DISPATCH_RETENTION_FLOOR`'s own block below and
-# `test_solver_dispatch.DispatchRetentionFloorGuardTests` for what this
-# means for that class's own assertion.
+# The rule's own answer: 130,000. Why it was NOT shipped, discovered only
+# AFTER running the full downstream regression suite (not assumed, not
+# guessed at): wiring 130,000 into this constant admits
+# dallas_tx-seattle_wa@500mi (estimate 61,944, band 50,000-70,000) as a
+# direct, unavoidable side effect of reaching 130,000 -- `adopt_budget_rung`
+# walks the ladder in order and a later rung can never be adopted without
+# every earlier rung already qualifying. On THIS workstation,
+# dallas_tx-seattle_wa@500mi's own genuine DP completion time (~2.7-3.1s)
+# straddles the 2.8s deadline closely enough that it BREACHED in 2 of 3
+# repeats above but COMPLETED (exact_dp) in the third, and in independent
+# single-shot re-measurements taken minutes apart. That specific cell,
+# at that specific tank range, is the exact one
+# `test_solver_dispatch.DispatchDemotionGuardTests` exists to keep off
+# `exact_dp` permanently -- it reproduced HTTP 500 5/5 at 30.5-35.7s live,
+# pre-hotfix, and that guard's own assertion is written as an unconditional
+# "must never dispatch to exact_dp again," not a conditional one. Wiring
+# 130,000 in made that guard (and a same-effect Phase 18 stop-count guard
+# in `routing/tests/test_plan_objective.py`, a file this plan's own scope
+# does not include and whose own module comment states its pinned range is
+# "NOT a bound to widen") fail on this exact machine, non-deterministically,
+# depending on timing jitter around the 2.8s boundary.
+#
+# This is NOT the identical NOT TRACTABLE finding restated: that proof is
+# about a single estimate THRESHOLD with no clock behind it, and stands
+# unchanged (see the CONFIRMED paragraph above). This is a NEW, narrower
+# finding, specific to this plan's own scope: the deadline backstop makes
+# dallas_tx-seattle_wa@500mi's outcome legitimately non-deterministic on
+# fast hardware once admitted, and reconciling the two pre-existing guards
+# built around the OLD deterministic assumption requires touching either an
+# out-of-scope, differently-phased, explicitly protected test file, or
+# substantially rewriting an in-scope guard whose entire purpose is
+# resisting exactly this change -- neither of which this plan's own
+# `<measurement_integrity>` no-tuning-toward-dallas_tx-seattle_wa clause
+# licenses unilaterally. `DP_TRANSITION_BUDGET` stays 50,000. The rule's
+# own 130,000 answer is preserved here, verbatim, for the plan that takes
+# up this reconciliation deliberately.
 # ---------------------------------------------------------------------------
-DP_TRANSITION_BUDGET = 130_000
+DP_TRANSITION_BUDGET = 50_000
 
 # ---------------------------------------------------------------------------
 # DISPATCH_RETENTION_FLOOR -- pinned 2026-08-04 (plan 18-12), BEFORE

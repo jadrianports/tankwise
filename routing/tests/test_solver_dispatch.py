@@ -327,21 +327,20 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
        present: the breaching cell's estimate is still smaller than the
        retention-floor cell's estimate. If this ever flips, the verdict
        must be re-derived, not assumed still true.
-    3. **Updated 2026-08-04 (plan 18.1-08):** the dispatch policy now
-       retains ``exact_dp`` on BOTH floor cells, not just the achievable
-       maximum of one. This does not overturn point 2's inversion or
-       ``dp.py``'s NOT TRACTABLE proof about a single ESTIMATE threshold
-       with no clock behind it -- that proof still holds exactly as
-       stated for that narrower question. What changed is that
-       ``DP_TRANSITION_BUDGET`` was raised behind a wall-clock deadline
-       (D-01's second layer), so the estimate no longer has to demote
-       ``dallas_tx-seattle_wa``@1050mi on its own to protect the worker;
-       it only has to admit the attempt, and the clock (not the
-       threshold) bounds it. Original reasoning kept on the record
-       above, not deleted: until this plan, "the achievable maximum of
-       the floor set" was exactly one cell, and that was true and
-       provable under the single-threshold policy this test originally
-       exercised.
+    3. The CURRENT (unchanged) dispatch policy still retains ``exact_dp``
+       on the achievable maximum of the floor set (exactly one:
+       ``sacramento_ca-salt_lake_city_ut`` -- ``dallas_tx-seattle_wa``
+       @1050mi is provably NOT retainable alongside demoting the breaching
+       @500mi cell) -- so a future change that silently demotes even that
+       one achievable cell is caught here.
+
+    **Note, 2026-08-04 (plan 18.1-08):** `adopt_budget_rung()` genuinely
+    measured a rung (130,000) that would admit and complete
+    ``dallas_tx-seattle_wa``@1050mi behind the new wall-clock deadline --
+    see ``dp.py``'s own dated ``DP_TRANSITION_BUDGET`` note for the full
+    measurement and why it was NOT wired into the shipped constant. This
+    class's assertion below is therefore UNCHANGED and still correct
+    against the currently shipped policy.
     """
 
     _RETENTION_SET = (
@@ -391,28 +390,12 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
             "rather than assume it is still true.",
         )
 
-    def test_current_policy_retains_exact_dp_on_both_floor_cells(self):
-        """Renamed 2026-08-04 (plan 18.1-08) from
-        ``test_current_policy_retains_the_achievable_maximum_of_the_floor_set``
-        -- see this class's own docstring, point 3, for the dated
-        explanation. Before this plan, ``dallas_tx-seattle_wa``@1050mi was
-        asserted DEMOTED here as the NOT TRACTABLE finding's direct
-        consequence; the raised, deadline-backed budget now genuinely
-        admits and completes it, so both floor cells are asserted
-        ``exact_dp``, not just the one that was achievable under the old
-        single-threshold policy.
-        """
+    def test_current_policy_retains_the_achievable_maximum_of_the_floor_set(self):
         route_sac, candidates_sac = self._route_and_candidates(
             "sacramento_ca-salt_lake_city_ut"
         )
         plan_sac = solve(candidates_sac, route_sac.total_route_mi)
-        self.assertEqual(
-            plan_sac.strategy,
-            SolverStrategy.EXACT_DP,
-            "sacramento_ca-salt_lake_city_ut is one of the two "
-            "DISPATCH_RETENTION_FLOOR cells and must always stay exact_dp "
-            "-- this was true before and after the budget raise.",
-        )
+        self.assertEqual(plan_sac.strategy, SolverStrategy.EXACT_DP)
 
         route_dallas, candidates_dallas = self._route_and_candidates(
             "dallas_tx-seattle_wa"
@@ -424,13 +407,12 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
         )
         self.assertEqual(
             plan_dallas_1050.strategy,
-            SolverStrategy.EXACT_DP,
-            "dallas_tx-seattle_wa@1050mi -- ROADMAP criterion 1's own "
-            "worked example -- is now retained at exact_dp under the "
-            "raised, deadline-backed dp.DP_TRANSITION_BUDGET (see "
-            "dp.py's own dated 2026-08-04 note). If this ever regresses "
-            "to PENALTY_AWARE_HEURISTIC, that is a real finding requiring "
-            "investigation, not a silently-accepted default.",
+            SolverStrategy.PENALTY_AWARE_HEURISTIC,
+            "dallas_tx-seattle_wa@1050mi is demoted under the current "
+            "policy -- this is the NOT TRACTABLE finding's direct, proven "
+            "consequence (dp.py's own pinned comment), not a bug. If this "
+            "ever changes to EXACT_DP, dp.DISPATCH_RETENTION_FLOOR's own "
+            "proof must be re-checked, not silently accepted.",
         )
 
 
@@ -497,17 +479,13 @@ _DEMO_CHIP_SLUGS = frozenset(chip.slug for chip in DEMO_CHIPS)
 # byte-for-byte -- zero discrepancies found. See 18.1-02-SUMMARY.md and
 # 18.1-07-SUMMARY.md for the full side-by-side records.
 #
-# RE-PINNED 2026-08-04 (plan 18.1-08, Task 3) against the ADOPTED
-# `dp.DP_TRANSITION_BUDGET` (50,000 -> 130,000, see dp.py's own dated
-# note). The boundary marker below moved from 50,000 to 130,000
-# accordingly. Exactly three booleans flip as a direct, deliberate,
-# by-hand consequence of that raise -- all newly ADMITTED, none newly
-# demoted (a monotone raise): `dallas_tx-seattle_wa`@500mi (61,944),
-# `san_diego_ca-jacksonville_fl`@500mi (66,571), and
-# `dallas_tx-seattle_wa`@1050mi (117,895 -- ROADMAP criterion 1's own
-# worked example). Every other boolean is unchanged from the pre-raise
-# manifest, which git history carries as the historical, superseded
-# record at the old 50,000 boundary.
+# RE-PINNED 2026-08-04 (plan 18.1-08, Task 3): widened from 24 to 26 cells
+# (both demo chips added) against the CURRENT `dp.DP_TRANSITION_BUDGET`
+# (50,000, unchanged -- see dp.py's own dated note: `adopt_budget_rung()`
+# genuinely measured 130,000 as qualifying, but that value was NOT wired
+# into the shipped constant, for reasons recorded in full there). No
+# corridor boolean changes from the pre-widening 24-cell manifest; only
+# the two demo cells are new.
 # ---------------------------------------------------------------------------
 ADMISSION_MANIFEST = {
     ("houston_tx-chicago_il", 1050): True,  # estimate 23
@@ -524,11 +502,11 @@ ADMISSION_MANIFEST = {
     ("atlanta_ga-denver_co", 1050): True,  # estimate 32,487
     ("fargo_nd-amarillo_tx", 500): True,  # estimate 41,832
     ("houston_tx-chicago_il", 500): True,  # estimate 48,926
-    ("dallas_tx-seattle_wa", 500): True,  # estimate 61,944 -- FLIPPED by the raise (was False); known live-breaching cell pre-hotfix, now genuinely attempted behind the deadline
-    ("san_diego_ca-jacksonville_fl", 500): True,  # estimate 66,571 -- FLIPPED by the raise (was False)
-    ("dallas_tx-seattle_wa", 1050): True,  # estimate 117,895 -- FLIPPED by the raise (was False); ROADMAP criterion 1's worked example
     ("demo_la_ca-denver_co-chicago_il", 1050): True,  # estimate 9,264 -- demo chip, DEMO_CHIP_VEHICLE
-    # -------------------------- 130,000 boundary (dp.DP_TRANSITION_BUDGET)
+    # --------------------------- 50,000 boundary (dp.DP_TRANSITION_BUDGET)
+    ("dallas_tx-seattle_wa", 500): False,  # estimate 61,944 -- known live-breaching cell (pre-hotfix); measured to qualify at rung 70,000 (dp.py's own note), not shipped
+    ("san_diego_ca-jacksonville_fl", 500): False,  # estimate 66,571 -- also measured to qualify at rung 70,000, not shipped
+    ("dallas_tx-seattle_wa", 1050): False,  # estimate 117,895 -- ROADMAP criterion 1's worked example; measured to qualify at rung 130,000, not shipped
     ("atlanta_ga-denver_co", 500): False,  # estimate 150,905
     ("miami_fl-boston_ma", 500): False,  # estimate 182,506
     ("demo_la_ca-new_york_ny", 1050): False,  # estimate 222,214 -- demo chip, DEMO_CHIP_VEHICLE
@@ -659,17 +637,20 @@ class DispatchAdmissionManifestTests(RealCorridorDispatchTestCase):
 
 
 # ---------------------------------------------------------------------------
-# The set of (slug, tank_range_mi) cells admitted under the PRE-RAISE
-# budget (dp.DP_TRANSITION_BUDGET == 50,000, this phase's value before
-# plan 18.1-08's Task 2 raised it to 130,000). Pinned by hand as its own
-# historical-fact constant -- the 14 corridor cells True in
-# ADMISSION_MANIFEST's pre-raise state (superseded, but on the record in
-# git history) plus the one demo chip already admitted at 50,000
-# (demo_la_ca-denver_co-chicago_il@1050mi, estimate 9,264;
-# demo_la_ca-new_york_ny@1050mi, estimate 222,214, was NOT admitted at
-# either budget). This is a recorded fact, never recomputed against the
-# CURRENT budget -- recomputing it would make the comparison below
-# trivially self-consistent instead of a genuine historical check.
+# The set of (slug, tank_range_mi) cells admitted under the CURRENT budget
+# (dp.DP_TRANSITION_BUDGET == 50,000 -- unchanged by this plan; see dp.py's
+# own dated note for the genuine 130,000 measurement that was NOT wired
+# in). Pinned by hand as its own historical-fact constant -- the 14
+# corridor cells True in ADMISSION_MANIFEST plus the one demo chip already
+# admitted (demo_la_ca-denver_co-chicago_il@1050mi, estimate 9,264;
+# demo_la_ca-new_york_ny@1050mi, estimate 222,214, is NOT admitted). This
+# is a recorded fact, never recomputed against whatever the constant
+# happens to be at test-run time -- recomputing it would make the
+# comparison below trivially self-consistent instead of a genuine
+# regression check. Named `_PRE_RAISE_*` because this guard is written to
+# stay meaningful the moment a FUTURE plan does wire in a raise (this
+# plan's own measured 130,000, or otherwise): re-run against a raised
+# budget, this same pinned set is what "no regression" is checked against.
 # ---------------------------------------------------------------------------
 _PRE_RAISE_BUDGET = 50_000
 _PRE_RAISE_ADMITTED_CELLS = frozenset(
@@ -692,12 +673,12 @@ _PRE_RAISE_ADMITTED_CELLS = frozenset(
     }
 )
 
-# No cell in the 26-cell grid was infeasible before this phase raised the
-# budget (18.1-07-SUMMARY.md's own sweep: "Zero cells censored (no
+# No cell in the widened 26-cell grid was infeasible before this phase
+# (18.1-07-SUMMARY.md's own sweep: "Zero cells censored (no
 # InfeasibleRouteError)"). Pinned here, explicitly empty, rather than
 # silently omitted -- if a future cell genuinely becomes infeasible for a
-# reason UNRELATED to this raise (e.g. a dataset change), it belongs here
-# as a named, commented exception, not folded silently into the
+# reason UNRELATED to a budget change (e.g. a dataset change), it belongs
+# here as a named, commented exception, not folded silently into the
 # assertion's own pass condition.
 _KNOWN_PRE_PHASE_INFEASIBLE_CELLS = frozenset()
 
@@ -715,24 +696,40 @@ class BudgetRaiseRegressionGuardTests(RealCorridorDispatchTestCase):
     NEVER ATTEMPTED before under any budget; this class does not assume
     that raise is free.
 
+    **This plan's own budget did not end up raised** (see dp.py's own
+    dated `DP_TRANSITION_BUDGET` note: `adopt_budget_rung()` genuinely
+    measured 130,000 as qualifying, but wiring it in surfaced a conflict
+    with a pre-existing, out-of-scope safety guard this plan is not
+    authorized to touch, so 50,000 stands). This class is still required,
+    written infrastructure -- criterion 4 needs a permanent guard to
+    exist regardless of whether THIS plan's own measurement ends up
+    shipped, so a FUTURE plan that does wire in a raise (this measured
+    130,000, or a fresh figure) is checked against it, not exempted from
+    it.
+
     Three assertions:
 
-    1. Every cell admitted under the historical PRE-RAISE budget
+    1. Every cell admitted under the pinned baseline budget
        (`_PRE_RAISE_ADMITTED_CELLS`, a recorded historical fact, not a
-       recomputation) is still admitted under the adopted one. A monotone
-       raise makes this trivially true today -- that is the point: it
-       becomes non-trivial, and this guard starts actually firing, the
-       moment a future change lowers the budget or swaps the estimator.
+       recomputation) is still admitted under whatever is currently
+       shipped. Vacuously true today (nothing changed the baseline it
+       compares against) -- that is fine: it becomes non-trivial, and
+       this guard starts actually firing, the moment a future change
+       raises, lowers, or otherwise moves the budget away from this
+       pinned set.
     2. No corridor or demo chip in the full 26-cell grid newly returns
        `infeasible_route`. Any cell already infeasible before this phase
        would be a pinned, commented exception in
        `_KNOWN_PRE_PHASE_INFEASIBLE_CELLS` -- that set is empty, so this
        assertion currently has no exemptions to hide behind.
-    3. Both `dp.DISPATCH_RETENTION_FLOOR` cells still resolve to
-       `exact_dp` end to end, at the same vehicle
+    3. The achievable member of `dp.DISPATCH_RETENTION_FLOOR` still
+       resolves to `exact_dp` end to end, at the same vehicle
        `DispatchRetentionFloorGuardTests` already uses -- kept as a
-       second, independent confirmation of that class's own (updated)
-       assertion, not a replacement for it.
+       second, independent confirmation of that class's own assertion,
+       not a replacement for it. (Under the currently shipped, unraised
+       policy, `dallas_tx-seattle_wa`@1050mi is NOT part of this check --
+       see that class's own docstring for why only the one cell is
+       currently achievable.)
     """
 
     def test_every_pre_raise_admitted_cell_is_still_admitted(self):
@@ -785,20 +782,20 @@ class BudgetRaiseRegressionGuardTests(RealCorridorDispatchTestCase):
                         f"pre-phase exception: {exc}"
                     )
 
-    def test_retention_floor_cells_still_resolve_to_exact_dp(self):
-        for slug, tank_range_mi in DispatchRetentionFloorGuardTests._RETENTION_SET:
-            with self.subTest(slug=slug, tank_range_mi=tank_range_mi):
-                route, candidates = self._route_and_candidates(slug)
-                plan = solve(
-                    candidates,
-                    route.total_route_mi,
-                    tank_range_mi=tank_range_mi,
-                )
-                self.assertEqual(
-                    plan.strategy,
-                    SolverStrategy.EXACT_DP,
-                    f"{slug}@{tank_range_mi}mi is one of the two "
-                    "DISPATCH_RETENTION_FLOOR cells and must stay "
-                    "exact_dp regardless of the budget raise -- a "
-                    "regression here is exactly criterion 4's exposure.",
-                )
+    def test_achievable_retention_floor_cell_still_resolves_to_exact_dp(self):
+        """Under the currently shipped (unraised) policy only
+        ``sacramento_ca-salt_lake_city_ut`` is an achievable retention-floor
+        cell -- see ``DispatchRetentionFloorGuardTests``'s own docstring.
+        ``dallas_tx-seattle_wa``@1050mi is intentionally excluded from this
+        loop for that reason, not omitted by oversight.
+        """
+        slug, tank_range_mi = "sacramento_ca-salt_lake_city_ut", Decimal(500)
+        route, candidates = self._route_and_candidates(slug)
+        plan = solve(candidates, route.total_route_mi, tank_range_mi=tank_range_mi)
+        self.assertEqual(
+            plan.strategy,
+            SolverStrategy.EXACT_DP,
+            f"{slug}@{tank_range_mi}mi is the achievable member of "
+            "DISPATCH_RETENTION_FLOOR and must stay exact_dp -- a "
+            "regression here is exactly criterion 4's exposure.",
+        )

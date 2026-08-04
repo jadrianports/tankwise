@@ -512,28 +512,12 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
                 "DP_TRANSITION_BUDGET_LADDER must be strictly increasing "
                 "over its non-None members",
             )
-        # Retired 2026-08-04 (plan 18.1-08, deviation -- Rule 1 bug fix,
-        # not a ladder/rule/floor edit): this assertion originally read
-        # `self.assertEqual(DP_TRANSITION_BUDGET_LADDER[0],
-        # dp.DP_TRANSITION_BUDGET, "the ladder's baseline rung must equal
-        # the currently shipped dp.DP_TRANSITION_BUDGET, so the baseline
-        # is not a fiction")`. It held from this module's own commit
-        # (plan 18.1-01) through plan 18.1-07 only because nothing had
-        # ever moved `dp.DP_TRANSITION_BUDGET` off the ladder's original
-        # baseline (50,000) yet. Plan 18.1-08's own Task 2 is this exact
-        # ladder's designed purpose -- `adopt_budget_rung()`, applied to
-        # genuine evidence, legitimately raised the shipped constant to
-        # 130,000 (see `dp.py`'s own dated `DP_TRANSITION_BUDGET` note) --
-        # so a hard equality against index 0 is now provably wrong AS A
-        # PERMANENT INVARIANT, not merely inconvenient: nothing about
-        # `DP_TRANSITION_BUDGET_LADDER`'s own values, `adopt_budget_rung`
-        # itself, or `DISPATCH_RETENTION_FLOOR` changed to produce this --
-        # this line alone encoded a "the shipped value can never move"
-        # assumption this module was never actually designed to hold.
-        # Off-ladder drift protection is UNCHANGED and still enforced by
-        # `test_dp_transition_budget_is_a_member_of_the_ladder` (band 4,
-        # below), which does not care which rung is current, only that
-        # whatever IS shipped is a genuine ladder member.
+        self.assertEqual(
+            DP_TRANSITION_BUDGET_LADDER[0],
+            dp.DP_TRANSITION_BUDGET,
+            "the ladder's baseline rung must equal the currently shipped "
+            "dp.DP_TRANSITION_BUDGET, so the baseline is not a fiction",
+        )
         self.assertIsNone(DP_TRANSITION_BUDGET_LADDER[-1])
         self.assertEqual(
             DP_TRANSITION_BUDGET_LADDER.count(None),
