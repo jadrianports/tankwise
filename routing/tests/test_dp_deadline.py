@@ -99,7 +99,7 @@ class DeadlineIdentityGuardTests(RealCorridorDispatchTestCase):
         # Deliberately NOT houston_tx-chicago_il@1050mi (the plan's
         # originally named second cell, estimate 23): measured directly,
         # its actual DP run examines far fewer than
-        # dp._DEADLINE_CHECK_STRIDE (500) (state, level) pairs, so the
+        # dp._DEADLINE_CHECK_STRIDE (5,000) (state, level) pairs, so the
         # deadline's stride-checked code path never fires there no matter
         # what dp.DP_DEADLINE_SECONDS is set to -- it cannot participate in
         # this class's own anti-vacuity mutation check (see
