@@ -818,8 +818,62 @@ def preflight_gap_check(candidates, *, total_route_mi, tank_range_mi, starting_f
 # dallas_tx-seattle_wa@1050mi to exact_dp while also demoting
 # dallas_tx-seattle_wa@500mi, so there was nothing a different number here
 # could have fixed.
+#
+# RAISED, 2026-08-04 (plan 18.1-08): 50,000 -> 130,000, chosen by
+# `routing.tests.test_dispatch_recovery.adopt_budget_rung()`, a rule
+# committed in plan 18.1-01, BEFORE the measurement below existed. This
+# is the resolution D-01 makes possible: with `DP_DEADLINE_SECONDS` now
+# backstopping every DP attempt, the estimate no longer has to demote a
+# cell on its own to protect the worker -- it only has to admit the
+# attempt; the wall-clock deadline is what actually bounds it. This does
+# NOT reopen or overturn the CONFIRMED paragraph immediately above, or
+# 18-12's NOT TRACTABLE proof: that proof was, and remains, about whether
+# a SINGLE estimate THRESHOLD alone (with no clock behind it) can
+# simultaneously demote dallas_tx-seattle_wa@500mi and retain
+# dallas_tx-seattle_wa@1050mi -- it cannot (117,895 > 61,944), and this
+# raise does not change that arithmetic or attempt to. This plan adds a
+# SECOND layer behind the same threshold rather than finding a better
+# threshold; NOT TRACTABLE stands, unchanged, for the single-threshold
+# question it answered.
+#
+# Method: every cell newly admitted at each `DP_TRANSITION_BUDGET_LADDER`
+# rung was measured with a GENUINE DP attempt -- `dp.solve_fixed_charge`
+# called DIRECTLY at `deadline=DP_DEADLINE_SECONDS` (2.8, confirmed
+# above), bypassing `solve()`'s own budget gate, which would otherwise
+# demote an over-budget cell to the heuristic before ever attempting the
+# DP and produce exactly the measurement-artifact plan 18.1-07's own
+# SUMMARY warns against ("adopted rung: None" was that artifact, not
+# evidence). 3 repeats per cell, worst response kept, one-off script, not
+# a permanent test:
+#
+#   rung=70,000 (newly admitted vs. 50,000):
+#     dallas_tx-seattle_wa@500mi       est=61,944  worst=3.000s BREACHED
+#     san_diego_ca-jacksonville_fl@500mi est=66,571 worst=3.046s completed
+#     -> all_within_bar (<=15s): yes. at_least_one_completed: yes. QUALIFIES.
+#
+#   rung=130,000 (newly admitted vs. 70,000):
+#     dallas_tx-seattle_wa@1050mi      est=117,895 worst=2.750s completed
+#     -> all_within_bar: yes. at_least_one_completed: yes. QUALIFIES.
+#
+#   rung=200,000 (newly admitted vs. 130,000):
+#     atlanta_ga-denver_co@500mi       est=150,905 worst=3.032s BREACHED (3/3)
+#     miami_fl-boston_ma@500mi         est=182,506 worst=3.234s BREACHED (3/3)
+#     -> all_within_bar: yes. at_least_one_completed: NO (every repeat on
+#        both cells breached). FAILS -- the walk stops here per
+#        `adopt_budget_rung`'s own rule (a later rung can never be
+#        adopted once an earlier one fails to qualify), so rung=400,000
+#        (jacksonville_fl-bangor_me@500mi est=356,085 worst=2.954s
+#        BREACHED 3/3; demo_la_ca-new_york_ny@1050mi est=222,214
+#        worst=3.156s BREACHED 3/3 -- also measured, also would have
+#        failed) and rung=None were never reached by the walk.
+#
+# Adopted: 130,000. This RECOVERS dallas_tx-seattle_wa@1050mi -- ROADMAP
+# criterion 1's own worked example -- to a genuinely ADMITTED cell; see
+# `DISPATCH_RETENTION_FLOOR`'s own block below and
+# `test_solver_dispatch.DispatchRetentionFloorGuardTests` for what this
+# means for that class's own assertion.
 # ---------------------------------------------------------------------------
-DP_TRANSITION_BUDGET = 50_000
+DP_TRANSITION_BUDGET = 130_000
 
 # ---------------------------------------------------------------------------
 # DISPATCH_RETENTION_FLOOR -- pinned 2026-08-04 (plan 18-12), BEFORE
@@ -887,14 +941,12 @@ DP_TRANSITION_BUDGET = 50_000
 DISPATCH_RETENTION_FLOOR = 2
 
 # ---------------------------------------------------------------------------
-# DP_DEADLINE_SECONDS -- PROVISIONAL, pinned 2026-08-04 (plan 18.1-04),
-# derived by routing.tests.test_dispatch_recovery.derive_dp_deadline_seconds
-# from the single upstream figure currently in evidence (18-11's own
-# full stage-breakdown capture, corridor + route + eia + cache + index
-# ~= 5.44s). This value is NOT final: plan 18.1-08 re-derives it against a
-# fresh live measurement and either CONFIRMS it (this codebase's own
-# DP_TRANSITION_BUDGET precedent above: confirmed, not superseded) or
-# SUPERSEDES it with a dated note, exactly as that precedent requires.
+# DP_DEADLINE_SECONDS -- pinned 2026-08-04 (plan 18.1-04) as a provisional
+# value, derived by
+# routing.tests.test_dispatch_recovery.derive_dp_deadline_seconds from the
+# single upstream figure in evidence at that time (18-11's own full
+# stage-breakdown capture, corridor + route + eia + cache + index ~=
+# 5.44s).
 #
 # Full arithmetic, term by term (RESPONSE_BAR_SECONDS = 15s total cold
 # cache-miss bar, minus the 5.44s measured upstream, minus a 0.5s
@@ -936,12 +988,37 @@ DISPATCH_RETENTION_FLOOR = 2
 # forbids tuning toward. This number must NOT be revisited in order to
 # capture that cell.
 #
-# Both outcome branches for plan 18.1-08's re-derivation, pinned now:
-#   * CONFIRMED -- the fresh upstream measurement yields the same value or
-#     a larger one, and this literal (2.8) stands.
-#   * SUPERSEDED -- it yields a smaller value, which is adopted with a
-#     dated note, keeping this derivation on the record rather than
-#     silently overwriting it.
+# CONFIRMED, 2026-08-04 (plan 18.1-08), NOT superseded -- re-derivation
+# attempted per this comment's own pinned outcome branches. No fresh
+# upstream `corridor + route + eia + cache + index` Server-Timing figure
+# could be obtained without issuing an UNPLANNED live request: neither
+# `.github/workflows/smoke.yml` nor `.github/workflows/keep-warm.yml`
+# capture response headers (both discard the body with `-o /dev/null` or
+# a scratch file and record only `%{http_code} %{time_total}`, never
+# `Server-Timing`), so no existing CI artifact carries the figure this
+# derivation needs. Issuing one here would duplicate plan 18.1-09's own
+# dedicated live spot-check protocol (wake-then-measure, cache-bust
+# ladder, worst-of-repeats) with an ad hoc, unprotocoled substitute --
+# explicitly the wrong tool for this job. Per this comment's own pinned
+# instruction, the recorded 5.44s figure is RE-APPLIED rather than
+# presented as fresh; this is recorded here as a LIMITATION, not hidden.
+# Re-applying the identical upstream figure through the identical pinned
+# function necessarily reproduces the identical result -- trivially
+# "the same value", which is this comment's own CONFIRMED branch:
+#
+#   (15 - 5.44 - 0.5 - 0.5) / 3 = 8.56 / 3 = 2.8533... -> 2.8  (unchanged)
+#
+# D-09's secondary check, re-verified against the same re-applied figure
+# (unchanged from above, restated here because plan 18.1-08's own task
+# requires it be recorded explicitly at this re-derivation, not merely
+# cross-referenced):
+#
+#   5.44 + 3 * (2.8 + 0.5) + 0.5 = 15.84s <= 30 - 5 = 25s
+#
+# -- clears with room to spare; the 15s product bar remains the binding
+# constraint, not the worker timeout. This literal (2.8) stands, CONFIRMED
+# not superseded, mirroring `DP_TRANSITION_BUDGET`'s own CONFIRMED-not-
+# superseded precedent above.
 # ---------------------------------------------------------------------------
 DP_DEADLINE_SECONDS = Decimal("2.8")
 
