@@ -40,6 +40,7 @@ from decimal import ROUND_DOWN, Decimal
 from django.test import SimpleTestCase
 
 from routing.services import dp
+from routing.tests import test_live_latency_probe
 from routing.tests.test_live_latency_probe import (
     LIVE_PROBE_CACHE_BUST_LADDER,
     LIVE_PROBE_MAX_REQUESTS,
@@ -465,3 +466,284 @@ def measurement_floor_violations(live_rows):
                 "floor requires worst-of-repeats"
             )
     return violations
+
+
+# ---------------------------------------------------------------------------
+# Permanent anti-vacuity guard (Task 2)
+# ---------------------------------------------------------------------------
+
+
+class PinnedRecoveryRuleGuardTests(SimpleTestCase):
+    """Proves none of the six rules pinned above is degenerate.
+
+    A rule that is CONSTANT is indistinguishable from no rule at all --
+    the milestone's own transferable lesson (the false Domination Theorem
+    disproof, Phase 17) is that a no-op transformation, `prune(x) -> x`,
+    passes every soundness property written only in the "does not make
+    things worse" direction. Each guard below therefore checks BOTH
+    directions: that the rule can produce its baseline/negative outcome
+    AND that it can produce its raised/positive outcome, on hand-built
+    synthetic rows -- no DB, no fixtures, no network.
+
+    Grouped into four bands, mirroring
+    `test_dispatch_predictor.DispatchPredictorGuardTests` and
+    `test_solver_dispatch.DispatchRetentionFloorGuardTests`' own
+    non-vacuous-by-construction style:
+
+      1. Well-formedness -- the ladders themselves are shaped correctly.
+      2. Non-constancy -- each adoption/verdict/floor function can swing
+         both ways on synthetic input.
+      3. Derivation -- `derive_dp_deadline_seconds` behaves as a genuine
+         function of its one argument, not a constant.
+      4. Cross-module coupling -- the two constants this phase's real
+         code introduces (`dp.DP_TRANSITION_BUDGET`,
+         `dp._DEADLINE_CHECK_STRIDE`) must be members of their
+         corresponding ladder here, so an off-ladder value cannot ship.
+    """
+
+    # -- 1. Well-formedness --------------------------------------------
+
+    def test_dp_transition_budget_ladder_is_well_formed(self):
+        non_none = [rung for rung in DP_TRANSITION_BUDGET_LADDER if rung is not None]
+        for lower, higher in zip(non_none, non_none[1:]):
+            self.assertLess(
+                lower,
+                higher,
+                "DP_TRANSITION_BUDGET_LADDER must be strictly increasing "
+                "over its non-None members",
+            )
+        self.assertEqual(
+            DP_TRANSITION_BUDGET_LADDER[0],
+            dp.DP_TRANSITION_BUDGET,
+            "the ladder's baseline rung must equal the currently shipped "
+            "dp.DP_TRANSITION_BUDGET, so the baseline is not a fiction",
+        )
+        self.assertIsNone(DP_TRANSITION_BUDGET_LADDER[-1])
+        self.assertEqual(
+            DP_TRANSITION_BUDGET_LADDER.count(None),
+            1,
+            "None (the no-gate rung) must appear exactly once, as the "
+            "last member",
+        )
+
+    def test_deadline_check_stride_ladder_is_well_formed(self):
+        for value in DEADLINE_CHECK_STRIDE_LADDER:
+            self.assertIsInstance(value, int)
+            self.assertGreater(value, 0)
+        for lower, higher in zip(DEADLINE_CHECK_STRIDE_LADDER, DEADLINE_CHECK_STRIDE_LADDER[1:]):
+            self.assertLess(
+                lower,
+                higher,
+                "DEADLINE_CHECK_STRIDE_LADDER must be strictly increasing",
+            )
+
+    def test_live_probe_max_cells_stays_within_the_existing_probe_request_budget(self):
+        implied_requests = (
+            LIVE_PROBE_MAX_CELLS
+            * test_live_latency_probe.LIVE_PROBE_REPEATS
+            * len(test_live_latency_probe.LIVE_PROBE_CACHE_BUST_LADDER)
+            + 1
+        )
+        self.assertLessEqual(
+            implied_requests,
+            test_live_latency_probe.LIVE_PROBE_MAX_REQUESTS,
+            "LIVE_PROBE_MAX_CELLS must stay inside the existing live-probe "
+            "request budget, not just this module's own arithmetic",
+        )
+
+    # -- 2. Non-constancy (the anti-vacuity half) -----------------------
+
+    def test_adopt_budget_rung_is_not_constant_in_either_direction(self):
+        # Every higher rung's newly-admitted cells exceed the response
+        # bar (all breached, all over RESPONSE_BAR_SECONDS) -> the walk
+        # must stop at the very first rung and fall back to the baseline.
+        over_bar_rows = [
+            {
+                "slug": "over-bar-1",
+                "tank_range_mi": Decimal(500),
+                "estimate": 60_000,
+                "worst_timed_response_seconds": Decimal(30),
+                "breached": True,
+            },
+            {
+                "slug": "over-bar-2",
+                "tank_range_mi": Decimal(500),
+                "estimate": 125_000,
+                "worst_timed_response_seconds": Decimal(30),
+                "breached": True,
+            },
+        ]
+        self.assertEqual(
+            adopt_budget_rung(over_bar_rows),
+            DP_TRANSITION_BUDGET_LADDER[0],
+            "a rung whose own newly-admitted cells all exceed the bar "
+            "must not be adopted",
+        )
+
+        # One rung's newly-admitted cell sits comfortably inside the bar
+        # and did not breach -> that rung must be adopted, strictly above
+        # the baseline.
+        comfortable_rows = [
+            {
+                "slug": "comfortable-1",
+                "tank_range_mi": Decimal(500),
+                "estimate": 60_000,
+                "worst_timed_response_seconds": Decimal(2),
+                "breached": False,
+            },
+        ]
+        adopted = adopt_budget_rung(comfortable_rows)
+        self.assertGreater(
+            adopted,
+            DP_TRANSITION_BUDGET_LADDER[0],
+            "a rung whose own newly-admitted cell sits comfortably inside "
+            "the bar and completed must be adopted above the baseline",
+        )
+
+    def test_adopt_stride_rung_is_not_constant_in_either_direction(self):
+        every_rung_overshoots = [
+            {"stride": stride, "worst_overshoot_seconds": Decimal("10")}
+            for stride in DEADLINE_CHECK_STRIDE_LADDER
+        ]
+        self.assertEqual(
+            adopt_stride_rung(every_rung_overshoots),
+            DEADLINE_CHECK_STRIDE_LADDER[0],
+            "when every rung overshoots the budget, the smallest "
+            "(finest-grained) rung must be returned as the floor",
+        )
+
+        no_rung_overshoots = [
+            {"stride": stride, "worst_overshoot_seconds": Decimal("0.05")}
+            for stride in DEADLINE_CHECK_STRIDE_LADDER
+        ]
+        self.assertEqual(
+            adopt_stride_rung(no_rung_overshoots),
+            DEADLINE_CHECK_STRIDE_LADDER[-1],
+            "when no rung overshoots the budget, the largest rung must "
+            "be adopted",
+        )
+
+    def test_recovery_verdict_is_not_constant_in_either_direction(self):
+        # Each case runs inside its own subTest so ALL three are
+        # evaluated and reported independently -- a mutated
+        # recovery_verdict that always returns "RECOVERED" must fail at
+        # least two of these three, not just halt on the first.
+        with self.subTest(case="empty_input"):
+            self.assertEqual(recovery_verdict([]), "NOT RECOVERED")
+
+        already_exact_rows = [
+            {
+                "slug": "sacramento_ca-salt_lake_city_ut",
+                "tank_range_mi": Decimal(500),
+                "shipped_policy_strategy": "exact_dp",
+                "worst_of_repeats_solver_strategy": "exact_dp",
+                "worst_of_repeats_total_response_seconds": Decimal("1"),
+            },
+        ]
+        with self.subTest(case="nothing_needed_recovering"):
+            self.assertEqual(
+                recovery_verdict(already_exact_rows),
+                "NOT RECOVERED",
+                "nothing was recovered because nothing needed recovering -- "
+                "a cell already on exact_dp under the shipped policy cannot "
+                "count toward RECOVERED",
+            )
+
+        recovered_rows = [
+            {
+                "slug": "dallas_tx-seattle_wa",
+                "tank_range_mi": Decimal(500),
+                "shipped_policy_strategy": "penalty_aware_heuristic",
+                "worst_of_repeats_solver_strategy": "exact_dp",
+                "worst_of_repeats_total_response_seconds": Decimal(9),
+            },
+        ]
+        with self.subTest(case="genuine_transition_recovers"):
+            self.assertEqual(recovery_verdict(recovered_rows), "RECOVERED")
+
+    def test_measurement_floor_violations_catches_each_violation_and_clears_a_compliant_row(
+        self,
+    ):
+        compliant_row = {
+            "slug": "dallas_tx-seattle_wa",
+            "tank_range_mi": Decimal(500),
+            "confirmed_warm": True,
+            "repeats": LIVE_PROBE_REPEATS,
+            "all_repeats_genuine_cache_miss": True,
+            "reported_figure_kind": "worst",
+        }
+        self.assertEqual(measurement_floor_violations([compliant_row]), [])
+
+        missing_confirmed_warm = dict(compliant_row, confirmed_warm=False)
+        self.assertTrue(measurement_floor_violations([missing_confirmed_warm]))
+
+        too_few_repeats = dict(compliant_row, repeats=LIVE_PROBE_REPEATS - 1)
+        self.assertTrue(measurement_floor_violations([too_few_repeats]))
+
+        not_a_genuine_cache_miss = dict(compliant_row, all_repeats_genuine_cache_miss=False)
+        self.assertTrue(measurement_floor_violations([not_a_genuine_cache_miss]))
+
+        not_worst_of_repeats = dict(compliant_row, reported_figure_kind="mean")
+        self.assertTrue(measurement_floor_violations([not_worst_of_repeats]))
+
+    # -- 3. Derivation ----------------------------------------------------
+
+    def test_derive_dp_deadline_seconds_is_strictly_decreasing_positive_and_bounded(self):
+        smaller_upstream = derive_dp_deadline_seconds(Decimal("1"))
+        larger_upstream = derive_dp_deadline_seconds(Decimal("2"))
+        self.assertGreater(
+            smaller_upstream,
+            larger_upstream,
+            "derive_dp_deadline_seconds must be strictly decreasing in "
+            "its upstream argument",
+        )
+
+        # The one measured upstream figure on record: 18-11's own
+        # full stage-breakdown capture, corridor + route + eia + cache +
+        # index ~= 5.44s (routing.tests.test_live_latency_probe's own
+        # anomaly-reproduction docstring).
+        recorded_upstream = Decimal("5.44")
+        result = derive_dp_deadline_seconds(recorded_upstream)
+        self.assertGreater(result, Decimal(0))
+        self.assertIsInstance(result, Decimal)
+
+        # D-09's secondary check, asserted here so a value that clears
+        # the product bar but not the worker timeout cannot pass
+        # silently.
+        worst_case_total = (
+            recorded_upstream
+            + ROUTE_ALTERNATIVES_FANOUT * (result + DEADLINE_OVERSHOOT_BUDGET_SECONDS)
+            + HEURISTIC_FALLBACK_ALLOWANCE_SECONDS
+        )
+        self.assertLessEqual(
+            worst_case_total,
+            GUNICORN_TIMEOUT_SECONDS - GUNICORN_TIMEOUT_MARGIN_SECONDS,
+            "the derived deadline must also clear the worker timeout "
+            "with margin, not merely the product response bar",
+        )
+
+        with self.assertRaises(ValueError):
+            derive_dp_deadline_seconds(Decimal("20"))
+
+    # -- 4. Cross-module coupling ------------------------------------------
+
+    def test_dp_transition_budget_is_a_member_of_the_ladder(self):
+        self.assertIn(
+            dp.DP_TRANSITION_BUDGET,
+            DP_TRANSITION_BUDGET_LADDER,
+            "an off-ladder dp.DP_TRANSITION_BUDGET value must not be "
+            "shippable unnoticed",
+        )
+
+    @unittest.skipUnless(
+        hasattr(dp, "_DEADLINE_CHECK_STRIDE"),
+        "dp._DEADLINE_CHECK_STRIDE does not exist yet -- plan 04 introduces it; "
+        "this guard activates automatically the moment it lands",
+    )
+    def test_deadline_check_stride_is_a_member_of_the_ladder(self):
+        self.assertIn(
+            dp._DEADLINE_CHECK_STRIDE,
+            DEADLINE_CHECK_STRIDE_LADDER,
+            "an off-ladder dp._DEADLINE_CHECK_STRIDE value must not be "
+            "shippable unnoticed",
+        )
