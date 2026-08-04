@@ -1,12 +1,16 @@
 # TankWise Algorithm Design
 
 This is a technical walkthrough of how TankWise turns a start/finish location into
-the cheapest feasible fueling plan: the solver's greedy strategy and why it's
-provably optimal, the corridor filter's projection math, the STRtree spatial
-index and its real measured speedup, the route-alternatives strategy, and the
-complexity of each stage. Every number below is either read directly out of the
-solver/corridor source or reproduced from a real, reproducible local benchmark
-run — nothing here is estimated or rounded for effect.
+the cheapest feasible fueling plan: the objective the solver minimises (fuel
+dollars plus a flat per-stop charge), the fixed-charge dynamic program that
+minimises it exactly, the domination prune that shrinks the DP's input before it
+ever runs, the dispatch policy that decides when the exact program is even
+attempted, and the penalty-aware fallback for when it is not — plus the corridor
+filter's projection math, the STRtree spatial index and its real measured
+speedup, the route-alternatives strategy, and the complexity of each stage.
+Every number below is either read directly out of the solver/corridor source or
+reproduced from a real, reproducible local benchmark run — nothing here is
+estimated or rounded for effect.
 
 ## Overview
 
@@ -38,7 +42,7 @@ flowchart LR
     Req["POST /api/route<br/>start, finish, vehicle"]
     Mapbox["Mapbox Directions<br/>(1 call, alternatives=true)"]
     Corridor["Corridor filter<br/>STRtree query + perpendicular test<br/>(per alternative)"]
-    Solver["Greedy solver<br/>(per alternative)"]
+    Solver["Fixed-charge solve<br/>exact_dp or heuristic fallback<br/>(per alternative)"]
     Winner["Deterministic winner select<br/>(cheapest feasible alternative)"]
     Resp["Response<br/>plan, cost, legs, savings, alternatives"]
 
@@ -173,61 +177,178 @@ raises `CommandError` rather than reporting a misleading number. It is
 deliberately excluded from CI (timing numbers are informational, not a
 pass/fail gate).
 
-## Solver Design: a greedy that's provably optimal
+## Solver Design: a fixed-charge dynamic program, dispatched behind a two-layer policy
 
-`routing/services/solver.py`'s `solve()` walks the route once, left to right,
-maintaining current position, fuel on board, and the current (real-or-START)
-node's price. At each step it looks at every candidate reachable from here
-(bounded by the tank range from a real station, or by whatever fuel is
-physically on board from the non-purchasable START node) and takes exactly one
-of four branches, each recorded on the resulting `FuelStop` as a
-`purchase_reason`:
+The solver's job is not simply "cheapest fuel" — it is "cheapest fuel plus the
+real dollar cost of making a stop at all." `routing/services/solver.py`'s
+`solve()` is now an orchestration seam over the pieces below: it validates the
+request, runs a price-independent feasibility check, prunes the search space,
+picks which arm actually computes the plan, and rebuilds each stop's reporting
+statistics over the full candidate list. It no longer runs a search itself.
 
-- **`reach_cheaper_stop`** — a strictly cheaper station is reachable: buy just
-  enough fuel here to reach it (never more), then jump there.
-- **`reach_finish`** — no cheaper station is reachable, but the finish line is:
-  buy just enough to finish (the "endpoint rule" — never top off the tank if
-  there's nothing left to spend it on).
-- **`fill_to_continue`** — no cheaper station or the finish is reachable from
-  here, so fill the tank and jump to the cheapest reachable station (ties
-  broken by nearest, never the farthest).
-- **`top_up_at_cheapest`** — same fill-and-jump branch, but relabeled when the
-  current price is already at or below every station still ahead, so the
-  purchase isn't "reluctantly continuing" but genuinely topping off at the best
-  price available for the rest of the trip.
+### The objective
 
-**Why greedy is optimal here:** buying fuel that never gets burned strictly
-increases cost, so an optimal purchase amount is always either exactly enough
-to reach some specific later node, or a full tank — nothing in between is ever
-worth paying for. Given that, the cheapest strategy is to always buy the
-least fuel necessary to reach the next strictly cheaper price, and only commit
-to a full tank (paying today's price for miles you might not need at the
-cheapest rate) when nothing cheaper is reachable. Because the algorithm never
-backtracks and only ever makes the locally-forced choice at each node, it runs
-in a single left-to-right pass with no search.
+Every plan is scored on **fuel dollars plus a flat charge for each station
+actually purchased at**, minimised jointly — not fuel dollars alone. The flat
+charge is `FUEL_STOP_PENALTY_USD` (`config/settings/base.py`), shipped at a
+default of **$35 per stop**. Its citation, carried verbatim from the setting's
+own derivation comment: ATRI's "An Analysis of the Operational Costs of
+Trucking" (2021 update) reports $66.87/hour all-in marginal operating cost;
+TruckerPath inflation-adjusts that to $70/hour and applies an
+independently-derived 30-minute average fuel-stop duration; 30 min × $70/hr =
+$35/stop. (Re-deriving with ATRI's 2024 figure, $90.89/hr, at the same
+30-minute assumption yields roughly $45 — $20–$45 is the defensible band, and
+$20/$35/$45 were measured to select identical stop counts on all twelve
+surveyed corridors, so the exact figure inside that band is a citation choice,
+not a behavioral one.)
 
-This isn't just asserted — it's proven by a property test. `python manage.py
-test` doesn't just check hand-picked edge cases; a dedicated Hypothesis test at
-`routing/tests/test_solver_optimality.py` (`SolverOptimalityTests.
-test_solver_matches_brute_force_optimum`) generates 200 randomized examples of
-station price/position landscapes (up to 6 stations, random tank range, mpg,
-starting fuel fraction, and total route length) and compares the greedy
-solver's output against a deliberately dumb, independent exhaustive oracle — a
-memoized recursive search over `(node, fuel-remaining)` states that enumerates
-every station subset and purchase amount rather than reasoning about which ones
-belong in an optimal plan. The oracle never imports or calls any solver helper
-beyond the shared `Candidate` dataclass, so a passing test is real evidence
-about the solver's behavior, not a shared-assumption tautology between two
-implementations of the same idea. The test asserts feasibility agrees exactly
-and total cost matches within `Decimal("0.0001")` — four orders of magnitude
-tighter than a cent, loose enough only to absorb `Decimal` summation-order
-rounding noise, never a real optimality gap.
+The charge is resolved once, at the Django settings layer, and passed into the
+pure solver as a plain `penalty` keyword — never read from a live setting
+inside `solver.py`/`dp.py`/`heuristic.py`/`prune.py` themselves, enforced by an
+AST gate (`SolvePenaltyKwargGateTest`).
 
-Because the solver optimizes for total cost rather than stop count or distance,
-the number of stops tracks the price landscape along a corridor, not trip
-length: a 1,329-mile Dallas → DC route needs 10 stops while the longer
-1,437-mile Dallas → Los Angeles route needs only 5, and both are correct
-outputs for their respective price landscapes.
+**`total_cost` — the field the API response actually reports — stays fuel
+dollars only; the per-stop charge is never added to it.** The charge shapes
+*which* plan gets chosen (a stop is only worth taking when the fuel it saves
+beats the $35 it costs), but it is not part of the number a caller sees as the
+trip's cost, so the response's savings figure stays a like-for-like comparison
+against the price-blind baseline. A reader who does not know this can misread
+a plan with a higher `total_cost` as a regression, when what actually happened
+is the solver chose fewer, cheaper-overall stops and the charge that shaped
+that choice simply never appears in the number being compared.
+
+### The recurrence
+
+`routing/services/dp.py`'s `solve_fixed_charge` is a dynamic program over
+`(node, fuel)` state, where `node` ranges over START, every surviving
+candidate (after the prune below), and FINISH, and `fuel` ranges over a
+provably finite set of *useful* post-purchase levels at each node. The
+**finite-fill lemma** (the module's own docstring, proven by a perturbation
+argument) establishes that an optimal plan only ever leaves a station with one
+of three fuel levels: whatever was already on board (buy nothing), the exact
+amount needed to reach some specific later candidate or FINISH, or a full
+tank — buying anything strictly between two of those wastes money on range the
+plan never uses, and buying past "full" cannot physically fit in the tank.
+Bounding the fuel dimension this way keeps the state count at `O(m²)` over `m`
+post-prune candidates, and the enumeration itself is **total**: `solve_fixed_charge`
+never raises for infeasibility (D-17), because `preflight_gap_check` — a
+price-independent reachability check the caller always runs first, over the
+*unpruned* candidate list — is itself the feasibility condition. If it passes,
+stopping at every station in turn is already a feasible plan, so the
+recurrence always has somewhere to relax to.
+
+A Pareto state-dominance pass (`_pareto_frontier`) discards a state whenever
+another state at the same node arrives with at least as much fuel via a
+strictly better path, proven (by an exchange argument in the same module
+docstring) never to remove the true optimum — and every relaxation and the
+final winner selection resolve through one explicit, deterministic tie-break
+key (position, then cost, then stop count, then station id), so the same input
+always retraces the same relaxations and produces a byte-identical plan.
+
+### The prune
+
+Before the DP ever runs, `routing/services/prune.py`'s
+`prune_dominated_candidates` removes stations a single earlier, cheaper-or-equal
+station already makes redundant. The **supply-interval lemma** it is built on:
+a station `S` at position `pos_S` can, by itself, ever supply fuel only to
+route miles in `[pos_S, min(pos_S + tank_range_mi, total_route_mi)]`. Station
+`A` is removable when some earlier station `B` (`price_B <= price_A`) either
+sits at the identical position, or `B`'s own supply interval already reaches
+FINISH — in either case `supply(B)` contains `supply(A)`, so anything `A` could
+supply, `B` can supply at a price no higher. For the fixed-charge objective
+specifically, folding `A`'s purchase into `B` costs `penalty + price_B * q <=
+penalty + price_A * q` pointwise in `q`, at **zero extra stops** — a single
+station absorbs `A`'s entire role. (This single-station argument does not
+extend to two stations jointly covering `A`: splitting a purchase across `B1`
+and `B2` pays the flat charge twice, which can outweigh an arbitrarily small
+fuel saving — the rule only ever removes a station when one earlier station
+alone can stand in for it.)
+
+The prune's real measured reduction, from the widened 26-cell grid
+(`19-MEASUREMENTS.md`, Measurement A): the densest corridor in the sweep by
+raw candidate count is **`toronto_oh-hillsboro_or`, raw=509** (both tank
+ranges — raw count depends only on corridor geometry, not tank range) — not
+`dallas_tx-seattle_wa`, which this document's own worked example deliberately
+avoids over-indexing on (see "Worked Example" below). At 1,050 miles, the
+prune takes that 509 down to **kept=214** — a 58% reduction in what the DP has
+to search — and at 500 miles down to **kept=245**.
+
+### The dispatch policy, both layers
+
+The DP's own optimizations (integer-tick arithmetic, Pareto pruning, an
+exact-integer money-domain comparison) took the worst measured corridor from
+~646s to ~46s and hit a structural wall: the remaining cost is the transition
+*count*, not any one operation's per-call cost. Two layers decide when the
+exact program is even attempted, and how long it is allowed to run once it is:
+
+**Layer one — a pre-flight estimate against a budget.** `dp.estimate_transition_count`
+is a cheap, deterministic, `O(n log n)` structural upper bound on the
+recurrence's transition count, computed over the pruned search set. `solve()`
+compares it against `dp.DP_TRANSITION_BUDGET`, shipped at **50,000**. At or
+under budget, `solve()` attempts `dp.solve_fixed_charge`
+(`strategy=SolverStrategy.EXACT_DP`); over budget, it dispatches straight to
+the fallback described below without attempting the DP at all.
+
+**Layer two — a wall-clock deadline, checked on a fixed stride.** An attempted
+DP solve still runs under `dp.DP_DEADLINE_SECONDS`, shipped at **2.8 seconds**,
+checked every `dp._DEADLINE_CHECK_STRIDE` = **5,000** transitions examined. If
+the deadline fires before FINISH is reached, `solve_fixed_charge` raises
+`dp.DeadlineExceededError` — a dedicated exception, never a bare timeout —
+carrying the deadline, the elapsed time, and the transition count at the
+moment of the raise. `solver.solve()` catches that exception itself; it never
+crosses the solver's own boundary to a caller.
+
+Both layers fall back to the identical target: `routing.services.heuristic.
+solve_penalty_aware_heuristic` (`strategy=SolverStrategy.PENALTY_AWARE_HEURISTIC`).
+Per its own module docstring, this is a single forward pass that approximates
+the same fixed-charge objective the DP minimises exactly — at each station
+with a strictly cheaper reachable option, it weighs the summed fuel-dollar
+saving of detouring through the cheaper stations against the flat penalty, and
+either fills up and bypasses them or buys just enough to reach the single
+cheapest one — but it carries **no optimality proof**: it is a single pass
+with no backtracking and no lookahead beyond one tank's own reach, and it can
+produce a plan more expensive than the DP's exact answer. It never claims
+optimality anywhere in its own output, docstrings, or the API's
+`solver_strategy` field. It is a distinct algorithm from the retired
+pre-Phase-18 greedy (`routing/services/greedy.py`), which is structurally
+blind to the per-stop penalty — that module stays in the codebase only as a
+differential-test subject (see "What the proof now covers" below) and is no
+longer reachable from a live `solve()` call.
+
+### Observability and cache coupling
+
+A deadline breach is visible two ways, both deliberately without changing the
+response contract: a `dp_deadline_breach` Server-Timing entry
+(`routing/views.py`) records the elapsed milliseconds, and a structured log
+line records the route-alternative index and the same figures — no request
+body, address, or coordinates. No new response field was added for this,
+because the demoted-vs-breached distinction is already derivable from the
+`(estimate, strategy)` pair a caller can already recompute offline: an
+estimate above budget with the heuristic strategy means demoted outright; an
+estimate at or below budget with the heuristic strategy means attempted and
+breached.
+
+The route cache key (`routing/cache.py`, currently prefixed `route:v8:`)
+carries a `d:` token derived directly from `dp.DP_TRANSITION_BUDGET` and
+`dp.DP_DEADLINE_SECONDS` (`_dispatch_policy_token`). This means a plan computed
+under one dispatch policy can never be served, unchanged, to a request the
+current build's policy would have handled differently — a future change to
+either constant changes every cache key automatically, with no separate
+bump-on-change convention to remember.
+
+### What the proof now covers
+
+The exactness claim is real, but narrower than the one this document used to
+make: `solve_fixed_charge` is optimal for the fixed-charge objective **within
+the region where it actually runs** — the cells the dispatch policy admits to
+the exact arm, and that finish before the deadline. A dedicated Hypothesis
+property (`routing/tests/test_solver_fixed_charge_optimality.py`) proves this
+against an independent, memoized `(node, fuel)` oracle, mirroring the same
+independence discipline the pre-Phase-18 greedy's own optimality test used.
+The retired greedy is referenced here in its one real remaining role: it is
+the **frozen differential referee** `routing/tests/frozen_greedy.py` and
+`routing/tests/test_greedy.py` check the DP's `penalty=0` behavior against —
+not the production algorithm, and not consulted by a live request.
 
 ## Route Alternatives
 
@@ -283,34 +404,194 @@ dataset), `m` = corridor candidates fed to the solver for one alternative
   segments), since this exact test — not a shortcut — is what's applied to
   every candidate the tree query returns.
 
-**Solver, per alternative:** sorting the `m` corridor candidates is
-`O(m log m)`. The main loop's iteration count is bounded by the number of
-stops in the resulting plan (at most `m + 1`), but each iteration rescans the
-full `ordered` list to recompute the reachable/cheaper sets and the
-skipped-station bookkeeping (`_skipped_context`, `_price_percentile`), so the
-solver is `O(m²)` worst case — `m` being the corridor's candidate count, not
-the full 6,290-station dataset, since the corridor filter has already narrowed
-the search space by the time the solver runs.
+**Prune, per alternative:** `prune_dominated_candidates` (`routing/services/
+prune.py`) is a single sort plus two linear passes over the `m` corridor
+candidates, with no tuned constants — `O(m log m)`, dominated by the sort. It
+runs before the solve and shrinks `m` down to the post-prune candidate count
+this document calls `m'` below, which is what the solver stages actually pay
+for.
 
-**Route alternatives:** the whole corridor + solver pipeline runs once per
-alternative, so total request cost scales as `a × (corridor + solver)` rather
-than a single pass — still inside the "1 ideal, 2-3 acceptable" external-call
-budget, since all `a` alternatives come back from the one Mapbox Directions
-call.
+**DP arm, per alternative (attempted only when dispatched to `exact_dp`):**
+the finite-fill lemma bounds the fuel dimension at each node by the number of
+post-prune candidates strictly ahead of it plus one, giving `O(m'²)` states
+over `m'` post-prune candidates. The recurrence's real cost driver is the
+**transition count** — states × reachable fuel levels × reachable targets —
+not any single operation's per-call cost; `dp.estimate_transition_count` is
+the same-order, `O(m' log m')` structural upper bound on that count the
+dispatch pre-filter compares against `DP_TRANSITION_BUDGET` before ever
+attempting the DP (see "The dispatch policy" above), so the quantity the
+pre-filter estimates and the quantity that actually drives the DP's wall-clock
+cost are the same one, not two different figures reasoned about separately.
 
-## Worked Example: Dallas → Los Angeles
+**Heuristic fallback, per alternative (taken whenever the DP is not
+attempted, or breaches its deadline):** a single forward pass over the sorted
+candidate list using `bisect`-based window queries (`routing/services/
+heuristic.py`'s own `_window` helper, the same `O(log n)` idiom `dp.py`'s
+`_reachable_ticks` uses), staying bounded near-linear in candidate count —
+`O(m' log m')`, dominated by the initial sort — with no backtracking and no
+`(node, fuel)` state space to enumerate at all. This is precisely why it stays
+well under the request's latency budget on the corridors the DP itself cannot
+finish in time.
 
-A 1,437-mile trip resolves to a 5-stop fueling plan (versus the shorter but
-pricier-landscape 1,329-mile Dallas → DC trip, which needs 10 stops) —
-illustrating that stop count tracks the price landscape along the corridor,
-not raw trip length. Tracing the pipeline for this trip: Mapbox's one
-Directions call returns the route geometry plus up to two alternatives; each
-alternative's corridor pass buffers the route by the wider of the 5-mile
-rooftop / 20-mile city corridor width, queries the STRtree for candidates
-along that buffer, and runs the precise perpendicular test on the survivors;
-the solver then walks those candidates left to right, buying just enough fuel
-at each station to reach the next strictly-cheaper one (or filling up and
-jumping to the cheapest reachable station when nothing cheaper is ahead) —
-which is why this specific route settles on exactly 5 purchases rather than
-the minimum number of stops physically required to cover 1,437 miles at a
-500-mile range (which would be 2).
+**Route alternatives:** every stage above — corridor filter, prune, and
+whichever solver arm is dispatched — runs once per alternative, so total
+request cost scales as `a × (corridor + prune + solve)` rather than a single
+pass, still inside the "1 ideal, 2-3 acceptable" external-call budget, since
+all `a` alternatives come back from the one Mapbox Directions call.
+
+## Worked Example: LA → Denver → Chicago (multi-stop, exact arm)
+
+The prior version of this document worked Dallas → Los Angeles. That corridor
+was never part of the re-measurement this rewrite is built on
+(`19-MEASUREMENTS.md`), so it is replaced here with a trip that is: the SPA's
+own LA → Denver → Chicago multi-stop demo chip, at the hero preset (6.5 mpg,
+1,050-mile tank, full starting tank, $35 penalty), chosen because it is one of
+only two cells in the measured grid still resolving to the **exact** arm at
+the shipped `DP_TRANSITION_BUDGET=50,000` with a fully-traced stop list on
+record — and it is deliberately not `dallas_tx-seattle_wa`, this milestone's
+own over-represented worked example and production-incident corridor, which
+this document is specifically asked not to lean on again.
+
+Tracing the pipeline end to end, every figure from `19-MEASUREMENTS.md`'s
+Measurement A: Mapbox's one Directions call returns the multi-leg route
+geometry; the corridor pass surfaces **raw=330** candidates along the
+buffered corridor; `prune_dominated_candidates` reduces that to **kept=31**
+before the solve ever runs; `dp.estimate_transition_count` over those 31
+survivors comes out to **estimate=9,264** — comfortably under the 50,000
+budget, so `solve()` dispatches to `dp.solve_fixed_charge`
+(`strategy=exact_dp`), and the attempt finishes at **0.0536s**, well inside
+the 2.8s deadline. The exact DP returns a **single-stop** plan, **total_cost=
+$469.5132881854584610490122303**, one purchase: **`PWI #525`, 149.574159982624549553683412
+gallons, `purchase_reason=reach_finish`**.
+
+That single stop is itself the objective in action, not an artifact of the
+retired branch logic: the DP searched all 31 surviving candidates across the
+whole multi-leg route and, having weighed every reachable station's fuel-dollar
+saving against the flat $35 charge for stopping there, found that no station
+anywhere on the route offered a saving worth a second $35 stop — the
+fixed-charge-minimising answer over this exact search set is to fill once, at
+`PWI #525`, and finish. A pre-Phase-18, penalty-blind greedy walk would have
+had no such bypass logic; it would have kept detouring to each successively-
+cheaper station regardless of how little fuel that detour actually bought.
+
+## Known limitations
+
+This section states, with figures, what the shipped system does not do. It is
+volunteered rather than left for a reviewer to find by diffing this document
+against the code.
+
+**1. The dispatch policy is not fully recovered.** At the shipped
+`DP_TRANSITION_BUDGET=50,000`, **11 of the 26 measured cells (42.3%) dispatch
+to the penalty-aware heuristic, spanning 8 corridors** (measured 2026-08-05,
+`19-MEASUREMENTS.md`: `atlanta_ga-denver_co`, `dallas_tx-seattle_wa`,
+`demo_la_ca-new_york_ny`, `el_paso_tx-portland_me`, `jacksonville_fl-bangor_me`,
+`miami_fl-boston_ma`, `san_diego_ca-jacksonville_fl`,
+`toronto_oh-hillsboro_or`). This supersedes, but does not reconcile away, an
+earlier, narrower-grid figure on the same record: **10 of 24 cells (41.7%),
+spanning 7 of 12 corridors** (dated 2026-08-04, before the grid widened to
+include both demo chips). Both figures stay on the record side by side rather
+than being collapsed into one number, because the widening is itself
+informative — more measured cells surfaced more demotions, not fewer. What
+falling back costs, concretely: `dallas_tx-seattle_wa` moved from the exact
+DP's 2 stops / $498.04 to the shipped heuristic's 3 stops / $552.24 — **+$54.20,
++10.9%** — when the `DP_TRANSITION_BUDGET=134,000` hotfix precursor was
+lowered to 50,000. Every demoted cell loses the optimality guarantee this
+document proves for the exact arm. The heuristic's own approximation gap
+against the DP was last quantified in Phase 18 (`18-04d-SUMMARY.md`,
+2026-08-01, on the corridors where the DP itself was tractable at the time:
+6.5% average / 12.5% max off the exact optimum) — that figure predates this
+plan's own re-measurement, `19-MEASUREMENTS.md` does not re-verify it, and it
+is stated here as a historical, dated figure rather than a re-confirmed one.
+
+**2. The dispatch estimate does not predict runtime, and no single threshold
+can fix it.** `dallas_tx-seattle_wa`@500mi — the one cell known to have
+breached the deployed worker's timeout in production, live, pre-hotfix —
+estimates **61,912**. `dallas_tx-seattle_wa`@1050mi — a cell that must stay
+admitted to the exact arm, live, pre-hotfix — estimates **117,852**, a LARGER
+number for the cell that runs FASTER. Because dispatch is a single scalar
+threshold, no `DP_TRANSITION_BUDGET` value can demote the smaller-estimate
+breaching cell while retaining the larger-estimate fine one: either both fall
+on the same side of the line, or the line ends up backwards. This is an
+impossibility proven over these two witnesses — a property of the estimator
+itself — not a threshold search that came up empty.
+
+**3. A higher dispatch budget was measured and deliberately not shipped
+(U-01).** A budget rung of **130,000** was genuinely measured to qualify:
+under it, `dallas_tx-seattle_wa`@1050mi (estimate 117,895) resolved to the
+exact arm on every one of **3 repeats**, worst response **2.750s**, comfortably
+inside the 2.8s deadline. It is not shipped. Wiring it in reaching that rung
+also, unavoidably, admits `dallas_tx-seattle_wa`@500mi (estimate 61,944) — and
+that specific cell is the one
+`DispatchDemotionGuardTests.test_known_live_breaching_cell_does_not_reach_exact_dp`
+(`routing/tests/test_solver_dispatch.py`) exists to keep off the exact arm
+permanently, having reproduced HTTP 500 5/5 at 30.5-35.7s live pre-hotfix. It
+also non-deterministically flips
+`PlanObjectiveGuardTests.test_dallas_seattle_stop_count_within_criterion_1_range`
+(`routing/tests/test_plan_objective.py`), whose pinned
+`DALLAS_SEATTLE_STOP_RANGE=(3, 4)` its own module comment states plainly is
+"NOT a bound to widen." Reconciling those two guards with the wider budget is
+a bounded follow-up, not a rewrite, and a todo carries it forward. **This plan
+does not ship the budget change** — `git diff --stat routing/services/dp.py`
+against this plan's own commits is empty; this section documents the finding,
+nothing more.
+
+**4. The latency requirement is unmet, and raising the budget cannot close
+it.** The stated ceiling is `LATENCY_CEILING_SECONDS=1.0s`. The worst measured
+**live** exact-arm solver stage this milestone has recorded is **3.9156s**, on
+`demo_la_ca-denver_co-chicago_il`@1050mi — roughly **3.9x** the ceiling. The
+genuinely new part is structural, not just a bigger number: `DP_DEADLINE_SECONDS`
+is set to 2.8s specifically so an attempted exact-DP solve is allowed to run
+for nearly three seconds before falling back — which means any cell whose
+admission to the exact arm was ever a close call is, by construction, a cell
+that needed something close to that whole allowance, and a solve that takes
+seconds is already well over a one-second ceiling before it even finishes.
+Only cells that were never close to the boundary — comfortably admitted and
+comfortably fast, like `sacramento_ca-salt_lake_city_ut` at estimate 120 and
+a live solver stage of a few milliseconds — can ever satisfy this requirement.
+Recovering more of the demoted grid therefore cannot close this specific gap;
+a wider budget only creates more near-boundary cells, which is exactly the
+shape that breaches the ceiling. Stated plainly about the ceiling's own
+standing, too: it traces to PROJECT.md's informal "sub-second solve" claim,
+not to any user-experience or infrastructure measurement — the closest thing
+this repository has to a load-bearing latency budget without ever having been
+derived from one — and this project has now declined to move it four times
+(plans 18-06, 18-08, 18-14, 18.1-10).
+
+**5. The micro-stop finding on the highest-traffic demo corridor (U-03).**
+Live, the LA → NYC demo chip takes a small purchase late in the trip — a
+sub-11-gallon buy at a station named `ACI TRUCK STOP`, `reason=reach_finish` —
+that captures only a few dollars against the much larger $35 flat charge,
+exactly the behavior the fixed-charge objective exists to remove; the same
+cell replayed offline on the neutral price basis instead produces a clean
+3-stop plan with no purchase under 16 gallons. Plan 19-04's probe reproduced
+this discrepancy at **exactly** the confidence it earned: replaying the
+identical cell against the committed per-state EIA price basis (`eia_fixture`,
+mechanism B1) alone yields the live-observed 4-stop pattern — `ACI TRUCK STOP`,
+10.339 gallons, `reason=reach_finish`, matching to three decimal places on
+gallons and exactly on station name and purchase reason — while a uniform
+multiplier applied to the neutral basis (mechanism B2, tested across four
+rungs from 0.8x to 1.5x) reproduces it at none of them; the station set and
+stop count never move under B2. **This confirms the per-state EIA price basis,
+not a uniform price level, as the cause** — the fixed-charge objective's own
+bypass-vs-detour decision is sensitive to *relative* price differences
+between stations, which per-state indexing genuinely changes and a uniform
+scalar cannot. It is documented here, not fixed: the cure is a change to
+`heuristic.py`'s bypass decision, out of this phase's scope.
+
+**6. The fallback arm carries no optimality proof.** Per
+`routing/services/heuristic.py`'s own module docstring, the penalty-aware
+heuristic guarantees **feasibility** (every intermediate fuel level stays
+within `[0, tank_range_mi]`) and **determinism**, but explicitly does NOT
+guarantee fixed-charge optimality (it is a single forward pass with no
+backtracking and no lookahead beyond one tank's own reach, and can produce a
+strictly more expensive plan than the DP's exact answer) or minimal stop
+count, and it never claims optimality anywhere in its own output, docstrings,
+or the API's `solver_strategy` field.
+
+**7. An intermittent, unidentified full-suite failure.** Roughly one run in
+forty (~2.5%) has failed with no failing test name, traceback, or seed ever
+captured — it has not reproduced in any of the 39 subsequent runs anyone has
+actually examined, including two clean runs taken specifically to try. It is
+tracked as a todo rather than hidden, and stays open until it either
+reproduces with enough information to diagnose it or a much longer clean
+streak makes it safe to consider resolved.
