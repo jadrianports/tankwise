@@ -116,6 +116,35 @@ class FuelPlan:
     `SolverStrategy.PENALTY_AWARE_HEURISTIC` actually produced this plan --
     `solve()` sets it on every plan it returns (see its own docstring),
     the API response's honesty requirement for which algorithm ran.
+
+    `deadline_breached` and `deadline_breach_elapsed_s` are additive and
+    default to `False`/`None`, exactly like `penalised_objective` and
+    `penalty_applied` above -- internal-only and deliberately NOT
+    serialized. `RouteResponseSerializer` declares its fields explicitly,
+    so an undeclared dataclass field cannot leak onto the wire.
+
+    Why the breach is not on the wire at all (D-08's substance, not just
+    its verdict): the demoted-versus-breached distinction is already
+    DERIVABLE from the pair of the estimate and the strategy, because
+    dispatch has exactly two deterministic inputs -- an estimate above
+    budget with the heuristic strategy means demoted outright and never
+    attempted, an estimate at or below budget with the heuristic strategy
+    means attempted and breached -- and the estimate is recomputable
+    offline from the same committed dataset and route. A response field
+    would store what can already be derived, which is the weakest
+    possible justification for permanent public API surface under an
+    additive-only contract.
+
+    The named, accepted cost: a cached breach plan carries no marker in
+    its payload, because Server-Timing is per-request and there is no
+    solve on a cache hit. This is acceptable precisely because the
+    (estimate, strategy) pair reconstructs it.
+
+    `deadline_breach_elapsed_s` is a plain `float`, unlike every money,
+    gallon and position value elsewhere in this dataclass, which is exact
+    `Decimal` -- it is diagnostic only (`time.monotonic()` differences,
+    read off `dp.DeadlineExceededError.elapsed_seconds`), and never enters
+    a monetary, gallon or position computation.
     """
 
     stops: list[FuelStop]
@@ -124,6 +153,8 @@ class FuelPlan:
     penalised_objective: Decimal | None = None
     penalty_applied: Decimal | None = None
     strategy: str | None = None
+    deadline_breached: bool = False
+    deadline_breach_elapsed_s: float | None = None
 
 
 def _as_decimal(value):
@@ -212,6 +243,7 @@ def solve(
     starting_fuel=Decimal(1),
     penalty=Decimal(0),
     prune=True,
+    deadline=dp.DP_DEADLINE_SECONDS,
 ) -> FuelPlan:
     """Return the cheapest feasible fueling plan for a route of
     ``total_route_mi`` miles, given an iterable of ``Candidate`` stations.
@@ -234,15 +266,29 @@ def solve(
     ``prune_dominated_candidates`` -- only the set the *search* explores is
     ever pruned; (4) compute ``dp.estimate_transition_count`` over that
     same search set and compare it against ``dp.DP_TRANSITION_BUDGET`` --
-    at or under budget, delegate to ``dp.solve_fixed_charge``
-    (``strategy=SolverStrategy.EXACT_DP``); over budget, delegate instead
-    to ``heuristic.solve_penalty_aware_heuristic`` over the FULL, unpruned
-    ``candidates`` (``strategy=SolverStrategy.PENALTY_AWARE_HEURISTIC`` --
-    see ``routing.services.dp``'s "Pre-flight transition-count estimate
+    at or under budget, attempt ``dp.solve_fixed_charge`` under a
+    wall-clock ``deadline`` (``strategy=SolverStrategy.EXACT_DP``); over
+    budget, delegate instead to ``heuristic.solve_penalty_aware_heuristic``
+    over the FULL, unpruned ``candidates``
+    (``strategy=SolverStrategy.PENALTY_AWARE_HEURISTIC``). This is a
+    two-layer policy (D-01): the budget comparison decides whether the
+    exact DP is attempted at all, and the deadline decides how long an
+    attempted cell may run before it is abandoned. When the attempted DP
+    raises ``dp.DeadlineExceededError`` before reaching FINISH, that
+    exception is caught here -- never leaked to this function's caller --
+    and this branch falls back to the IDENTICAL
+    ``heuristic.solve_penalty_aware_heuristic`` call the over-budget branch
+    already makes, over the full unpruned ``candidates``, with
+    ``strategy`` demoted to ``SolverStrategy.PENALTY_AWARE_HEURISTIC``
+    (which is true: the heuristic did produce the returned plan) and the
+    breach recorded on the two internal-only ``FuelPlan`` fields
+    ``deadline_breached``/``deadline_breach_elapsed_s`` (see ``FuelPlan``'s
+    own docstring for why those never reach the wire). See
+    ``routing.services.dp``'s "Pre-flight transition-count estimate
     and the penalty-aware fallback" module docstring section for why this
     dispatch exists and how its threshold was calibrated, and
     ``routing.services.heuristic``'s own module docstring for what the
-    fallback algorithm itself does and does not guarantee). The predictor
+    fallback algorithm itself does and does not guarantee. The predictor
     (``dp.estimate_transition_count``) and the budget
     (``dp.DP_TRANSITION_BUDGET``, 50,000) are both unchanged as of plan
     18-12's gap-closure: no replacement predictor qualified (18-10) and no
@@ -286,6 +332,25 @@ def solve(
     ``prune`` is Phase 17 D-21's rollback hatch: set it to ``False`` to run
     the DP over the complete, unpruned candidate set (sorted by the same
     total order the prune would have used) without a revert.
+
+    ``deadline`` is D-05's wall-clock hatch, keyword-only and mirroring
+    ``prune``'s own shape exactly: it defaults to
+    ``dp.DP_DEADLINE_SECONDS``, production-on rather than opt-in, so an
+    attempted exact-DP solve always runs under a wall-clock cap unless a
+    caller explicitly passes ``deadline=None``. RESEARCH.md flagged the
+    opposite default (``None``, which would shrink the call-site audit to
+    ``routing/views.py`` alone) as an option; this default was chosen
+    instead for two reasons: it is exactly the shape ``prune=True``'s own
+    rollback hatch already established -- enabled by default, opted out of
+    explicitly and visibly -- and D-02 keeps the deadline out of the
+    request layer entirely, so ``views.py`` is never the place the
+    production value gets supplied; it has to live here, as this
+    function's own default, or nowhere. The cost of this choice, named
+    plainly: every existing caller of ``solve()`` -- test or management
+    command -- inherits the production cap unless it explicitly opts out
+    with ``deadline=None``, which is exactly what Task 2's call-site audit
+    exists to do safely, call site by call site, rather than leaving any
+    of them to inherit it by accident.
 
     Infeasibility has exactly one source in this codebase --
     ``dp.preflight_gap_check`` above -- so ``dp.solve_fixed_charge`` itself
@@ -333,16 +398,41 @@ def solve(
         tank_range_mi=tank_range_mi,
         starting_fuel=starting_fuel,
     )
+    deadline_breached = False
+    deadline_breach_elapsed_s = None
     if estimate <= dp.DP_TRANSITION_BUDGET:
         strategy = SolverStrategy.EXACT_DP
-        raw_plan = dp.solve_fixed_charge(
-            search_set,
-            total_route_mi=total_route_mi,
-            tank_range_mi=tank_range_mi,
-            mpg=mpg,
-            starting_fuel=starting_fuel,
-            penalty=penalty,
-        )
+        try:
+            raw_plan = dp.solve_fixed_charge(
+                search_set,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=penalty,
+                deadline=deadline,
+            )
+        except dp.DeadlineExceededError as exc:
+            # D-04 BREACH half: the exact DP ran out of wall-clock time
+            # before reaching FINISH. Caught here specifically -- never a
+            # bare `except Exception`, which would also swallow a genuine
+            # bug -- and never leaked past this function's own boundary.
+            # Falls back to the IDENTICAL heuristic call the over-budget
+            # branch above makes, over the FULL unpruned `candidates` (not
+            # `search_set`), and demotes `strategy` to the same value the
+            # over-budget branch already reports -- true, because the
+            # heuristic did produce the plan being returned.
+            strategy = SolverStrategy.PENALTY_AWARE_HEURISTIC
+            raw_plan = heuristic.solve_penalty_aware_heuristic(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=penalty,
+            )
+            deadline_breached = True
+            deadline_breach_elapsed_s = exc.elapsed_seconds
     else:
         strategy = SolverStrategy.PENALTY_AWARE_HEURISTIC
         raw_plan = heuristic.solve_penalty_aware_heuristic(
@@ -408,4 +498,6 @@ def solve(
         penalised_objective=raw_plan.penalised_objective,
         penalty_applied=raw_plan.penalty_applied,
         strategy=strategy,
+        deadline_breached=deadline_breached,
+        deadline_breach_elapsed_s=deadline_breach_elapsed_s,
     )
