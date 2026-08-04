@@ -102,10 +102,20 @@ class _AlternativeResult:
 class HealthView(APIView):
     """`GET /api/health` -- dependency-free liveness probe for the Docker
     Compose healthcheck. Deliberately touches no DB, cache, or Mapbox so it
-    succeeds even with an empty database and no MAPBOX_TOKEN set."""
+    succeeds even with an empty database and no MAPBOX_TOKEN set.
+
+    Also reports `commit`: the git SHA of the running build, read from the
+    `BUILD_COMMIT` setting (Render's injected `RENDER_GIT_COMMIT`), or `None`
+    wherever that variable is absent. Reading one already-resolved setting
+    keeps the probe dependency-free -- no DB, cache, or network is touched.
+    `.github/workflows/smoke.yml` polls this field to wait until the build
+    under test is the one actually serving, instead of racing Render's
+    out-of-band deploy with a fixed sleep and asserting against whichever
+    container happens to answer.
+    """
 
     def get(self, request):
-        return Response({"status": "ok"})
+        return Response({"status": "ok", "commit": settings.BUILD_COMMIT})
 
 
 class ReadyView(APIView):

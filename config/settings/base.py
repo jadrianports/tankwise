@@ -136,6 +136,20 @@ EIA_API_KEY = _env("EIA_API_KEY")
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
+# Git commit of the running build, surfaced on `/api/health` so a
+# post-deploy check can tell WHICH build answered it. Render injects
+# `RENDER_GIT_COMMIT` into every deploy automatically; anywhere else
+# (local, Docker Compose, CI) it is absent and health reports `commit: null`.
+#
+# This exists because `.github/workflows/smoke.yml` fires on CI completion,
+# which is when Render STARTS replacing the container. A plain liveness poll
+# there either hits a 502 (no app behind the proxy yet) or -- worse --
+# succeeds against the OLD container still serving traffic, smoke-testing the
+# previous build while reporting green. Comparing this value against the
+# commit under test makes "the new build is live" observable instead of
+# guessed at with a fixed sleep.
+BUILD_COMMIT = _env("RENDER_GIT_COMMIT")
+
 # Flat per-stop penalty (dollars) the fixed-charge solver charges for each
 # station it buys at, on top of fuel cost -- this is the first
 # `Decimal`-typed setting in this file (`_env()` performs no type coercion

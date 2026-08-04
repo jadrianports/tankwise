@@ -142,9 +142,26 @@ name: Smoke test (post-deploy)
 # meaning a `workflow_run` trigger on CI's successful completion fires when
 # the deploy STARTS, not when it finishes. This workflow's `workflow_run`
 # trigger (below) cannot, by construction, know when Render's own
-# out-of-band deploy actually completes. The bounded settle-wait step gives
-# the deploy a head start, but IT IS BEST-EFFORT AND CAN RACE A SLOW
-# DEPLOY -- this is stated here rather than papered over. The daily
+# out-of-band deploy actually completes FROM THE TRIGGER ALONE.
+#
+# RESOLVED 2026-08-04: it no longer has to. `/api/health` now reports the
+# running build's `commit` (Django setting `BUILD_COMMIT`, from Render's
+# injected `RENDER_GIT_COMMIT`), and the wait step below POLLS that field
+# until it equals the commit under test. The deploy becoming live is now
+# OBSERVED, not slept through.
+#
+# This replaced a fixed 60s sleep that failed in practice: on 2026-08-04 both
+# consecutive `workflow_run` firings failed with HTTP 502 (10.36s and 2.33s)
+# while the app was provably healthy -- a direct request in the same window
+# returned 200. Both passed on manual re-run once the deploy settled. A FATAL
+# gate that goes red on every push trains everyone to ignore it, which is the
+# same alarm-fatigue failure mode section 2 rejects `keep-warm.yml`'s policy
+# for -- only inverted. A permanently-red gate is worse than no gate.
+#
+# Note the subtler half: a liveness-only poll would ALSO have been wrong.
+# Render serves the OLD container until the new one is ready, so waiting for
+# any 200 can smoke-test the previous build and report green. Comparing the
+# commit is what distinguishes "deployed" from merely "answering". The daily
 # `schedule` trigger is the backstop that makes this check EVENTUALLY
 # reliable even if a given `workflow_run` firing loses that race. `workflow_
 # dispatch` is included so a human (or this project's own operator) can
@@ -240,9 +257,11 @@ jobs:
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     # Worst case: wake (<=90s) + settle-wait (fixed 60s) + 4 matrix
     # assertions at <=45s client timeout each (<=180s) = 330s (~5.5min).
-    # 10 minutes gives comfortable margin without leaving a hung runner to
-    # idle indefinitely.
-    timeout-minutes: 10
+    # 20 minutes: the deploy-liveness poll above is bounded at 10, and the
+    # four matrix assertions (each up to a ~30s worker timeout plus 4s
+    # spacing) fit comfortably in the remainder without leaving a hung
+    # runner idling indefinitely. Was 10 when the wait was a fixed 60s sleep.
+    timeout-minutes: 20
     steps:
       # Same wake-the-service step keep-warm.yml already runs, reusing its
       # exact invocation shape (see section 3 above) -- the ONLY step in
@@ -253,14 +272,57 @@ jobs:
             --max-time 90 "https://tankwise.onrender.com/api/health" \
             || echo 'wake failed (non-fatal, see section 3 of this file''s header comment)'
 
-      # Best-effort head start for Render's own out-of-band deploy (see
-      # section 7 above) -- this cannot observe the deploy actually
-      # finishing, only reduce the odds of racing it. Bounded, and never
-      # fatal: a `sleep` cannot itself fail.
-      - name: Settle-wait for the out-of-band Render deploy (best-effort)
+      # Wait for the commit under test to actually be SERVING, by polling
+      # `/api/health`'s `commit` field (see section 7). Replaces a fixed 60s
+      # sleep that failed on every push. Two distinct failure modes this
+      # closes: a 502 asserted against mid-deploy, and a green run asserted
+      # against the OLD container Render is still serving.
+      #
+      # Fatal only on a genuine timeout. A build predating the `commit` field
+      # (null) cannot be matched, so that case degrades to the old
+      # sleep-and-hope rather than blocking forever on an impossible compare.
+      - name: Wait for the deploy under test to be live
+        env:
+          EXPECTED_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
-          echo 'Waiting 60s for the out-of-band Render deploy to progress (best-effort -- see section 7 of this file''s header comment; the daily schedule trigger is the real backstop).'
-          sleep 60
+          DEADLINE=$(( SECONDS + 600 ))
+          echo "Waiting for commit ${EXPECTED_SHA} to serve /api/health (deadline: 10 min)."
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            BODY=$(curl -sS --max-time 90 "https://tankwise.onrender.com/api/health" 2>/dev/null || true)
+            # An empty body (connection refused / proxy hung up) is NOT valid
+            # JSON, and jq emits nothing for it -- left to fall through it
+            # would land in the "old build still serving" arm and log an empty
+            # commit as though a build were answering. Classify it explicitly.
+            if [ -z "$BODY" ]; then
+              LIVE="absent"
+            else
+              LIVE=$(printf '%s' "$BODY" | jq -r 'if type == "object" and has("commit") then (.commit // "null") else "absent" end' 2>/dev/null || echo "absent")
+              [ -n "$LIVE" ] || LIVE="absent"
+            fi
+            case "$LIVE" in
+              "$EXPECTED_SHA")
+                echo "Deploy is live: /api/health reports ${LIVE}."
+                exit 0
+                ;;
+              absent)
+                # Pre-`commit`-field build, or the proxy returned a non-JSON
+                # 502 page. Both are indistinguishable here, so fall back to
+                # the historical behaviour rather than fail on ambiguity.
+                echo "health has no usable commit field yet (mid-deploy 502, or a build predating the field); retrying."
+                ;;
+              null)
+                echo "health reports commit: null -- RENDER_GIT_COMMIT is unset on this deploy. Cannot verify the build; falling back to a fixed settle-wait."
+                sleep 60
+                exit 0
+                ;;
+              *)
+                echo "old build still serving (${LIVE}); waiting for ${EXPECTED_SHA}."
+                ;;
+            esac
+            sleep 15
+          done
+          echo "::error::Deploy did not become live within 10 minutes (expected commit ${EXPECTED_SHA}). This is a DEPLOY problem, not a solver regression -- check Render before reading the assertions below."
+          exit 1
 
       # Section 4 above: derives a fresh, run-unique `starting_fuel` value
       # in [0.970, 0.999] from `github.run_id`, quantized to the same 3
