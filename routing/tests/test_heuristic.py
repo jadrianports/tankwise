@@ -15,6 +15,7 @@ from decimal import Decimal
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 from hypothesis import given, settings
+from hypothesis.extra.django import TestCase as HypothesisTestCase
 
 from routing.services import corridor, dp, greedy, heuristic
 from routing.services.dp import preflight_gap_check
@@ -358,20 +359,28 @@ class QualityGapAgainstTheExactDPTests(TestCase):
                 )
 
 
-class TerminalRationaleInvariantTests(TestCase):
+class TerminalRationaleInvariantTests(HypothesisTestCase):
     """A plan's terminal stop must never carry a rationale naming a station
     that is not actually in the plan. `dallas_tx-seattle_wa` at the SPA's
     Sedan preset (32 mpg / 450 mi tank -- `frontend/src/constants/
     presets.ts`) reproduces this OFFLINE, on the "neutral" price basis, with
     the same station names the live 2026-08-04 browser sweep recorded (see
-    `.planning/todos/pending/final-stop-names-a-station-not-in-the-plan.md`
-    before it was closed) -- so this is an anchored regression test against a
-    corridor fixture, not a constructed witness. The heuristic's own module
-    constants `STARTING_FUEL`/`PENALTY` are reused rather than the Sedan
-    preset's own `starting_fuel: 1`, matching this file's existing
-    convention (`FewerStopsThanGreedyOnHeavyCorridorsTests` etc.) -- the
-    defect reproduces at both `starting_fuel` values, so the module default
-    is sufficient and keeps this test consistent with its siblings.
+    `.planning/todos/completed/final-stop-names-a-station-not-in-the-plan.md`)
+    -- so the anchored regression test below is against a corridor fixture,
+    not a constructed witness. The heuristic's own module constants
+    `STARTING_FUEL`/`PENALTY` are reused rather than the Sedan preset's own
+    `starting_fuel: 1`, matching this file's existing convention
+    (`FewerStopsThanGreedyOnHeavyCorridorsTests` etc.) -- the defect
+    reproduces at both `starting_fuel` values, so the module default is
+    sufficient and keeps this test consistent with its siblings.
+
+    Also holds the todo's own two invariants as GENERIC Hypothesis
+    properties (not specific to the root cause the anchored regression
+    pins), over both solver arms -- the heuristic and the exact DP. Uses
+    `hypothesis.extra.django.TestCase` rather than plain `django.test.
+    TestCase` because `@given` on a DB-backed test needs each Hypothesis
+    example run in its own transaction; `setUpTestData`/`call_command`
+    behave identically to the plain `TestCase` used elsewhere in this file.
     """
 
     @classmethod
@@ -423,4 +432,140 @@ class TerminalRationaleInvariantTests(TestCase):
             f"terminal stop {last.name!r} still names a target station "
             f"{last.reason_target_name!r} after the reason check -- both "
             "target fields must be null on a terminal stop",
+        )
+
+    # Generic properties, independent of the anchored regression above and
+    # of Task 2's specific root cause -- the todo's own two invariants,
+    # asserted over the same `single_leg_routes()` Hypothesis strategy
+    # `FeasibilityPropertyTests` already uses (no new generator written for
+    # this). Reused across BOTH solver arms: the heuristic
+    # (`heuristic.solve_penalty_aware_heuristic`) and the exact DP
+    # (`dp.solve_fixed_charge`, already imported at module scope), since
+    # `dp.py` emits the same `PurchaseReason.REACH_CHEAPER_STOP` value and
+    # the same `reason_target_*` fields via its own `_make_stop`-equivalent
+    # construction. `dp.solve_fixed_charge` is called directly on the
+    # drawn (small, MAX_STATIONS-bounded) candidate list at
+    # `max_examples=200` -- the same pattern
+    # `test_dp_matches_oracle_across_penalty_ladder` in
+    # `test_solver_fixed_charge_optimality.py` already uses, so this is a
+    # proven-tractable shape, not a new tractability risk.
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200, derandomize=True)
+    def test_heuristic_every_reason_target_names_a_station_in_the_plan(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        try:
+            plan = heuristic.solve_penalty_aware_heuristic(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=PENALTY,
+            )
+        except InfeasibleRouteError:
+            return  # nothing to check; feasibility is covered elsewhere
+
+        plan_opis_ids = {s.opis_id for s in plan.stops}
+        for stop in plan.stops:
+            if stop.reason_target_opis_id is not None:
+                self.assertIn(
+                    stop.reason_target_opis_id,
+                    plan_opis_ids,
+                    f"heuristic stop {stop.name!r} (opis_id={stop.opis_id}) "
+                    f"names reason_target_opis_id={stop.reason_target_opis_id!r} "
+                    f"({stop.reason_target_name!r}), which is not in this "
+                    f"plan's own fuel_stops[] ({plan_opis_ids!r})",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200, derandomize=True)
+    def test_heuristic_last_stop_reason_is_never_reach_cheaper_stop(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        try:
+            plan = heuristic.solve_penalty_aware_heuristic(
+                candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=PENALTY,
+            )
+        except InfeasibleRouteError:
+            return
+
+        if not plan.stops:
+            return
+        self.assertNotEqual(
+            plan.stops[-1].purchase_reason,
+            PurchaseReason.REACH_CHEAPER_STOP,
+            f"heuristic terminal stop {plan.stops[-1].name!r} carries "
+            "purchase_reason=reach_cheaper_stop -- there is no next stop "
+            "to reach on a terminal stop",
+        )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200, derandomize=True)
+    def test_dp_every_reason_target_names_a_station_in_the_plan(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        try:
+            preflight_gap_check(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+        except InfeasibleRouteError:
+            return
+
+        plan = dp.solve_fixed_charge(
+            candidates,
+            total_route_mi=total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=PENALTY,
+        )
+        plan_opis_ids = {s.opis_id for s in plan.stops}
+        for stop in plan.stops:
+            if stop.reason_target_opis_id is not None:
+                self.assertIn(
+                    stop.reason_target_opis_id,
+                    plan_opis_ids,
+                    f"DP stop {stop.name!r} (opis_id={stop.opis_id}) names "
+                    f"reason_target_opis_id={stop.reason_target_opis_id!r} "
+                    f"({stop.reason_target_name!r}), which is not in this "
+                    f"plan's own fuel_stops[] ({plan_opis_ids!r})",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200, derandomize=True)
+    def test_dp_last_stop_reason_is_never_reach_cheaper_stop(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        try:
+            preflight_gap_check(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+        except InfeasibleRouteError:
+            return
+
+        plan = dp.solve_fixed_charge(
+            candidates,
+            total_route_mi=total_route_mi,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            penalty=PENALTY,
+        )
+        if not plan.stops:
+            return
+        self.assertNotEqual(
+            plan.stops[-1].purchase_reason,
+            PurchaseReason.REACH_CHEAPER_STOP,
+            f"DP terminal stop {plan.stops[-1].name!r} carries "
+            "purchase_reason=reach_cheaper_stop -- there is no next stop "
+            "to reach on a terminal stop",
         )
