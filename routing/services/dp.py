@@ -405,6 +405,35 @@ deterministic pure functions of the same validated input, so which branch
 fires is itself deterministic and cache-key-stable: identical requests
 always choose the same strategy and produce the same plan.
 
+### The two-layer dispatch policy (2026-08-04, phase 18.1)
+
+`estimate_transition_count` stays exactly as described above -- a cheap
+pre-filter, unchanged in this phase. What changes is that it is no longer
+the ONLY thing standing between a hopeless corridor and the deployed
+gunicorn worker: `solve_fixed_charge` (below) now accepts an optional
+`deadline` keyword and raises `DeadlineExceededError` when a pinned
+wall-clock budget (`DP_DEADLINE_SECONDS`) is exceeded, backstopping
+whatever the estimate lets through. The estimate decides which cells are
+attempted at all; the deadline decides how long an attempted cell may run
+before the worker is protected regardless of the estimate's accuracy. This
+is the mechanism that makes recovery possible at all: 18-12's NOT
+TRACTABLE proof (see "Why the transition-count estimate was not replaced"
+below) only blocks a threshold that must demote a cell entirely on its own
+say-so. With a clock behind it, the budget no longer carries that whole
+burden -- cells above the old boundary can be admitted, because the
+deadline, not the estimate, is what ultimately protects the worker.
+
+An anytime/partial-best DP -- returning the best plan found so far when a
+deadline fires, rather than raising -- was considered and rejected. The
+forward `(node, fuel)` recurrence this module implements has no feasible
+WHOLE-ROUTE plan until some state reaches FINISH; every intermediate state
+is a partial journey, not a candidate answer. Salvaging a partial run into
+a returnable plan would be a real algorithmic change to this module's
+recurrence, and would reopen the correctness proofs Phases 16-18 already
+closed for the current recurrence. This phase adds a clock; it does not
+change what the DP computes, and an anytime rewrite would violate exactly
+that boundary.
+
 ## Why the transition-count estimate was not replaced (2026-08-04 gap-closure finding)
 
 **The mechanism.** `solver.solve()` dispatches by comparing a single scalar
@@ -844,6 +873,90 @@ DP_TRANSITION_BUDGET = 50_000
 # applies. DP_TRANSITION_BUDGET is not moved.
 # ---------------------------------------------------------------------------
 DISPATCH_RETENTION_FLOOR = 2
+
+# ---------------------------------------------------------------------------
+# DP_DEADLINE_SECONDS -- PROVISIONAL, pinned 2026-08-04 (plan 18.1-04),
+# derived by routing.tests.test_dispatch_recovery.derive_dp_deadline_seconds
+# from the single upstream figure currently in evidence (18-11's own
+# full stage-breakdown capture, corridor + route + eia + cache + index
+# ~= 5.44s). This value is NOT final: plan 18.1-08 re-derives it against a
+# fresh live measurement and either CONFIRMS it (this codebase's own
+# DP_TRANSITION_BUDGET precedent above: confirmed, not superseded) or
+# SUPERSEDES it with a dated note, exactly as that precedent requires.
+#
+# Full arithmetic, term by term (RESPONSE_BAR_SECONDS = 15s total cold
+# cache-miss bar, minus the 5.44s measured upstream, minus a 0.5s
+# DEADLINE_OVERSHOOT_BUDGET_SECONDS, minus a 0.5s
+# HEURISTIC_FALLBACK_ALLOWANCE_SECONDS, divided by a
+# ROUTE_ALTERNATIVES_FANOUT of 3, quantized DOWN to one decimal place):
+#
+#   (15 - 5.44 - 0.5 - 0.5) / 3 = 8.56 / 3 = 2.8533... -> 2.8
+#
+# Why the fan-out divisor exists (the least obvious term; not in
+# 18.1-CONTEXT.md or 18.1-RESEARCH.md): `mapbox.get_routes` requests
+# `alternatives=true`; `routing.views._solve_all_alternatives` calls
+# `solver.solve()` once PER returned alternative, all inside a single
+# `self._timing.stage("solver")` block; and `routing.timing.ServerTiming`
+# ACCUMULATES a repeated stage name -- so within one request the per-solve
+# deadline can be paid up to ROUTE_ALTERNATIVES_FANOUT (3) times. A
+# deadline derived against the whole 15s bar without dividing would blow
+# the bar on any request whose alternatives all breach.
+#
+# Shape considered and NOT taken: one cumulative per-request budget shared
+# across alternatives. Rejected because D-02 pins a fixed per-solve
+# constant, and a shared budget would make a later alternative's outcome
+# depend on an earlier alternative's runtime.
+#
+# D-09's secondary check, computed here: the same worst-case arithmetic
+# against GUNICORN_TIMEOUT_SECONDS=30 with a 5s margin --
+#
+#   5.44 + 3 * (2.8 + 0.5) + 0.5 = 15.84s <= 30 - 5 = 25s
+#
+# -- clears with room to spare, confirming the worker timeout is NOT the
+# binding constraint; the 15s product bar is.
+#
+# D-10's own record, preserved here because CONTEXT.md requires it to
+# survive into implementation comments: the only cell with a known live
+# `exact_dp` stress timing is dallas_tx-seattle_wa@1050mi at roughly 12
+# seconds pre-hotfix. A bar near 20 seconds would recover it; this 15-second
+# bar will not. 15 was chosen on UX grounds with that fact already known --
+# a deliberate refusal to tune toward the one corridor ROADMAP criterion 3
+# forbids tuning toward. This number must NOT be revisited in order to
+# capture that cell.
+#
+# Both outcome branches for plan 18.1-08's re-derivation, pinned now:
+#   * CONFIRMED -- the fresh upstream measurement yields the same value or
+#     a larger one, and this literal (2.8) stands.
+#   * SUPERSEDED -- it yields a smaller value, which is adopted with a
+#     dated note, keeping this derivation on the record rather than
+#     silently overwriting it.
+# ---------------------------------------------------------------------------
+DP_DEADLINE_SECONDS = Decimal("2.8")
+
+# ---------------------------------------------------------------------------
+# _DEADLINE_CHECK_STRIDE -- PROVISIONAL, pinned 2026-08-04 (plan 18.1-04),
+# BEFORE the overshoot it bounds is ever measured (D-06). Set to
+# `routing.tests.test_dispatch_recovery.DEADLINE_CHECK_STRIDE_LADDER`'s
+# smallest rung -- the most conservative choice: most frequent clock reads,
+# smallest overshoot, highest per-call cost.
+#
+# Plan 18.1-08 measures the worst observed overshoot on the densest
+# ADMITTED cell at each ladder rung and adopts the largest rung inside
+# DEADLINE_OVERSHOOT_BUDGET_SECONDS via that module's own
+# `adopt_stride_rung()`. The deadline's real guarantee is
+# `DP_DEADLINE_SECONDS + overshoot`, not `DP_DEADLINE_SECONDS` alone -- that
+# sum is the number the response budget above is actually derived against.
+#
+# Grounding figures (18.1-RESEARCH.md, measured live in that session, NOT
+# assumed): roughly 45 nanoseconds per `time.monotonic()` call; roughly
+# 77.7 microseconds per `_reachable_ticks`-call-granularity check on
+# atlanta_ga-denver_co@500mi, and roughly 99.2 microseconds on
+# jacksonville_fl-bangor_me@500mi. Both are MODERATE-density cells, not the
+# densest a raised budget rung might admit -- the densest ADMITTED cell has
+# NOT yet been measured, and this value must not be assumed safe there
+# without that re-measurement.
+# ---------------------------------------------------------------------------
+_DEADLINE_CHECK_STRIDE = 500
 
 
 def estimate_transition_count(candidates, *, total_route_mi, tank_range_mi, starting_fuel):
