@@ -115,6 +115,50 @@ test('reports the most expensive candidate as beating none of them', () => {
   expect(screen.getByText(/beats 0% of the corridor's candidate stations/i)).toBeInTheDocument();
 });
 
+test('a recorded-price stop renders the per-gallon line with the recorded-price qualifier', () => {
+  const stop = makeStop(
+    { purchase_reason: 'reach_finish' },
+    { price_per_gallon: '3.89', price_source: 'opis_indexed' }
+  );
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.89/gal · recorded price');
+  expect(priceLine.textContent).toBe('$3.89/gal · recorded price');
+});
+
+test('an estimate-sourced stop renders the per-gallon line with the regional-estimate qualifier', () => {
+  const stop = makeStop(
+    { purchase_reason: 'reach_finish' },
+    { price_per_gallon: '3.72', price_source: 'eia_regional_estimate' }
+  );
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.72/gal · regional estimate');
+  expect(priceLine.textContent).toBe('$3.72/gal · regional estimate');
+});
+
+test('a null price_source renders the per-gallon line with no qualifier at all', () => {
+  const stop = makeStop(
+    { purchase_reason: 'reach_finish' },
+    { price_per_gallon: '3.89', price_source: null }
+  );
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.89/gal');
+  expect(priceLine.textContent).toBe('$3.89/gal');
+  expect(screen.getByText(/bought just enough fuel here to reach the finish/i)).toBeInTheDocument();
+});
+
+test('an unrecognised price_source value renders no qualifier and does not throw', () => {
+  const stop = makeStop(
+    { purchase_reason: 'reach_finish' },
+    { price_per_gallon: '3.89', price_source: 'some_future_source' }
+  );
+  expect(() =>
+    render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />)
+  ).not.toThrow();
+  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.89/gal');
+  expect(priceLine.textContent).toBe('$3.89/gal');
+  expect(screen.getByText(/bought just enough fuel here to reach the finish/i)).toBeInTheDocument();
+});
+
 test('never renders a percentile outside 0-100 for any in-contract API value', () => {
   for (const value of [0, 12.5, 25, 50, 99.9, 100]) {
     const stop = makeStop({ purchase_reason: 'reach_finish', price_percentile: value });

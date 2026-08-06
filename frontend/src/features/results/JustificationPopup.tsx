@@ -41,6 +41,28 @@ const REASON_COPY: Partial<Record<PurchaseReason, (stop: FuelStop) => string>> =
     } on the way, because stopping there would have cost more in fees than the fuel it would have saved.`,
 };
 
+// Qualifier appended to the per-gallon line, keyed on the raw `price_source`
+// wire value. Both branches carry real copy deliberately (D-06): today's
+// dataset is entirely `opis_indexed`, so an estimate-only branch would ship
+// this phase with no observable UI change and leave the copy unverifiable
+// against the shipped build. Each string carries its own leading
+// space-middot-space separator so it concatenates onto the existing
+// `/gal` text with no markup change. `Partial<Record<...>>` looked up
+// optionally -- never a branching dispatch statement, never an exhaustive
+// `Record` -- because an exhaustive Record over a four-value union
+// (REASON_COPY, above) already crashed the SPA once when a fifth value
+// arrived; a `null` or unrecognised `price_source` must degrade to no
+// qualifier at all, not a guess (D-08).
+const PRICE_SOURCE_COPY: Partial<Record<string, string>> = {
+  opis_indexed: ' · recorded price',
+  eia_regional_estimate: ' · regional estimate',
+};
+
+function priceSourceQualifier(stop: FuelStop): string {
+  if (!stop.price_source) return '';
+  return PRICE_SOURCE_COPY[stop.price_source] ?? '';
+}
+
 function justificationText(stop: FuelStop): string {
   const { purchase_reason } = stop.rationale;
   if (!purchase_reason) {
@@ -124,7 +146,7 @@ function JustificationPopup({ stop, number, open, onClose }: JustificationPopupP
       <DialogContent>
         <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.25, mb: 2 }}>
           <Typography variant="body2" sx={{ color: 'fuel.dark' }}>
-            ${stop.price_per_gallon}/gal
+            ${stop.price_per_gallon}/gal{priceSourceQualifier(stop)}
           </Typography>
           <Typography variant="body2">{formatGallons(stop.gallons)}</Typography>
           <Typography variant="body2" sx={{ color: 'fuel.dark' }}>
