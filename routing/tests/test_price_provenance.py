@@ -700,6 +700,220 @@ class SerializerPriceSourceHopTests(SimpleTestCase):
         self.assertIsNone(data["price_source"])
 
 
+class FixtureCrossLanguageHopTests(SimpleTestCase):
+    """Hop 6/7 (fixture half): the committed cross-language artefact D-19
+    requires. `frontend/src/test/fixtures/route-response.json` is asserted
+    equal to a FRESHLY serialized response built from the same hand-built
+    instance shape below -- load-and-compare, never write-and-overwrite,
+    so this test can actually fail rather than being self-fulfilling.
+
+    This is a serializer-level artefact assembled from hand-constructed
+    `FuelStop`/`Leg`/`Savings`/`Route` instances -- it is NOT a station
+    dataset, and its `eia_regional_estimate`-sourced stop is NOT an
+    Overture row. No such row exists in `data/stations_geocoded.csv` or
+    the `Station` table in this phase
+    (`test_no_estimate_sourced_row_in_committed_station_csv` below proves
+    it with the same `grep`-equivalent check the plan's own acceptance
+    criteria name).
+
+    Regeneration procedure (run deliberately by a human when the response
+    shape legitimately changes -- never automated into this test): build
+    `instance`/`context` exactly as `_fully_populated_two_stop_instance()`
+    does below, serialize with `RouteResponseSerializer`, round-trip
+    through `json.dumps`/`json.loads` to drop `Decimal`/`OrderedDict`
+    artefacts, then
+    ``Path(...).write_text(json.dumps(fresh, indent=2) + "\\n", encoding="utf-8")``
+    to `frontend/src/test/fixtures/route-response.json`.
+    """
+
+    FIXTURE_PATH = (
+        Path(settings.BASE_DIR)
+        / "frontend"
+        / "src"
+        / "test"
+        / "fixtures"
+        / "route-response.json"
+    )
+
+    def _fully_populated_two_stop_instance(self):
+        raw_coords = [[-97.7431, 30.2672], [-95.3698, 29.7604]]
+        route = Route(
+            total_route_mi=Decimal("200"),
+            geometry=LineString(raw_coords),
+            raw_coordinates=raw_coords,
+            duration_s=Decimal("12000"),
+        )
+        stops = [
+            FuelStop(
+                name="Recorded Fuel Stop",
+                opis_id=501,
+                price_per_gallon=Decimal("3.89"),
+                distance_from_start_mi=Decimal("80"),
+                gallons=Decimal("41.20"),
+                cost=Decimal("160.27"),
+                purchase_reason=PurchaseReason.FILL_TO_CONTINUE,
+                reason_target_opis_id=502,
+                reason_target_name="Regional Estimate Fuel Stop",
+                skipped_count=1,
+                skipped_avg_price=Decimal("4.10"),
+                price_percentile=Decimal("0.30"),
+                corridor_avg_price=Decimal("3.95"),
+                price_source=PriceSource.OPIS_INDEXED,
+            ),
+            FuelStop(
+                name="Regional Estimate Fuel Stop",
+                opis_id=502,
+                price_per_gallon=Decimal("3.72"),
+                distance_from_start_mi=Decimal("180"),
+                gallons=Decimal("35.00"),
+                cost=Decimal("130.20"),
+                purchase_reason=PurchaseReason.REACH_CHEAPER_STOP,
+                skipped_count=0,
+                price_percentile=Decimal("0.10"),
+                corridor_avg_price=Decimal("3.95"),
+                price_source=PriceSource.EIA_REGIONAL_ESTIMATE,
+            ),
+        ]
+        plan = FuelPlan(
+            stops=stops,
+            total_cost=Decimal("290.47"),
+            total_gallons=Decimal("76.20"),
+            strategy=SolverStrategy.EXACT_DP,
+        )
+        instance = {
+            "route": route,
+            "plan": plan,
+            "map_url": "https://example.test/map",
+            "vehicle": {
+                "mpg": Decimal("6.5"),
+                "tank_range_mi": Decimal("1050"),
+                "starting_fuel": Decimal("1"),
+            },
+            "legs": [
+                Leg(
+                    from_name="START",
+                    to_name="Recorded Fuel Stop",
+                    distance_mi=Decimal("80"),
+                    duration_s=Decimal("4800"),
+                    gallons=Decimal("0"),
+                    cost=Decimal("0"),
+                ),
+                Leg(
+                    from_name="Recorded Fuel Stop",
+                    to_name="Regional Estimate Fuel Stop",
+                    distance_mi=Decimal("100"),
+                    duration_s=Decimal("6000"),
+                    gallons=Decimal("41.20"),
+                    cost=Decimal("160.27"),
+                ),
+                Leg(
+                    from_name="Regional Estimate Fuel Stop",
+                    to_name="FINISH",
+                    distance_mi=Decimal("20"),
+                    duration_s=Decimal("1200"),
+                    gallons=Decimal("35.00"),
+                    cost=Decimal("130.20"),
+                ),
+            ],
+            "savings": Savings(
+                amount=Decimal("15.20"),
+                percent=Decimal("0.0497"),
+                naive_total_cost=Decimal("305.67"),
+                naive_total_gallons=Decimal("78.00"),
+                naive_stop_count=3,
+            ),
+            "alternatives": [
+                {
+                    "total_route_mi": Decimal("200"),
+                    "duration_s": Decimal("12000"),
+                    "total_cost": Decimal("290.47"),
+                    "chosen": True,
+                    "feasible": True,
+                },
+            ],
+            "price_index_status": "current",
+            "eia_week": "2026-07-20",
+            "trend_region": "PADD 3",
+            # An IntegerField on the wire (routing/views.py's OpenAPI
+            # schema) -- a raw Decimal here would raise on the
+            # json.dumps round-trip below, unlike every money/gallon/mile
+            # value elsewhere in this fixture.
+            "trend_delta_cents": -2,
+        }
+        context = {
+            "stop_coords": {
+                501: {"latitude": Decimal("30.10"), "longitude": Decimal("-97.50")},
+                502: {"latitude": Decimal("29.90"), "longitude": Decimal("-95.80")},
+            },
+            "start_coords": {
+                "latitude": Decimal("30.2672"), "longitude": Decimal("-97.7431")
+            },
+            "finish_coords": {
+                "latitude": Decimal("29.7604"), "longitude": Decimal("-95.3698")
+            },
+            # The two-value composition form -- the sentence Phase 22
+            # will make live and the one no other test exercises against a
+            # full payload.
+            "price_source_counts": {"opis_indexed": 6290, "eia_regional_estimate": 412},
+        }
+        return instance, context
+
+    def _fresh_response_dict(self):
+        instance, context = self._fully_populated_two_stop_instance()
+        data = RouteResponseSerializer(instance, context=context).data
+        # Round-tripped through json.dumps/json.loads so Decimal/
+        # OrderedDict artefacts do not make the comparison spuriously
+        # fail against the committed file's plain dicts/floats/strings.
+        return json.loads(json.dumps(data))
+
+    def test_hop6_7_committed_fixture_matches_a_freshly_serialized_response(self):
+        fresh = self._fresh_response_dict()
+        committed = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual(committed, fresh)
+
+    def test_fixture_top_level_keys_are_exactly_the_live_contract(self):
+        committed = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            set(committed.keys()), test_serializers.ResponseContractTests.CURRENT_TOP_LEVEL_KEYS
+        )
+
+    def test_fixture_fuel_stop_keys_are_exactly_the_live_contract(self):
+        committed = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        for stop in committed["fuel_stops"]:
+            self.assertEqual(
+                set(stop.keys()),
+                test_serializers.ResponseContractTests.CURRENT_FUEL_STOP_KEYS,
+            )
+
+    def test_fixture_has_at_least_two_fuel_stops_with_differing_price_source(self):
+        committed = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        self.assertGreaterEqual(len(committed["fuel_stops"]), 2)
+        self.assertEqual(
+            {stop["price_source"] for stop in committed["fuel_stops"]},
+            {PriceSource.OPIS_INDEXED, PriceSource.EIA_REGIONAL_ESTIMATE},
+        )
+
+    def test_fixture_station_data_note_matches_the_two_value_composition_form(self):
+        committed = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        self.assertEqual(
+            committed["station_data_note"],
+            "6,702 stations — 6,290 recorded, 412 regional estimates.",
+        )
+
+    def test_no_estimate_sourced_row_in_committed_station_csv(self):
+        """T-20-28: this fixture's estimate-sourced stop must not be
+        mistaken for dataset contamination -- the committed OPIS CSV
+        carries no `eia_regional_estimate` row in this phase."""
+        content = COMMITTED_CSV_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(content.count("eia_regional_estimate"), 0)
+
+
 class StationDataNoteHopTests(SimpleTestCase):
     """Hop-adjacent, not one of the eight numbered hops: `station_data_note()`
     is PROV-04's dataset-COMPOSITION disclosure (derived from the whole

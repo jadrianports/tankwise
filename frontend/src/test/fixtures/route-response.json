@@ -1,0 +1,136 @@
+{
+  "start": {
+    "latitude": "30.2672",
+    "longitude": "-97.7431"
+  },
+  "finish": {
+    "latitude": "29.7604",
+    "longitude": "-95.3698"
+  },
+  "route_geometry": [
+    [
+      -97.7431,
+      30.2672
+    ],
+    [
+      -95.3698,
+      29.7604
+    ]
+  ],
+  "total_route_mi": "200",
+  "fuel_stops": [
+    {
+      "name": "Recorded Fuel Stop",
+      "station_id": 501,
+      "location": {
+        "latitude": "30.10",
+        "longitude": "-97.50"
+      },
+      "distance_from_start_mi": "80",
+      "price_per_gallon": "3.89",
+      "gallons": "41.20",
+      "cost": "160.27",
+      "price_source": "opis_indexed",
+      "rationale": {
+        "purchase_reason": "fill_to_continue",
+        "reason_target_station_id": 502,
+        "reason_target_name": "Regional Estimate Fuel Stop",
+        "skipped_count": 1,
+        "skipped_avg_price": "4.10",
+        "corridor_avg_price": "3.95",
+        "price_percentile": 30.0,
+        "bypassed_cheaper_count": 0,
+        "bypassed_saving_forgone": null
+      }
+    },
+    {
+      "name": "Regional Estimate Fuel Stop",
+      "station_id": 502,
+      "location": {
+        "latitude": "29.90",
+        "longitude": "-95.80"
+      },
+      "distance_from_start_mi": "180",
+      "price_per_gallon": "3.72",
+      "gallons": "35.00",
+      "cost": "130.20",
+      "price_source": "eia_regional_estimate",
+      "rationale": {
+        "purchase_reason": "reach_cheaper_stop",
+        "reason_target_station_id": null,
+        "reason_target_name": null,
+        "skipped_count": 0,
+        "skipped_avg_price": null,
+        "corridor_avg_price": "3.95",
+        "price_percentile": 10.0,
+        "bypassed_cheaper_count": 0,
+        "bypassed_saving_forgone": null
+      }
+    }
+  ],
+  "total_cost": "290.47",
+  "total_gallons": "76.20",
+  "map_url": "https://example.test/map",
+  "vehicle": {
+    "mpg": "6.5",
+    "tank_range_mi": "1050",
+    "starting_fuel": "1",
+    "starting_fuel_mi": "1050"
+  },
+  "legs": [
+    {
+      "from": "START",
+      "to": "Recorded Fuel Stop",
+      "distance_mi": "80",
+      "duration_s": 4800,
+      "gallons": "0.00",
+      "cost": "0.00"
+    },
+    {
+      "from": "Recorded Fuel Stop",
+      "to": "Regional Estimate Fuel Stop",
+      "distance_mi": "100",
+      "duration_s": 6000,
+      "gallons": "41.20",
+      "cost": "160.27"
+    },
+    {
+      "from": "Regional Estimate Fuel Stop",
+      "to": "FINISH",
+      "distance_mi": "20",
+      "duration_s": 1200,
+      "gallons": "35.00",
+      "cost": "130.20"
+    }
+  ],
+  "total_duration_s": 12000,
+  "fuel_stop_count": 2,
+  "savings": {
+    "amount": "15.20",
+    "percent": 5.0,
+    "naive_total_cost": "305.67",
+    "naive_total_gallons": "78.00",
+    "naive_stop_count": 3
+  },
+  "savings_note": null,
+  "alternatives_considered": 1,
+  "alternatives": [
+    {
+      "total_route_mi": "200",
+      "duration_s": 12000,
+      "total_cost": "290.47",
+      "chosen": true,
+      "feasible": true
+    }
+  ],
+  "candidate_stations": [],
+  "waypoints": [],
+  "price_as_of": "Jul 20, 2026",
+  "price_data_note": "Station prices indexed to the EIA week of Jul 20, 2026.",
+  "station_data_note": "6,702 stations — 6,290 recorded, 412 regional estimates.",
+  "price_index_status": "current",
+  "eia_week": "2026-07-20",
+  "trend_region": "PADD 3",
+  "trend_delta_cents": -2,
+  "solver_strategy": "exact_dp"
+}
