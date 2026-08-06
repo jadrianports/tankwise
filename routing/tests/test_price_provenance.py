@@ -16,11 +16,15 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management import CommandError, call_command
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
+from shapely.geometry import LineString
 
 from routing.management.commands.geocode_stations import EXPORT_HEADER
 from routing.management.commands.seed_stations import STRAIGHT_FIELDS
-from routing.models import PriceSource, Station
+from routing.models import GeocodePrecision, GeocodeStatus, PriceSource, Station
+from routing.services.corridor import candidates, price_source_counts, reset_index
+from routing.services.mapbox import Route
+from routing.services.solver import Candidate
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
@@ -164,3 +168,174 @@ class PipelineSchemaHopTests(TestCase):
 
     def test_straight_fields_contains_price_source(self):
         self.assertIn("price_source", STRAIGHT_FIELDS)
+
+
+class CorridorSingleLegPriceSourceHopTests(TestCase):
+    """Hop 2 (single-leg path): a `Candidate` built by
+    `_candidates_single_leg` carries the source station's provenance --
+    two stations with DIFFERING values distinguish "carried" from
+    "defaulted"."""
+
+    ROUTE_COORDS = [(-97.00, 30.00), (-97.00, 40.00)]
+    TOTAL_ROUTE_MI = Decimal("700")
+
+    def setUp(self):
+        super().setUp()
+        reset_index()
+
+    def _route(self):
+        return Route(
+            total_route_mi=self.TOTAL_ROUTE_MI,
+            geometry=LineString(self.ROUTE_COORDS),
+            raw_coordinates=self.ROUTE_COORDS,
+        )
+
+    def test_candidate_price_source_matches_its_own_station(self):
+        recorded = _make_station(
+            opis_id=9101,
+            latitude=Decimal("32.50"),
+            longitude=Decimal("-97.00"),
+            geocode_status=GeocodeStatus.OK,
+            geocode_precision=GeocodePrecision.ROOFTOP,
+            price_source=PriceSource.OPIS_INDEXED,
+        )
+        estimated = _make_station(
+            opis_id=9102,
+            latitude=Decimal("35.00"),
+            longitude=Decimal("-97.00"),
+            geocode_status=GeocodeStatus.OK,
+            geocode_precision=GeocodePrecision.ROOFTOP,
+            price_source=PriceSource.EIA_REGIONAL_ESTIMATE,
+        )
+
+        result = candidates(self._route())
+        by_opis_id = {c.opis_id: c for c in result}
+
+        self.assertEqual(
+            by_opis_id[recorded.opis_id].price_source, PriceSource.OPIS_INDEXED
+        )
+        self.assertEqual(
+            by_opis_id[estimated.opis_id].price_source,
+            PriceSource.EIA_REGIONAL_ESTIMATE,
+        )
+
+
+class CorridorMultiLegPriceSourceHopTests(TestCase):
+    """Hop 2 (multi-leg path): a `Candidate` built by
+    `_candidates_multi_leg` carries the source station's provenance too,
+    including after the nearest-perpendicular dedup collapses a station
+    seen from both adjacent legs to its single `opis_id` entry."""
+
+    def setUp(self):
+        super().setUp()
+        reset_index()
+
+    def _route(self):
+        # Two straight north-south legs sharing a boundary waypoint at
+        # lat 35.00 -- mirrors test_multi_leg.py's DetourCorridorTestCase
+        # shape, simplified to straight legs since no simplification
+        # hazard is under test here.
+        leg0 = [(-97.00, 30.00), (-97.00, 35.00)]
+        leg1 = [(-97.00, 35.00), (-97.00, 40.00)]
+        combined = leg0 + leg1[1:]
+        return Route(
+            total_route_mi=Decimal("700"),
+            geometry=LineString(combined),
+            raw_coordinates=combined,
+            leg_distances_mi=[Decimal("350"), Decimal("350")],
+            leg_annotation_lengths=[1, 1],
+        )
+
+    def test_boundary_station_dedup_keeps_its_own_provenance(self):
+        # Sits exactly on the shared boundary waypoint, so BOTH legs'
+        # corridor queries pick it up -- best_by_opis_id must collapse
+        # the two per-leg Candidate builds to one entry, and that entry
+        # must still carry this station's own provenance.
+        station = _make_station(
+            opis_id=9201,
+            latitude=Decimal("35.00"),
+            longitude=Decimal("-97.00"),
+            geocode_status=GeocodeStatus.OK,
+            geocode_precision=GeocodePrecision.CITY,
+            price_source=PriceSource.EIA_REGIONAL_ESTIMATE,
+        )
+
+        result = candidates(self._route())
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].opis_id, station.opis_id)
+        self.assertEqual(result[0].price_source, PriceSource.EIA_REGIONAL_ESTIMATE)
+
+    def test_two_stations_one_per_leg_both_carry_their_own_provenance(self):
+        leg0_station = _make_station(
+            opis_id=9202,
+            latitude=Decimal("32.50"),
+            longitude=Decimal("-97.00"),
+            geocode_status=GeocodeStatus.OK,
+            geocode_precision=GeocodePrecision.ROOFTOP,
+            price_source=PriceSource.OPIS_INDEXED,
+        )
+        leg1_station = _make_station(
+            opis_id=9203,
+            latitude=Decimal("37.50"),
+            longitude=Decimal("-97.00"),
+            geocode_status=GeocodeStatus.OK,
+            geocode_precision=GeocodePrecision.ROOFTOP,
+            price_source=PriceSource.EIA_REGIONAL_ESTIMATE,
+        )
+
+        result = candidates(self._route())
+        by_opis_id = {c.opis_id: c for c in result}
+
+        self.assertEqual(
+            by_opis_id[leg0_station.opis_id].price_source, PriceSource.OPIS_INDEXED
+        )
+        self.assertEqual(
+            by_opis_id[leg1_station.opis_id].price_source,
+            PriceSource.EIA_REGIONAL_ESTIMATE,
+        )
+
+
+class SolverCandidateDefaultPriceSourceHopTests(SimpleTestCase):
+    """Hop 3: `Candidate` constructed with only the original four
+    positional arguments still compiles and defaults its provenance to
+    the recorded-price wire value -- the AST-gated pure solver boundary
+    sees a plain `str`, never the Django-side `PriceSource` enum."""
+
+    def test_four_argument_candidate_defaults_to_opis_indexed(self):
+        candidate = Candidate(
+            name="Test Stop",
+            opis_id=1,
+            price_per_gallon=Decimal("3.259"),
+            distance_from_start_mi=Decimal("100"),
+        )
+
+        self.assertEqual(candidate.price_source, "opis_indexed")
+
+
+class PriceSourceCountsHopTests(TestCase):
+    """Hop 3: `corridor.price_source_counts()` over the seeded, committed
+    dataset returns exactly one key at 6290 -- the committed CSV carries
+    no estimate-sourced row in this phase -- and, once the lazy index is
+    already warm, costs zero additional queries to call again (D-03)."""
+
+    def setUp(self):
+        super().setUp()
+        reset_index()
+
+    def test_seeded_dataset_composition_is_all_recorded_price(self):
+        call_command("seed_stations", str(COMMITTED_CSV_PATH), stdout=io.StringIO())
+        reset_index()
+
+        counts = price_source_counts()
+
+        self.assertEqual(counts, {"opis_indexed": 6290})
+
+    def test_calling_twice_after_warm_costs_zero_queries(self):
+        call_command("seed_stations", str(COMMITTED_CSV_PATH), stdout=io.StringIO())
+        reset_index()
+        price_source_counts()  # warm the lazy index once, outside the assertion.
+
+        with self.assertNumQueries(0):
+            price_source_counts()
+            price_source_counts()

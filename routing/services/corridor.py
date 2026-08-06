@@ -15,6 +15,7 @@ test `setUp`, never from `candidates()` itself.
 """
 import math
 import threading
+from collections import Counter
 from decimal import Decimal
 from typing import NamedTuple
 
@@ -45,12 +46,12 @@ SIMPLIFY_TOLERANCE_MI = 0.05
 
 
 class IndexedStation(NamedTuple):
-    """The seven `Station` attributes the corridor path actually reads --
+    """The eight `Station` attributes the corridor path actually reads --
     `_candidates_single_leg`/`_candidates_multi_leg` access `.name`,
     `.retail_price`, `.geocode_precision`, etc. exactly as they would on a
     full `Station` instance, so swapping the index's row type here needs
     no change at either call site. Deliberately narrower than `Station`'s
-    15 concrete columns -- `_build_index()` fetches only these seven, since
+    16 concrete columns -- `_build_index()` fetches only these eight, since
     that fetch crosses the network to Neon on every per-worker cold start."""
 
     opis_id: int
@@ -60,6 +61,7 @@ class IndexedStation(NamedTuple):
     latitude: Decimal
     longitude: Decimal
     geocode_precision: str | None
+    price_source: str
 
 
 # Lazily-built (STRtree, list[IndexedStation]) pair over
@@ -154,15 +156,15 @@ def _build_index():
     the tree's native (unscaled) coordinate space, never the
     equirectangular-scaled planar frame `build_planar_route` uses.
 
-    Fetches exactly the seven columns the corridor path reads (via
-    `values_list`, never full `Station` instances) -- narrowing 15 columns
-    to 7 matters far more over the network to Neon than it does locally,
+    Fetches exactly the eight columns the corridor path reads (via
+    `values_list`, never full `Station` instances) -- narrowing 16 columns
+    to 8 matters far more over the network to Neon than it does locally,
     and every per-worker cold start pays this fetch again. Point
     construction is a single vectorized `shapely.points()` call rather than
     a per-row `Point(...)` list comprehension."""
     rows = Station.objects.routable().values_list(
         "opis_id", "name", "state", "retail_price", "latitude", "longitude",
-        "geocode_precision",
+        "geocode_precision", "price_source",
     )
     stations = [IndexedStation(*row) for row in rows]
     xs = [float(s.longitude) for s in stations]
@@ -365,6 +367,7 @@ def _candidates_single_leg(route, factor_for) -> list[Candidate]:
                 # outcome, not a bug (see corridor/solver tests).
                 price_per_gallon=station.retail_price * factor_for(station.state),
                 distance_from_start_mi=distance_from_start_mi,
+                price_source=station.price_source,
             )
         )
 
@@ -442,6 +445,7 @@ def _candidates_multi_leg(route, factor_for) -> list[Candidate]:
                 opis_id=station.opis_id,
                 price_per_gallon=station.retail_price * factor_for(station.state),
                 distance_from_start_mi=distance_from_start_mi,
+                price_source=station.price_source,
             )
 
             existing = best_by_opis_id.get(station.opis_id)
@@ -449,3 +453,17 @@ def _candidates_multi_leg(route, factor_for) -> list[Candidate]:
                 best_by_opis_id[station.opis_id] = (perpendicular_mi, candidate)
 
     return [candidate for _, candidate in best_by_opis_id.values()]
+
+
+def price_source_counts() -> dict[str, int]:
+    """Routable-station count broken down by `price_source` value, for
+    `routing/serializers.py`'s dataset-composition note (plan 20-04's
+    consumer). Costs zero additional queries beyond `_get_index()`'s own
+    one-time lazy build (D-03): the index is already materialised once per
+    process for the corridor prefilter, so this counts an in-memory list of
+    under 7,000 `IndexedStation` tuples. A future refactor toward a
+    database `GROUP BY` would reintroduce a per-call query and is
+    therefore wrong -- this function must stay a pure Python `Counter`
+    over the already-loaded index."""
+    _, indexed_stations = _get_index()
+    return dict(Counter(station.price_source for station in indexed_stations))

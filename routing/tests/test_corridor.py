@@ -459,12 +459,12 @@ class StrtreeIndexTests(CorridorTestCase):
 
 
 class IndexedStationAttributeNamesTest(CorridorTestCase):
-    """Pins the seven attribute names the corridor path relies on
+    """Pins the eight attribute names the corridor path relies on
     (`station.name` / `station.retail_price` / `station.geocode_precision`
     etc.) so a future field rename on `IndexedStation` fails loudly here
     rather than silently degrading candidate selection downstream."""
 
-    def test_indexed_station_has_the_seven_relied_upon_fields(self):
+    def test_indexed_station_has_the_eight_relied_upon_fields(self):
         self.assertEqual(
             IndexedStation._fields,
             (
@@ -475,6 +475,7 @@ class IndexedStationAttributeNamesTest(CorridorTestCase):
                 "latitude",
                 "longitude",
                 "geocode_precision",
+                "price_source",
             ),
         )
 

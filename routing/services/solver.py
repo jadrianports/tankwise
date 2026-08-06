@@ -57,12 +57,22 @@ class SolverStrategy:
 
 @dataclass(frozen=True)
 class Candidate:
-    """A candidate fuel stop positioned along the route."""
+    """A candidate fuel stop positioned along the route.
+
+    `price_source` is additive and defaults to the recorded-price wire
+    value (`"opis_indexed"`) so every existing four-argument `Candidate(...)`
+    construction across tests, `greedy.py`, and `dp.py`'s estimate/prune
+    helpers keeps compiling untouched. It crosses the AST-gated pure
+    solver boundary as a plain `str`, never the Django-side choices enum
+    that names it on the model -- carried data only, never read in a
+    selection decision (see `routing/tests/test_boundaries.py`'s
+    provenance usage-purity guard)."""
 
     name: str
     opis_id: int
     price_per_gallon: Decimal
     distance_from_start_mi: Decimal
+    price_source: str = "opis_indexed"
 
 
 @dataclass(frozen=True)
@@ -80,6 +90,13 @@ class FuelStop:
     is the fuel-dollar saving those rejections gave up. They carry the
     quantitative half of `BYPASS_CHEAPER_NOT_WORTH_STOP`'s story, while
     the backend emits no prose.
+
+    `price_source` is also additive and defaults to `None`, mirroring
+    `Candidate.price_source` -- the provenance of the station this stop
+    purchased at, carried for display (the UI stop row and
+    `station_data_note`) and never read by the recurrence in either solver
+    arm. `greedy.py`, `naive_baseline.py` and the frozen-greedy referee
+    build `FuelStop`s without it and take the `None` default by design.
     """
 
     name: str
@@ -97,6 +114,7 @@ class FuelStop:
     corridor_avg_price: Decimal | None = None
     bypassed_cheaper_count: int = 0
     bypassed_saving_forgone: Decimal | None = None
+    price_source: str | None = None
 
 
 @dataclass(frozen=True)
