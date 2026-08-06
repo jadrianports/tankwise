@@ -13,6 +13,11 @@ class GeocodePrecision(models.TextChoices):
     CITY = "city", "City centroid"
 
 
+class PriceSource(models.TextChoices):
+    OPIS_INDEXED = "opis_indexed", "OPIS indexed"
+    EIA_REGIONAL_ESTIMATE = "eia_regional_estimate", "EIA regional estimate"
+
+
 class StationQuerySet(models.QuerySet):
     def routable(self):
         """Stations eligible as routing candidates: geocoded successfully
@@ -32,6 +37,11 @@ class Station(models.Model):
     state = models.CharField(max_length=2)
     rack_id = models.CharField(max_length=32)
     retail_price = models.DecimalField(max_digits=11, decimal_places=8)
+    price_source = models.CharField(
+        max_length=32,
+        choices=PriceSource.choices,
+        default=PriceSource.OPIS_INDEXED,
+    )
 
     geocode_status = models.CharField(
         max_length=16,
