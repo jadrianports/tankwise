@@ -2,7 +2,20 @@ import { render, screen, cleanup } from '@testing-library/react';
 import { afterEach, expect, test } from 'vitest';
 
 import JustificationPopup from './JustificationPopup';
-import type { FuelStop, PurchaseReason, Rationale } from '../../types/routeContract';
+import type { FuelStop, PurchaseReason, Rationale, RouteResponse } from '../../types/routeContract';
+// The SAME committed file `routing/tests/test_price_provenance.py` asserts
+// against a freshly serialized response (D-19's hop 6/7 -> hop 8 join) --
+// a `FuelStopSerializer` key rename now breaks a test on both sides of the
+// language boundary, not just one. A plain ESM JSON import: Vite/Vitest
+// support it directly and `resolveJsonModule` is already enabled, so no
+// config change and no new dependency. Cast once, here, rather than per
+// test site: JSON imports infer literal-widened/plain-object types (e.g.
+// `station_id` infers as `number`, not this contract's `string | null`),
+// so a single explicit cast to the real wire shape keeps every call site
+// below fully typed as `FuelStop`.
+import routeResponseFixture from '../../test/fixtures/route-response.json';
+
+const fixture = routeResponseFixture as unknown as RouteResponse;
 
 // This file's vite config runs without vitest's `globals` option, so
 // testing-library's auto-cleanup detection never fires -- each render
@@ -116,23 +129,23 @@ test('reports the most expensive candidate as beating none of them', () => {
 });
 
 test('a recorded-price stop renders the per-gallon line with the recorded-price qualifier', () => {
-  const stop = makeStop(
-    { purchase_reason: 'reach_finish' },
-    { price_per_gallon: '3.89', price_source: 'opis_indexed' }
-  );
+  // Selected by provenance value, not array index, so a reordering of the
+  // fixture does not silently repoint this test at the wrong stop.
+  const stop = fixture.fuel_stops.find((s) => s.price_source === 'opis_indexed');
+  if (!stop) throw new Error('fixture has no opis_indexed fuel stop');
   render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
-  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.89/gal · recorded price');
-  expect(priceLine.textContent).toBe('$3.89/gal · recorded price');
+  const expected = `$${stop.price_per_gallon}/gal · recorded price`;
+  const priceLine = screen.getByText((_, element) => element?.textContent === expected);
+  expect(priceLine.textContent).toBe(expected);
 });
 
 test('an estimate-sourced stop renders the per-gallon line with the regional-estimate qualifier', () => {
-  const stop = makeStop(
-    { purchase_reason: 'reach_finish' },
-    { price_per_gallon: '3.72', price_source: 'eia_regional_estimate' }
-  );
+  const stop = fixture.fuel_stops.find((s) => s.price_source === 'eia_regional_estimate');
+  if (!stop) throw new Error('fixture has no eia_regional_estimate fuel stop');
   render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
-  const priceLine = screen.getByText((_, element) => element?.textContent === '$3.72/gal · regional estimate');
-  expect(priceLine.textContent).toBe('$3.72/gal · regional estimate');
+  const expected = `$${stop.price_per_gallon}/gal · regional estimate`;
+  const priceLine = screen.getByText((_, element) => element?.textContent === expected);
+  expect(priceLine.textContent).toBe(expected);
 });
 
 test('a null price_source renders the per-gallon line with no qualifier at all', () => {
