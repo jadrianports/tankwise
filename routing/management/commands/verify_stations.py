@@ -19,7 +19,7 @@ default -- omitting it reports only; a caller opts in with its bar.
 
 from django.core.management.base import BaseCommand, CommandError
 
-from routing.models import GeocodeStatus, Station
+from routing.models import GeocodeStatus, PriceSource, Station
 
 
 class Command(BaseCommand):
@@ -75,6 +75,32 @@ class Command(BaseCommand):
             f"Breakdown: rooftop={rooftop_count} city={city_count} "
             f"failed={failed_count} out_of_scope={out_of_scope_count}"
         )
+
+        opis_indexed_count = Station.objects.filter(
+            price_source=PriceSource.OPIS_INDEXED
+        ).count()
+        eia_regional_estimate_count = Station.objects.filter(
+            price_source=PriceSource.EIA_REGIONAL_ESTIMATE
+        ).count()
+        # Single query so an unknown value's cost is one extra COUNT, not a
+        # per-row scan -- a data defect at any coverage level, so this check
+        # runs unconditionally (not gated behind --min-coverage) since this
+        # command runs in the Docker build path where the gate needs to fire.
+        unrecognized_price_source_count = Station.objects.exclude(
+            price_source__in=PriceSource.values
+        ).count()
+
+        self.stdout.write(
+            f"Price source breakdown: opis_indexed={opis_indexed_count} "
+            f"eia_regional_estimate={eia_regional_estimate_count} "
+            f"unrecognized={unrecognized_price_source_count}"
+        )
+
+        if unrecognized_price_source_count:
+            raise CommandError(
+                f"{unrecognized_price_source_count} station row(s) hold a "
+                f"price_source value outside {PriceSource.values}"
+            )
 
         if min_coverage is None:
             self.stdout.write(

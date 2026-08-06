@@ -19,7 +19,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 from routing.models import Station
@@ -33,7 +33,7 @@ DEFAULT_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 # column name -- these mirror EXPORT_HEADER in geocode_stations.py minus
 # opis_id (the upsert key) and the coordinate/precision columns (handled
 # separately below since blank cells must coerce to None).
-STRAIGHT_FIELDS = ["name", "address", "city", "state", "rack_id"]
+STRAIGHT_FIELDS = ["name", "address", "city", "state", "rack_id", "price_source"]
 DECIMAL_FIELDS = ["retail_price", "price_min", "price_max"]
 
 # Every key _row_to_defaults returns, derived from the two field lists above
@@ -100,6 +100,20 @@ class Command(BaseCommand):
 
         with open(csv_path, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
+
+            # A CSV missing a required column would otherwise KeyError
+            # inside _row_to_defaults' try/except and be silently skipped
+            # row-by-row, exiting 0 with an empty (or unchanged) Station
+            # table. Fail loudly instead, naming the missing column(s).
+            required_fields = set(STRAIGHT_FIELDS) | set(DECIMAL_FIELDS)
+            present_fields = set(reader.fieldnames or [])
+            missing_fields = required_fields - present_fields
+            if missing_fields:
+                raise CommandError(
+                    f"Derived CSV {csv_path!r} is missing required column(s): "
+                    f"{', '.join(sorted(missing_fields))}"
+                )
+
             with transaction.atomic():
                 # Snapshot existing rows BEFORE upserting so the
                 # created/updated/unchanged counts compare against

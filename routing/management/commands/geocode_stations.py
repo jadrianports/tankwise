@@ -54,6 +54,7 @@ EXPORT_HEADER = [
     "longitude",
     "geocode_precision",
     "geocode_status",
+    "price_source",
 ]
 
 GEOCODE_UPDATE_FIELDS = ["latitude", "longitude", "geocode_status", "geocode_precision"]
@@ -342,6 +343,7 @@ class Command(BaseCommand):
                         station.longitude if station.longitude is not None else "",
                         station.geocode_precision or "",
                         station.geocode_status,
+                        station.price_source,
                     ]
                 )
         self.stdout.write(self.style.SUCCESS(f"Exported derived dataset to {export_path}"))

@@ -26,6 +26,7 @@ FIXTURE_HEADER = [
     "longitude",
     "geocode_precision",
     "geocode_status",
+    "price_source",
 ]
 
 # One ok+city row, one ok+rooftop row, one failed row (blank coords), one
@@ -47,6 +48,7 @@ FIXTURE_ROWS = [
         "longitude": "-97.00000000",
         "geocode_precision": "city",
         "geocode_status": "ok",
+        "price_source": "opis_indexed",
     },
     {
         "opis_id": "1002",
@@ -63,6 +65,7 @@ FIXTURE_ROWS = [
         "longitude": "-97.50000000",
         "geocode_precision": "rooftop",
         "geocode_status": "ok",
+        "price_source": "opis_indexed",
     },
     {
         "opis_id": "1003",
@@ -79,6 +82,7 @@ FIXTURE_ROWS = [
         "longitude": "",
         "geocode_precision": "",
         "geocode_status": "failed",
+        "price_source": "opis_indexed",
     },
     {
         "opis_id": "1004",
@@ -95,6 +99,7 @@ FIXTURE_ROWS = [
         "longitude": "",
         "geocode_precision": "",
         "geocode_status": "out_of_scope",
+        "price_source": "opis_indexed",
     },
 ]
 

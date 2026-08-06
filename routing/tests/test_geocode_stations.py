@@ -268,6 +268,7 @@ class GeocodeStationsCommandTests(TestCase):
                 "longitude",
                 "geocode_precision",
                 "geocode_status",
+                "price_source",
             ],
         )
 

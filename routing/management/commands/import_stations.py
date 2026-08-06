@@ -13,7 +13,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from routing.models import GeocodeStatus, Station
+from routing.models import GeocodeStatus, PriceSource, Station
 from routing.pipeline.dedupe import collapse_duplicates
 
 logger = logging.getLogger(__name__)
@@ -113,6 +113,10 @@ class Command(BaseCommand):
                         if group.out_of_scope
                         else GeocodeStatus.PENDING
                     )
+                    # This command is the one that read the OPIS source
+                    # file, so it is the one that stamps provenance --
+                    # unconditionally, no branch, no ID-range inference.
+                    defaults["price_source"] = PriceSource.OPIS_INDEXED
                     Station.objects.update_or_create(
                         opis_id=group.opis_id, defaults=defaults
                     )
@@ -145,6 +149,9 @@ class Command(BaseCommand):
                         if group.out_of_scope
                         else GeocodeStatus.PENDING
                     )
+                    # Same stamp as the create branch above -- this command
+                    # is the one that knows the row came from the OPIS file.
+                    defaults["price_source"] = PriceSource.OPIS_INDEXED
 
                 Station.objects.update_or_create(
                     opis_id=group.opis_id, defaults=defaults
