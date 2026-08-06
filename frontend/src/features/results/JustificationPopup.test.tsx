@@ -9,7 +9,10 @@ import type { FuelStop, PurchaseReason, Rationale } from '../../types/routeContr
 // must be torn down explicitly between tests.
 afterEach(cleanup);
 
-function makeStop(rationale: Partial<Rationale> & { purchase_reason: PurchaseReason | null }): FuelStop {
+function makeStop(
+  rationale: Partial<Rationale> & { purchase_reason: PurchaseReason | null },
+  overrides: Partial<FuelStop> = {}
+): FuelStop {
   return {
     name: 'Test Stop',
     station_id: '1',
@@ -18,6 +21,7 @@ function makeStop(rationale: Partial<Rationale> & { purchase_reason: PurchaseRea
     price_per_gallon: '3.50',
     gallons: '40.00',
     cost: '140.00',
+    price_source: 'opis_indexed',
     rationale: {
       reason_target_station_id: null,
       reason_target_name: null,
@@ -29,6 +33,7 @@ function makeStop(rationale: Partial<Rationale> & { purchase_reason: PurchaseRea
       bypassed_saving_forgone: null,
       ...rationale,
     },
+    ...overrides,
   };
 }
 

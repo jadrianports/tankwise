@@ -51,6 +51,15 @@ export interface FuelStop {
   price_per_gallon: string;
   gallons: string;
   cost: string;
+  // Additive (Phase 20/PROV-01). Wire values are `'opis_indexed'` (a real
+  // OPIS-sourced price) or `'eia_regional_estimate'` (no OPIS row for this
+  // station -- price is a regional EIA estimate). `null` covers a legacy
+  // or pre-phase cached payload with no provenance recorded. Typed as
+  // plain `string | null` rather than a two-value union -- same rationale
+  // as `solver_strategy` below: an unrecognized future value should still
+  // type-check, and the render path (never a `switch`, never an exhaustive
+  // `Record`) must degrade rather than throw on one (D-08).
+  price_source: string | null;
   rationale: Rationale;
 }
 
@@ -185,6 +194,12 @@ export interface RouteResponse {
   waypoints: WaypointMarker[];
   price_as_of: string;
   price_data_note: string;
+  // Additive (Phase 20/PROV-04). A derived, server-composed sentence
+  // describing the station dataset's price-provenance mix (e.g. "6,290
+  // stations — all with recorded prices."). Always a string, empty when
+  // nothing is known -- never `null`, matching `station_data_note()`'s own
+  // return contract. Render verbatim; the client formats nothing.
+  station_data_note: string;
   // Additive EIA indexing fields (Phase 12). `trend_delta_cents` is a
   // signed integer -- positive means the region's diesel average rose
   // week-over-week, negative means it fell. All four default safely
