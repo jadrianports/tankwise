@@ -131,20 +131,22 @@ const THREE_STOP_WITH_CANDIDATES_DATA = {
   ],
 } as unknown as RouteResponse;
 
-test('starts a solved route with the candidate price layer hidden and reveals it on toggle', () => {
+test('starts a solved route with the candidate price layer visible and hides it on toggle', () => {
   render(<MapView data={THREE_STOP_WITH_CANDIDATES_DATA} token="pk.test" tokenStatus="ready" />);
 
-  const toggle = screen.getByRole('button', { name: /show candidate station prices/i });
-  expect(toggle).toHaveAttribute('aria-pressed', 'false');
-  expect(screen.queryByRole('group', { name: /candidate station price legend/i })).not.toBeInTheDocument();
+  const toggle = screen.getByRole('button', { name: /hide candidate station prices/i });
+  expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('group', { name: /candidate station price legend/i })).toBeInTheDocument();
 
   fireEvent.click(toggle);
 
-  expect(screen.getByRole('button', { name: /hide candidate station prices/i })).toHaveAttribute(
+  expect(screen.getByRole('button', { name: /show candidate station prices/i })).toHaveAttribute(
     'aria-pressed',
-    'true',
+    'false',
   );
-  expect(screen.getByRole('group', { name: /candidate station price legend/i })).toBeInTheDocument();
+  expect(
+    screen.queryByRole('group', { name: /candidate station price legend/i }),
+  ).not.toBeInTheDocument();
 });
 
 test('the camera holds position on a re-solve that lands on the identical stop coordinates', () => {
