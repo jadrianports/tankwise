@@ -296,6 +296,7 @@ _FUEL_STOP_SCHEMA = inline_serializer(
         "gallons": serializers.CharField(),
         "cost": serializers.CharField(),
         "rationale": _FUEL_STOP_RATIONALE_SCHEMA,
+        "price_source": serializers.CharField(allow_null=True),
     },
     many=True,
 )
@@ -415,6 +416,7 @@ _ROUTE_RESPONSE_SCHEMA = inline_serializer(
         "waypoints": _WAYPOINT_SCHEMA,
         "price_as_of": serializers.CharField(),
         "price_data_note": serializers.CharField(),
+        "station_data_note": serializers.CharField(),
         "price_index_status": serializers.CharField(),
         "eia_week": serializers.CharField(allow_null=True),
         "trend_region": serializers.CharField(allow_null=True),
@@ -455,6 +457,7 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
                     "corridor_avg_price": "2.98",
                     "price_percentile": 8.0,
                 },
+                "price_source": "opis_indexed",
             },
             {
                 "name": "ROSCOE TRAVEL PLAZA",
@@ -473,6 +476,7 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
                     "corridor_avg_price": "2.98",
                     "price_percentile": 5.0,
                 },
+                "price_source": "opis_indexed",
             },
         ],
         "total_cost": "260.42",
@@ -573,6 +577,7 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
             "per-row timestamp. Price levels are consistent with U.S. retail "
             "diesel of late 2024-early 2025."
         ),
+        "station_data_note": "6,290 stations — all with recorded prices.",
         "price_index_status": "frozen",
         "eia_week": None,
         "trend_region": None,
@@ -716,6 +721,7 @@ class RouteView(APIView):
                     "stop_coords": stop_coords,
                     "candidates": winner.candidates,
                     "candidate_coords": candidate_coords,
+                    "price_source_counts": corridor.price_source_counts(),
                 },
             )
             payload = response_serializer.data

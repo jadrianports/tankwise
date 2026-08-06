@@ -9,6 +9,24 @@ component its own namespace so a coordinate token, an address token, the
 vehicle token, and the EIA-vintage token can never collide (mitigates
 cross-domain cache-key collisions).
 
+It is versioned `route:v9:` (Phase 20 plan 20-04) because the response
+shape changed twice: `fuel_stops[]` entries gained a top-level
+`price_source` key, and the payload gained a new top-level
+`station_data_note` key. An entry cached under `v8` would be served to a
+client that expects both of those keys and get neither -- structurally
+wrong for the new consumer, not merely old, the same argument every prior
+bump in this log makes. This bump lands in the SAME commit as the
+response-shape change per the standing INTG-03 rule (the `v7`/`v8`
+precedents below). It is genuinely surprising, and therefore worth stating
+plainly, that under Phase 20's no-intermediate-deploy hold (D-14)
+production never actually serves `v9:` -- every phase in this milestone
+(20, 21, 22) reaches production together at Phase 22's go-live, so this
+bump is commit-correctness rather than a live fix: each commit must be
+right in isolation in case it is cherry-picked, reverted, or ships alone.
+One further consequence for the next reader: Phase 22's own planned cache
+bump therefore takes the next free prefix after this one, not `v9:`, even
+though the roadmap and STATE.md both still say `v8: -> v9:` for that phase.
+
 It was versioned `route:v8:` (plan 18.1-05) because the dispatch policy
 itself grew a second layer (D-01): a wall-clock `DP_DEADLINE_SECONDS` now
 backstops the pre-flight `DP_TRANSITION_BUDGET` estimate, catching
@@ -338,6 +356,6 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     dispatch_token = _dispatch_policy_token()
     penalty_token = _penalty_token(penalty)
     return (
-        f"route:v8:{stops_token}|{vehicle_token}|{eia_token}|"
+        f"route:v9:{stops_token}|{vehicle_token}|{eia_token}|"
         f"{dispatch_token}|{penalty_token}"
     )

@@ -403,6 +403,60 @@ def _friendly_eia_week(iso_date: str) -> str:
     return f"{d.strftime('%b')} {d.day}, {d.year}"
 
 
+def station_data_note(counts) -> str:
+    """Render the dataset-composition disclaimer from a
+    `dict[str, int]` mapping a `PriceSource` wire value to a routable
+    station count (the corridor module's zero-extra-query composition
+    accessor returns this shape). Placed immediately after
+    `price_freshness()` so the two disclaimer composers sit together
+    (D-02).
+
+    Pure and DERIVED: this reads only the `counts` argument the caller
+    supplies. It never reads a hand-maintained constant the way
+    `settings.FUEL_PRICE_AS_OF` is a hand-maintained date stamp for price
+    vintage -- the whole point of this function is that dataset
+    composition must never be restated by hand the same way, since a
+    stamp can silently drift from the data it claims to describe.
+
+    - An empty (or all-zero) `counts` returns the empty string: nothing
+      is known, so nothing is claimed, and the frontend renders no
+      element -- the same render-nothing-rather-than-guess discipline
+      D-08 applies at the per-stop surface.
+    - Every station recorded (`opis_indexed` count equals the total):
+      `"{total:,} stations -- all with recorded prices."`
+    - A mix of recorded and regionally estimated stations that sums to
+      the total: `"{total:,} stations -- {recorded:,} recorded,
+      {estimates:,} regional estimates."`
+    - Anything else (some row carries a value outside the two known
+      wire values, so a breakdown would not sum to the whole): a bare
+      `"{total:,} stations."` with no breakdown, because a breakdown
+      whose parts do not sum to the whole would be a lie. Unreachable
+      while `verify_stations`' guard holds; exists so this degrades
+      honestly if that guard is ever bypassed.
+
+    Pluralizes `station`/`regional estimate` on a count of exactly 1.
+    """
+    total = sum(counts.values()) if counts else 0
+    if total == 0:
+        return ""
+
+    recorded = counts.get("opis_indexed", 0)
+    estimates = counts.get("eia_regional_estimate", 0)
+    station_word = "station" if total == 1 else "stations"
+
+    if recorded == total:
+        return f"{total:,} {station_word} — all with recorded prices."
+
+    if recorded + estimates == total:
+        estimate_word = "regional estimate" if estimates == 1 else "regional estimates"
+        return (
+            f"{total:,} {station_word} — {recorded:,} recorded, "
+            f"{estimates:,} {estimate_word}."
+        )
+
+    return f"{total:,} {station_word}."
+
+
 def price_freshness(price_index_status=None, eia_week=None) -> dict:
     """Return the price-vintage disclaimer for the given
     `price_index_status` (`"current"` | `"stale"` | `"frozen"` | `None`)
@@ -459,6 +513,12 @@ class FuelStopSerializer(serializers.Serializer):
     how much. Every value in it was computed by the solver at the branch
     that produced the purchase -- this class re-derives nothing, it only
     formats.
+
+    `price_source` is a top-level sibling of `price_per_gallon`/`cost`,
+    not a member of `_rationale_repr()`'s dict: `_rationale_repr()`'s own
+    docstring scopes it to structured facts explaining why a stop
+    happened and for how much, a narrower contract than a ground-truth
+    fact about the station itself -- do not "tidy" it into `rationale`.
     """
 
     def to_representation(self, instance):
@@ -472,6 +532,7 @@ class FuelStopSerializer(serializers.Serializer):
             "price_per_gallon": _quantize_money(instance.price_per_gallon),
             "gallons": _quantize_gallons(instance.gallons),
             "cost": _quantize_money(instance.cost),
+            "price_source": instance.price_source,
             "rationale": _rationale_repr(instance),
         }
 
@@ -533,6 +594,12 @@ class RouteResponseSerializer(serializers.Serializer):
     array (an amendment to the original "no station lists" stance,
     scoped to corridor candidates for map rendering, not the
     alternatives array). Absent context renders `candidate_stations: []`.
+    It may also carry a dataset-composition counts mapping (a
+    `dict[str, int]`, a `PriceSource` wire value to a routable station
+    count) -- renders the additive `station_data_note` top-level key. The
+    ORM read behind that mapping stays in the view, never here, so this
+    class keeps its own docstring claim to be a pure formatter; absent
+    context renders `station_data_note: ""`.
 
     Every new key is read from `instance` with a `.get()` default, so an
     instance shaped with only the v1.0 keys (`"route"`, `"plan"`,
@@ -559,6 +626,7 @@ class RouteResponseSerializer(serializers.Serializer):
         alternatives = instance.get("alternatives") or []
         candidates = self.context.get("candidates") or []
         candidate_coords = self.context.get("candidate_coords") or {}
+        counts = self.context.get("price_source_counts") or {}
         price_index_status = instance.get("price_index_status", "frozen")
         eia_week = instance.get("eia_week")
         trend_region = instance.get("trend_region")
@@ -589,6 +657,7 @@ class RouteResponseSerializer(serializers.Serializer):
             "waypoints": _waypoints_repr(waypoints),
             "price_as_of": freshness["price_as_of"],
             "price_data_note": freshness["price_data_note"],
+            "station_data_note": station_data_note(counts),
             "price_index_status": price_index_status,
             "eia_week": eia_week,
             "trend_region": trend_region,

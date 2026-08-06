@@ -25,8 +25,9 @@ from routing.models import GeocodePrecision, GeocodeStatus, PriceSource, Station
 from routing.services import dp as dp_module
 from routing.services.corridor import candidates, price_source_counts, reset_index
 from routing.services.dp import solve_fixed_charge
+from routing.serializers import FuelStopSerializer, station_data_note
 from routing.services.mapbox import Route
-from routing.services.solver import Candidate, SolverStrategy, solve
+from routing.services.solver import Candidate, FuelStop, SolverStrategy, solve
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
@@ -517,4 +518,84 @@ class HeuristicArmPriceSourceMultiStopHopTests(SimpleTestCase):
         )
         self.assertEqual(
             [s.price_source for s in plan.stops], self.REAL_PRICE_SOURCES
+        )
+
+
+class SerializerPriceSourceHopTests(SimpleTestCase):
+    """Hop 5: `FuelStopSerializer` renders `price_source` as a direct
+    top-level sibling of `price_per_gallon`/`cost`, never nested inside
+    `rationale` -- `_rationale_repr()`'s own docstring scopes it to facts
+    explaining why the stop happened, a narrower contract than a
+    ground-truth fact about the station itself."""
+
+    def _stop(self, price_source):
+        return FuelStop(
+            name="Test Stop",
+            opis_id=1,
+            price_per_gallon=Decimal("3.259"),
+            distance_from_start_mi=Decimal("100"),
+            gallons=Decimal("10"),
+            cost=Decimal("32.59"),
+            price_source=price_source,
+        )
+
+    def test_serialized_stop_carries_price_source_top_level(self):
+        data = FuelStopSerializer(self._stop(PriceSource.EIA_REGIONAL_ESTIMATE)).data
+
+        self.assertEqual(data["price_source"], PriceSource.EIA_REGIONAL_ESTIMATE)
+
+    def test_rationale_does_not_contain_price_source(self):
+        data = FuelStopSerializer(self._stop(PriceSource.OPIS_INDEXED)).data
+
+        self.assertNotIn("price_source", data["rationale"])
+
+    def test_stop_with_no_provenance_serializes_price_source_as_null(self):
+        stop = FuelStop(
+            name="Legacy Stop",
+            opis_id=2,
+            price_per_gallon=Decimal("3.10"),
+            distance_from_start_mi=Decimal("50"),
+            gallons=Decimal("5"),
+            cost=Decimal("15.50"),
+        )
+
+        data = FuelStopSerializer(stop).data
+
+        self.assertIn("price_source", data)
+        self.assertIsNone(data["price_source"])
+
+
+class StationDataNoteHopTests(SimpleTestCase):
+    """Hop 5: `station_data_note()`'s five composition branches against
+    the exact approved copy (byte-compared, em dash included)."""
+
+    def test_all_recorded_price(self):
+        self.assertEqual(
+            station_data_note({"opis_indexed": 6290}),
+            "6,290 stations — all with recorded prices.",
+        )
+
+    def test_recorded_plus_estimates(self):
+        self.assertEqual(
+            station_data_note(
+                {"opis_indexed": 6290, "eia_regional_estimate": 412}
+            ),
+            "6,702 stations — 6,290 recorded, 412 regional estimates.",
+        )
+
+    def test_empty_counts_returns_empty_string(self):
+        self.assertEqual(station_data_note({}), "")
+
+    def test_singular_nouns_with_one_of_each(self):
+        self.assertEqual(
+            station_data_note(
+                {"opis_indexed": 1, "eia_regional_estimate": 1}
+            ),
+            "2 stations — 1 recorded, 1 regional estimate.",
+        )
+
+    def test_unrecognized_value_degrades_to_bare_total(self):
+        self.assertEqual(
+            station_data_note({"opis_indexed": 5, "some_unknown_value": 5}),
+            "10 stations.",
         )

@@ -112,7 +112,7 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v8: and contains exactly
+    """Every produced key starts with route:v9: and contains exactly
     four | separators (stops-chain|vehicle|eia|dispatch|penalty)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
@@ -123,7 +123,7 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v8:"))
+        self.assertTrue(key.startswith("route:v9:"))
         self.assertEqual(key.count("|"), 4)
 
 
@@ -167,7 +167,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v8:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v9:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -328,11 +328,11 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
 
     def test_new_prefix_appears_in_a_built_key(self):
         key = build_cache_key(self._payload())
-        self.assertTrue(key.startswith("route:v8:"))
+        self.assertTrue(key.startswith("route:v9:"))
 
     def test_dispatch_policy_token_is_present_and_correctly_placed(self):
         key = build_cache_key(self._payload(), eia_vintage="2026-07-20", penalty=Decimal("35"))
-        segments = key[len("route:v8:") :].split("|")
+        segments = key[len("route:v9:") :].split("|")
         # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token
         self.assertEqual(len(segments), 5)
         dispatch_segment = segments[3]
