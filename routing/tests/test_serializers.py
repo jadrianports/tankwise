@@ -1015,6 +1015,21 @@ class ResponseContractTests(SimpleTestCase):
     payload survives an end-to-end JSON round-trip. Builds `FuelStop`,
     `Leg`, `Savings`, and `Route` instances by hand -- no Mapbox call, DB
     row, or view invocation involved.
+
+    Two different questions, two different assertion shapes (D-20):
+
+    - The `V1_*` sets below are FROZEN, byte-unchanged historical pins.
+      They are asserted as a SUBSET of the rendered key set -- proving a
+      v1.0 client's exact keys/formatting still work, but NOT catching an
+      accidental extra field, since a superset always satisfies a subset
+      check. Do not edit these when adding a new response key.
+    - The `CURRENT_*` sets are this project's live contract: `V1_*` plus
+      every key added since, by set UNION so the relationship to the
+      frozen baseline stays visible in the source. They are asserted with
+      EXACT set equality, which a subset check cannot provide -- a
+      three-field addition when only two were intended would pass every
+      `V1_*` subset assertion and only be caught here. A future phase
+      adding a response key extends `CURRENT_*`, never `V1_*`.
     """
 
     # The exact key sets a v1.0 client's request/response carried,
@@ -1039,6 +1054,32 @@ class ResponseContractTests(SimpleTestCase):
         "gallons",
         "cost",
     }
+
+    # This project's live contract: every top-level/fuel-stop key that
+    # exists today, expressed as the frozen v1.0 baseline plus every
+    # addition since, by set union (D-20). Extend these, never V1_*,
+    # when a future phase adds a response key.
+    CURRENT_TOP_LEVEL_KEYS = V1_TOP_LEVEL_KEYS | {
+        "vehicle",
+        "legs",
+        "total_duration_s",
+        "fuel_stop_count",
+        "savings",
+        "savings_note",
+        "alternatives_considered",
+        "alternatives",
+        "candidate_stations",
+        "waypoints",
+        "price_as_of",
+        "price_data_note",
+        "station_data_note",
+        "price_index_status",
+        "eia_week",
+        "trend_region",
+        "trend_delta_cents",
+        "solver_strategy",
+    }
+    CURRENT_FUEL_STOP_KEYS = V1_FUEL_STOP_KEYS | {"rationale", "price_source"}
 
     def _v1_shaped_instance_and_context(self):
         raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
@@ -1160,6 +1201,26 @@ class ResponseContractTests(SimpleTestCase):
         self.assertEqual(stop["gallons"], "30.00")
         self.assertEqual(stop["cost"], "93.87")
         self.assertEqual(stop["distance_from_start_mi"], "101")
+
+    def test_current_top_level_keys_are_exactly_the_live_contract(self):
+        """D-20: exact set equality, not subset -- would fail by name if
+        this phase (or a future one) added an unintended extra top-level
+        key, which the v1.0 subset check above cannot catch."""
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+
+        self.assertEqual(set(data.keys()), self.CURRENT_TOP_LEVEL_KEYS)
+
+    def test_current_fuel_stop_keys_are_exactly_the_live_contract(self):
+        """D-20: exact set equality, not subset -- would fail by name if
+        a fuel stop rendered an unintended extra key."""
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+        stop = data["fuel_stops"][0]
+
+        self.assertEqual(set(stop.keys()), self.CURRENT_FUEL_STOP_KEYS)
 
     def test_v1_shaped_context_still_returns_candidate_stations_key(self):
         """A {start, finish}-only request (no candidates/candidate_coords
