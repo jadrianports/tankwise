@@ -1,15 +1,42 @@
 """The single place the price-source provenance chain is asserted.
 
 `price_source` travels model -> CSV -> pipeline commands -> corridor
-candidate -> solver -> serializer -> UI, an eight-hop chain (D-18). Each hop
-gets one named assertion class here, with both solver arms (exact DP and
-penalty-aware heuristic) covered explicitly where the hop touches the
-solver. This module starts with hop 1 (the model layer); later plans in
-this phase add hops 2 through 8.
+candidate -> solver -> serializer -> UI, an eight-hop chain (D-18):
+
+    1.  `Station` row (the model layer)
+    2.  `IndexedStation` / `corridor._build_index()`
+    3.  `Candidate` (the AST-gated pure solver boundary)
+    4a. `dp.py`'s winning-edge bookkeeping (the exact-DP arm)
+    4b. `heuristic.py`'s walk (the penalty-aware-heuristic arm)
+    5.  `FuelStop` -- `solver.solve()`'s own rebuild loop, which converges
+        both arms back onto one shape
+    6/7. `FuelStopSerializer` (a top-level key, never nested inside
+        `_rationale_repr()`) AND the committed cross-language fixture
+        (`frontend/src/test/fixtures/route-response.json`) that carries
+        that same shape across the Python -> TypeScript boundary (D-19)
+    8.  the rendered stop row -- asserted on the OTHER side of that
+        boundary, in `frontend/src/features/results/JustificationPopup.test.tsx`,
+        which reads the very fixture hop 6/7 asserts here. This module
+        cannot execute TypeScript, so its own hop-8 test is a POINTER,
+        not an assertion: it confirms that file still exists and still
+        names the two provenance-qualifier tests, so a rename or deletion
+        on the frontend side breaks a test on this side too.
+
+Each hop gets one named assertion class here (search this file for
+`test_hop` to find every one), with both solver arms covered explicitly
+wherever the hop touches the solver -- criterion 1's documented failure
+mode is a chain complete in the model and serializer but silently dropped
+in the UI, or complete on the exact-DP arm and dropped on the heuristic
+arm, and neither is visible from an end-to-end test alone.
+`HopCoverageGuardHopTests` at the bottom of this file is the anti-vacuity
+guard: it pins the eight-hop set as a literal tuple and fails, naming the
+missing hop, if any hop's `test_hop{N}_...`-tagged method goes missing.
 """
 
 import csv
 import io
+import json
+import sys
 import tempfile
 from decimal import Decimal
 from pathlib import Path
@@ -22,12 +49,33 @@ from shapely.geometry import LineString
 from routing.management.commands.geocode_stations import EXPORT_HEADER
 from routing.management.commands.seed_stations import STRAIGHT_FIELDS
 from routing.models import GeocodePrecision, GeocodeStatus, PriceSource, Station
+from routing.serializers import (
+    FuelStopSerializer,
+    RouteResponseSerializer,
+    station_data_note,
+)
 from routing.services import dp as dp_module
 from routing.services.corridor import candidates, price_source_counts, reset_index
 from routing.services.dp import solve_fixed_charge
-from routing.serializers import FuelStopSerializer, station_data_note
+from routing.services.legs import Leg
 from routing.services.mapbox import Route
-from routing.services.solver import Candidate, FuelStop, SolverStrategy, solve
+from routing.services.naive_baseline import Savings
+from routing.services.solver import (
+    Candidate,
+    FuelPlan,
+    FuelStop,
+    PurchaseReason,
+    SolverStrategy,
+    solve,
+)
+# Imported as a MODULE, never as `from ... import ResponseContractTests` --
+# Django's test loader discovers every `TestCase` subclass that is a direct
+# attribute of a scanned test module, so importing the class itself here
+# would silently double-run `ResponseContractTests` (once from
+# `test_serializers.py`, once from here). A module reference is not a
+# `TestCase` subclass, so it is invisible to that discovery and safe to
+# hold a live reference to `CURRENT_TOP_LEVEL_KEYS`/`CURRENT_FUEL_STOP_KEYS`.
+from routing.tests import test_serializers
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
@@ -65,7 +113,7 @@ class StationPriceSourceModelHopTests(TestCase):
     estimate value round-trips through `refresh_from_db()`; and the choice
     set is exactly the two wire values PROV-01 names, in order."""
 
-    def test_default_price_source_is_opis_indexed(self):
+    def test_hop1_default_price_source_is_opis_indexed(self):
         station = _make_station(opis_id=101)
 
         self.assertEqual(station.price_source, PriceSource.OPIS_INDEXED)
@@ -203,7 +251,7 @@ class CorridorSingleLegPriceSourceHopTests(TestCase):
             raw_coordinates=self.ROUTE_COORDS,
         )
 
-    def test_candidate_price_source_matches_its_own_station(self):
+    def test_hop2_candidate_price_source_matches_its_own_station(self):
         recorded = _make_station(
             opis_id=9101,
             latitude=Decimal("32.50"),
@@ -315,7 +363,7 @@ class SolverCandidateDefaultPriceSourceHopTests(SimpleTestCase):
     the recorded-price wire value -- the AST-gated pure solver boundary
     sees a plain `str`, never the Django-side `PriceSource` enum."""
 
-    def test_four_argument_candidate_defaults_to_opis_indexed(self):
+    def test_hop3_four_argument_candidate_defaults_to_opis_indexed(self):
         candidate = Candidate(
             name="Test Stop",
             opis_id=1,
@@ -384,7 +432,7 @@ class DpExactArmPriceSourceHopTests(SimpleTestCase):
             penalty=Decimal(0),
         )
 
-    def test_each_stop_carries_its_own_stations_provenance(self):
+    def test_hop4a_each_stop_carries_its_own_stations_provenance(self):
         plan = self._solve(self._mixed_candidates())
 
         self.assertEqual([s.opis_id for s in plan.stops], [1, 2])
@@ -508,7 +556,7 @@ class HeuristicArmPriceSourceMultiStopHopTests(SimpleTestCase):
         )
         self.assertGreater(estimate, dp_module.DP_TRANSITION_BUDGET)
 
-    def test_at_least_three_stops_each_carry_their_own_stations_provenance(self):
+    def test_hop4b_at_least_three_stops_each_carry_their_own_stations_provenance(self):
         plan = self._solve()
 
         self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
@@ -521,12 +569,99 @@ class HeuristicArmPriceSourceMultiStopHopTests(SimpleTestCase):
         )
 
 
+class FuelStopRebuildHopTests(SimpleTestCase):
+    """Hop 5: `solver.solve()`'s own rebuild loop (the `FuelStop(...)`
+    construction that copies every field off `raw_plan.stops`, including
+    `price_source=raw_stop.price_source`) preserves it -- a DIFFERENT bug
+    surface than hop 4a/4b, which prove the two arms' OWN internal
+    bookkeeping (`dp.py`'s winning-edge reconstruction,
+    `heuristic.py`'s walk) never drops it. Hop 4a's fixture calls
+    `dp.solve_fixed_charge` directly, bypassing `solve()`'s rebuild
+    entirely, so it cannot catch a rebuild that forgets to copy the
+    field. Hop 4b's fixture already calls `solve()` (so its own passing
+    is *also* evidence for this hop on the heuristic side), but only this
+    class calls `solve()` on the exact-DP side and asserts
+    `plan.strategy` is the exact-DP value -- the literal "exact-DP test
+    asserts `plan.strategy`" half of this plan's own acceptance criteria,
+    the heuristic half already being hop 4b's
+    `test_hop4b_...` assertion above.
+
+    Reuses hop 4a's `_mixed_candidates()` fixture shape (two stations,
+    DIFFERING provenance, forced into exactly two stops by the same
+    500mi range within a 600mi route) so a rebuild that drops or
+    transposes `price_source` on either stop is caught."""
+
+    def _mixed_candidates(self):
+        return [
+            _candidate_with_price_source(
+                "A", 1, "4.00", 100, PriceSource.EIA_REGIONAL_ESTIMATE
+            ),
+            _candidate_with_price_source(
+                "B", 2, "3.00", 300, PriceSource.OPIS_INDEXED
+            ),
+        ]
+
+    def test_hop5_exact_dp_dispatch_through_solve_preserves_both_stops_provenance(self):
+        plan = solve(
+            self._mixed_candidates(),
+            total_route_mi=Decimal(600),
+            tank_range_mi=Decimal(400),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.25"),
+            penalty=Decimal(0),
+        )
+
+        self.assertEqual(plan.strategy, SolverStrategy.EXACT_DP)
+        self.assertEqual([s.opis_id for s in plan.stops], [1, 2])
+        self.assertEqual(len(plan.stops), 2)
+        self.assertEqual(
+            plan.stops[0].price_source, PriceSource.EIA_REGIONAL_ESTIMATE
+        )
+        self.assertEqual(plan.stops[1].price_source, PriceSource.OPIS_INDEXED)
+
+
+class RenderedStopRowPointerHopTests(SimpleTestCase):
+    """Hop 8: the rendered stop row. This Python module cannot execute
+    TypeScript, so this is a POINTER, not an assertion (per this module's
+    own docstring) -- it confirms
+    `frontend/src/features/results/JustificationPopup.test.tsx` still
+    exists and still names the two provenance-qualifier tests plan 20-05
+    added (the recorded-price case and the estimate case), so a rename or
+    deletion on the frontend side of D-19's cross-language join breaks a
+    test on THIS side too, not just a silent frontend-only failure."""
+
+    FRONTEND_POPUP_TEST_PATH = (
+        Path(settings.BASE_DIR)
+        / "frontend"
+        / "src"
+        / "features"
+        / "results"
+        / "JustificationPopup.test.tsx"
+    )
+
+    def test_hop8_frontend_popup_test_file_names_both_provenance_qualifier_tests(self):
+        self.assertTrue(
+            self.FRONTEND_POPUP_TEST_PATH.is_file(),
+            f"{self.FRONTEND_POPUP_TEST_PATH} is missing -- hop 8's pointer target"
+            " no longer exists.",
+        )
+        content = self.FRONTEND_POPUP_TEST_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("recorded-price", content)
+        self.assertIn("regional-estimate", content)
+
+
 class SerializerPriceSourceHopTests(SimpleTestCase):
-    """Hop 5: `FuelStopSerializer` renders `price_source` as a direct
-    top-level sibling of `price_per_gallon`/`cost`, never nested inside
-    `rationale` -- `_rationale_repr()`'s own docstring scopes it to facts
-    explaining why the stop happened, a narrower contract than a
-    ground-truth fact about the station itself."""
+    """Hop 6/7 (serializer half): `FuelStopSerializer` renders
+    `price_source` as a direct top-level sibling of
+    `price_per_gallon`/`cost`, never nested inside `rationale` --
+    `_rationale_repr()`'s own docstring scopes it to facts explaining why
+    the stop happened, a narrower contract than a ground-truth fact about
+    the station itself. The fixture half of hop 6/7 -- the committed
+    cross-language artefact D-19 requires (a `FixtureCrossLanguageHopTests`
+    class comparing this serializer's fresh output against the committed
+    `frontend/src/test/fixtures/route-response.json`) -- is added by this
+    phase's next task/commit, alongside the fixture file itself."""
 
     def _stop(self, price_source):
         return FuelStop(
@@ -539,7 +674,7 @@ class SerializerPriceSourceHopTests(SimpleTestCase):
             price_source=price_source,
         )
 
-    def test_serialized_stop_carries_price_source_top_level(self):
+    def test_hop6_7_serialized_stop_carries_price_source_top_level(self):
         data = FuelStopSerializer(self._stop(PriceSource.EIA_REGIONAL_ESTIMATE)).data
 
         self.assertEqual(data["price_source"], PriceSource.EIA_REGIONAL_ESTIMATE)
@@ -566,8 +701,12 @@ class SerializerPriceSourceHopTests(SimpleTestCase):
 
 
 class StationDataNoteHopTests(SimpleTestCase):
-    """Hop 5: `station_data_note()`'s five composition branches against
-    the exact approved copy (byte-compared, em dash included)."""
+    """Hop-adjacent, not one of the eight numbered hops: `station_data_note()`
+    is PROV-04's dataset-COMPOSITION disclosure (derived from the whole
+    seeded table), a different feature from the per-stop `price_source`
+    chain the eight hops trace. Pinned here anyway since it reads the same
+    `PriceSource` wire values. Five composition branches against the exact
+    approved copy (byte-compared, em dash included)."""
 
     def test_all_recorded_price(self):
         self.assertEqual(
@@ -599,3 +738,47 @@ class StationDataNoteHopTests(SimpleTestCase):
             station_data_note({"opis_indexed": 5, "some_unknown_value": 5}),
             "10 stations.",
         )
+
+
+class HopCoverageGuardHopTests(SimpleTestCase):
+    """The anti-vacuity guard D-18 asks for: pins the eight-hop set this
+    module must cover as a literal, hardcoded tuple, and introspects this
+    module's own test methods (never a hand-maintained list of what SHOULD
+    be here) to confirm every hop identifier is named by at least one
+    `test_hop{N}_...` method. A future refactor that drops, say, the
+    heuristic-arm case has to delete `"hop4b"` from `HOPS` too -- a visible
+    act, not a silent coverage loss.
+
+    Deliberately checks the bare method name, not a class-qualified one:
+    the mutation check this guard's own non-vacuity proof uses (see
+    20-06-SUMMARY.md) is renaming one tagged method to drop its tag, which
+    only fails this guard if the check is scoped to the method name itself.
+
+    Non-vacuity, proven and reverted (recorded verbatim in
+    20-06-SUMMARY.md): temporarily renamed
+    `HeuristicArmPriceSourceMultiStopHopTests.test_hop4b_at_least_three_stops_each_carry_their_own_stations_provenance`
+    to drop its `hop4b` tag -- this guard failed, naming `"hop4b"` as
+    missing -- then the rename was reverted and the guard passed again."""
+
+    HOPS = ("hop1", "hop2", "hop3", "hop4a", "hop4b", "hop5", "hop6_7", "hop8")
+
+    @staticmethod
+    def _all_test_method_names():
+        module = sys.modules[__name__]
+        names = []
+        for attr_name in dir(module):
+            obj = getattr(module, attr_name)
+            if isinstance(obj, type) and issubclass(obj, (TestCase, SimpleTestCase)):
+                names.extend(
+                    member for member in dir(obj) if member.startswith("test_")
+                )
+        return names
+
+    def test_every_hop_identifier_is_named_by_at_least_one_test_method(self):
+        method_names = self._all_test_method_names()
+
+        missing = [
+            hop for hop in self.HOPS if not any(hop in name for name in method_names)
+        ]
+
+        self.assertEqual(missing, [], f"Missing hop coverage for: {missing}")
