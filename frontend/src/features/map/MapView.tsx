@@ -119,11 +119,11 @@ function MapView({
   const routeColorRef = useRef(ROUTE_COLOR.light);
   routeColorRef.current = isDark ? ROUTE_COLOR.dark : ROUTE_COLOR.light;
 
-  // Candidate price layer -- starts hidden so a newly solved route shows
-  // only the stops the solver actually chose. Session-only React state,
-  // never persisted: a sticky preference would keep the layer visible on
-  // the second route of the same session, defeating "first view" honesty.
-  const [candidatesVisible, setCandidatesVisible] = useState(false);
+  // Candidate price layer -- on by default. The price landscape is the
+  // clearest evidence the solver picked from real alternatives, so it
+  // shows up front; the toggle is a one-click strip-back to route +
+  // chosen stops. Session-only React state, never persisted.
+  const [candidatesVisible, setCandidatesVisible] = useState(true);
   const candidatesVisibleRef = useRef(candidatesVisible);
   candidatesVisibleRef.current = candidatesVisible;
 
