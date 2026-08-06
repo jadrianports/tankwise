@@ -149,6 +149,153 @@ def _collect_solve_calls_missing_penalty(path):
     return violations
 
 
+_PRICE_SOURCE_DECISION_TYPES = (ast.Compare, ast.BoolOp, ast.IfExp)
+
+
+def _build_parent_index(tree):
+    """Map `id(child) -> (parent_node, field_name)` for every node in
+    `tree`. The stdlib gives no parent pointer, so this is built by hand
+    once per parse via `ast.iter_fields`, the same idiom the file's other
+    two walkers already use for `ast.walk`.
+    """
+    index = {}
+    for node in ast.walk(tree):
+        for field_name, value in ast.iter_fields(node):
+            if isinstance(value, ast.AST):
+                index[id(value)] = (node, field_name)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, ast.AST):
+                        index[id(item)] = (node, field_name)
+    return index
+
+
+def _price_source_reference_name(node):
+    """Return the matched identifier if `node` is a reference to
+    something whose name mentions `price_source` -- an `ast.Attribute`
+    whose `attr` contains the substring, an `ast.Name` whose `id`
+    contains it (this is what catches a walk-local tracking variable such
+    as `heuristic.py`'s `current_price_source`), or the `arg` of an
+    `ast.keyword`. Substring matching, not exact equality, is deliberate:
+    the field is threaded through prefixed locals. Returns `None` when
+    `node` is not such a reference.
+    """
+    if isinstance(node, ast.Attribute) and "price_source" in node.attr:
+        return node.attr
+    if isinstance(node, ast.Name) and "price_source" in node.id:
+        return node.id
+    if isinstance(node, ast.keyword) and node.arg and "price_source" in node.arg:
+        return node.arg
+    return None
+
+
+def _is_price_source_decision_position(node, parent_index):
+    """Walk `node`'s ancestor chain upward until the nearest enclosing
+    `ast.stmt`, and decide whether any edge on that chain places the
+    reference in a comparison, conditional, boolean, or sort-key
+    position rather than a plain assignment/construction position.
+
+    Flagged positions: an `ast.Compare`, `ast.BoolOp`, or `ast.IfExp`
+    ancestor; a `lambda` (`ast.Lambda`) whose own parent is an
+    `ast.keyword` named `key`; the `test` field of an `ast.If`/
+    `ast.While`; the `ifs` field of an `ast.comprehension`; the `value`
+    of an `ast.keyword` named `key` on any `ast.Call`; an `ast.Assert`;
+    or an `ast.Match` subject.
+
+    Everything else -- a keyword argument name or value in a
+    constructor/function call, the target or value of an
+    `ast.Assign`/`ast.AnnAssign`, an annotation, a dataclass field
+    declaration, a returned attribute access, or an element of a plain
+    tuple/list/dict literal -- is left unflagged by simply never
+    matching one of the rules above.
+    """
+    current = node
+    while id(current) in parent_index:
+        parent, field_name = parent_index[id(current)]
+
+        if isinstance(parent, _PRICE_SOURCE_DECISION_TYPES):
+            return True
+        if isinstance(parent, ast.Lambda):
+            grandparent_info = parent_index.get(id(parent))
+            if grandparent_info is not None:
+                grandparent, _ = grandparent_info
+                if isinstance(grandparent, ast.keyword) and grandparent.arg == "key":
+                    return True
+        if isinstance(parent, (ast.If, ast.While)) and field_name == "test":
+            return True
+        if isinstance(parent, ast.comprehension) and field_name == "ifs":
+            return True
+        if isinstance(parent, ast.keyword) and parent.arg == "key":
+            return True
+        if isinstance(parent, ast.Assert):
+            return True
+        if isinstance(parent, ast.Match) and field_name == "subject":
+            return True
+
+        if isinstance(parent, ast.stmt):
+            break
+        current = parent
+    return False
+
+
+def _collect_price_source_decision_reads(path):
+    """Find every reference to `price_source` (or a name mentioning it)
+    in `path` that sits in a comparison, conditional, boolean, or
+    sort-key decision position. Returns `"{path}:{lineno}: ..."`
+    violation strings, the same shape
+    `_collect_solve_calls_missing_penalty` already uses.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    parent_index = _build_parent_index(tree)
+
+    violations = []
+    for node in ast.walk(tree):
+        identifier = _price_source_reference_name(node)
+        if identifier is None:
+            continue
+        if _is_price_source_decision_position(node, parent_index):
+            violations.append(
+                f"{path}:{node.lineno}: price_source ({identifier}) read in "
+                f"a comparison/conditional/boolean/sort-key position"
+            )
+    return violations
+
+
+class PriceSourceUsagePurityTest(SimpleTestCase):
+    """Statically enforces that `price_source` may appear in the pure
+    solver files (`SOLVER_FILES` above) only in assignment and
+    construction positions -- never as the operand of a comparison, the
+    test of a conditional, an operand of a boolean operator, or a sort
+    key. Phase 20 ships provenance data threaded through the solver but
+    functionally inert: this guard converts that inertness from an
+    observation about one measured run into a property of the source
+    itself, so a future edit that starts deciding on `price_source`
+    cannot land silently.
+
+    Phase 21 (PROV-03, the trust margin) is expected and sanctioned to
+    make exactly the kind of decision-position read this guard forbids,
+    once it prices provenance into the DP's internal objective. When
+    that lands, the correct action is to invert this guard -- narrow or
+    re-target it to the specific reads Phase 21 introduces -- and never
+    delete it outright, per this project's standing rule that guards get
+    inverted rather than removed. A green result here is therefore
+    evidence about Phase 20's scope, not a prohibition binding Phase 21's
+    planner: it says provenance is inert *today*, not that the DP may
+    never read it.
+    """
+
+    def test_price_source_never_read_in_comparison_conditional_or_sort_key(self):
+        violations = []
+        for path in SOLVER_FILES:
+            violations.extend(_collect_price_source_decision_reads(path))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"price_source read in a decision position inside the pure solver: {violations}",
+        )
+
+
 class SolvePenaltyKwargGateTest(SimpleTestCase):
     """Statically enforces that every production call to the fixed-charge
     solver's `solve()` (`routing/services/solver.py`) passes an explicit
