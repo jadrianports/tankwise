@@ -506,6 +506,7 @@ def solve(
                 corridor_avg_price=corridor_avg_price,
                 bypassed_cheaper_count=raw_stop.bypassed_cheaper_count,
                 bypassed_saving_forgone=raw_stop.bypassed_saving_forgone,
+                price_source=raw_stop.price_source,
             )
         )
 

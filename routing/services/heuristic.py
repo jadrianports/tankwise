@@ -181,7 +181,18 @@ def solve_penalty_aware_heuristic(
             max_range_mi=max_range,
         )
 
-    def _make_stop(name, opis_id, price, position, buy_mi, reason, target, *, bypassed_count=0, bypassed_saving=None):
+    def _make_stop(
+        name, opis_id, price, position, buy_mi, reason, target, *,
+        bypassed_count=0, bypassed_saving=None, price_source,
+    ):
+        # `price_source` is keyword-only with NO default, deliberately --
+        # every call site must state it explicitly, so a forgotten site is
+        # a TypeError at import-test time rather than a silent None. The
+        # correct argument at every call site is always the WALK's own
+        # tracking local for the station this purchase is made at (where
+        # the walk currently stands), never the upcoming target's own
+        # provenance (where the walk is going next) -- getting that
+        # backwards would produce a plausible-looking but wrong plan.
         gallons = buy_mi / mpg
         return FuelStop(
             name=name,
@@ -195,6 +206,7 @@ def solve_penalty_aware_heuristic(
             reason_target_name=target.name if target is not None else None,
             bypassed_cheaper_count=bypassed_count,
             bypassed_saving_forgone=bypassed_saving,
+            price_source=price_source,
         )
 
     pos = Decimal(0)
@@ -202,6 +214,7 @@ def solve_penalty_aware_heuristic(
     price_here = Decimal(0)
     current_name = "START"
     current_opis_id = None
+    current_price_source = None
     stops = []
 
     while True:
@@ -236,6 +249,7 @@ def solve_penalty_aware_heuristic(
             price_here = target.price_per_gallon
             current_name = target.name
             current_opis_id = target.opis_id
+            current_price_source = target.price_source
             continue
 
         # Real, purchasable station from here on.
@@ -252,6 +266,7 @@ def solve_penalty_aware_heuristic(
                         _make_stop(
                             current_name, current_opis_id, price_here, pos,
                             buy_mi, PurchaseReason.REACH_FINISH, None,
+                            price_source=current_price_source,
                         )
                     )
                 break
@@ -271,13 +286,17 @@ def solve_penalty_aware_heuristic(
                     else PurchaseReason.FILL_TO_CONTINUE
                 )
                 stops.append(
-                    _make_stop(current_name, current_opis_id, price_here, pos, buy_mi, reason, target)
+                    _make_stop(
+                        current_name, current_opis_id, price_here, pos, buy_mi,
+                        reason, target, price_source=current_price_source,
+                    )
                 )
             fuel = tank_range_mi - (target.distance_from_start_mi - pos)
             pos = target.distance_from_start_mi
             price_here = target.price_per_gallon
             current_name = target.name
             current_opis_id = target.opis_id
+            current_price_source = target.price_source
             continue
 
         # A cheaper station exists within one tank -- the penalty-aware
@@ -299,6 +318,7 @@ def solve_penalty_aware_heuristic(
                     _make_stop(
                         current_name, current_opis_id, price_here, pos,
                         buy_mi, PurchaseReason.REACH_CHEAPER_STOP, target_full,
+                        price_source=current_price_source,
                     )
                 )
             fuel = tank_range_mi - (target_full.distance_from_start_mi - pos)
@@ -306,6 +326,7 @@ def solve_penalty_aware_heuristic(
             price_here = target_full.price_per_gallon
             current_name = target_full.name
             current_opis_id = target_full.opis_id
+            current_price_source = target_full.price_source
             continue
 
         target_full_pos = total_route_mi if target_full is None else target_full.distance_from_start_mi
@@ -334,6 +355,7 @@ def solve_penalty_aware_heuristic(
                         _make_stop(
                             current_name, current_opis_id, price_here, pos,
                             buy_mi, PurchaseReason.REACH_FINISH, None,
+                            price_source=current_price_source,
                         )
                     )
                 break
@@ -344,6 +366,7 @@ def solve_penalty_aware_heuristic(
                         current_name, current_opis_id, price_here, pos, buy_mi,
                         PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP, target_full,
                         bypassed_count=len(bypassed), bypassed_saving=saving_total,
+                        price_source=current_price_source,
                     )
                 )
             fuel = tank_range_mi - (target_full.distance_from_start_mi - pos)
@@ -351,6 +374,7 @@ def solve_penalty_aware_heuristic(
             price_here = target_full.price_per_gallon
             current_name = target_full.name
             current_opis_id = target_full.opis_id
+            current_price_source = target_full.price_source
             continue
 
         # Worth the extra stop -- buy just enough here to reach the
@@ -367,6 +391,7 @@ def solve_penalty_aware_heuristic(
                 _make_stop(
                     current_name, current_opis_id, price_here, pos, buy_mi,
                     PurchaseReason.REACH_CHEAPER_STOP, target,
+                    price_source=current_price_source,
                 )
             )
         fuel = fuel + buy_mi - gap
@@ -374,6 +399,7 @@ def solve_penalty_aware_heuristic(
         price_here = target.price_per_gallon
         current_name = target.name
         current_opis_id = target.opis_id
+        current_price_source = target.price_source
 
     # The walk above commits to a cheaper `target` and advances
     # `current_name`/`current_opis_id` to it before checking whether the

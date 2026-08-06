@@ -22,10 +22,11 @@ from shapely.geometry import LineString
 from routing.management.commands.geocode_stations import EXPORT_HEADER
 from routing.management.commands.seed_stations import STRAIGHT_FIELDS
 from routing.models import GeocodePrecision, GeocodeStatus, PriceSource, Station
+from routing.services import dp as dp_module
 from routing.services.corridor import candidates, price_source_counts, reset_index
 from routing.services.dp import solve_fixed_charge
 from routing.services.mapbox import Route
-from routing.services.solver import Candidate
+from routing.services.solver import Candidate, SolverStrategy, solve
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
@@ -409,4 +410,111 @@ class DpExactArmPriceSourceHopTests(SimpleTestCase):
 
         self.assertTrue(
             all(s.price_source == PriceSource.OPIS_INDEXED for s in plan.stops)
+        )
+
+
+class HeuristicArmPriceSourceMultiStopHopTests(SimpleTestCase):
+    """Hop 4b: the penalty-aware heuristic arm carries provenance at every
+    transition and every purchase site, over a plan forced onto that arm
+    by the pre-flight transition-count estimate alone -- the same
+    over-budget shape `test_solver_dispatch.py`'s `HeavyLightDispatchTests`
+    forces, but built from a synthetic corridor rather than a seeded
+    database, so this hop needs no DB fixture.
+
+    A dense cluster of 70 identically-priced ($5.00) filler candidates,
+    packed into the route's first ~465 mi, inflates
+    `dp.estimate_transition_count` well past `DP_TRANSITION_BUDGET`
+    (50,000) without ever being cheap or reachable enough to affect which
+    stations the walk actually purchases at. Five much cheaper ($2.00)
+    "real" stations, spaced one tank apart along the rest of a 2,500 mi
+    route, are the ones the heuristic actually stops at -- with
+    DIFFERING (alternating) provenance values, so a stop after the first
+    carrying the wrong -- or a defaulted -- value would be caught.
+    `prune=False` keeps the dispatch estimate computed over the exact,
+    hand-reasoned candidate set below (D-21's documented rollback hatch),
+    rather than fighting the prune's own dominance removal.
+    """
+
+    TOTAL_ROUTE_MI = Decimal(2500)
+    TANK_RANGE_MI = Decimal(500)
+    FILLER_COUNT = 70
+    FILLER_PRICE = Decimal("5.00")
+    REAL_PRICE = Decimal("2.00")
+    REAL_POSITIONS = [
+        Decimal(480), Decimal(970), Decimal(1450), Decimal(1900), Decimal(2200),
+    ]
+    REAL_PRICE_SOURCES = [
+        PriceSource.OPIS_INDEXED,
+        PriceSource.EIA_REGIONAL_ESTIMATE,
+        PriceSource.OPIS_INDEXED,
+        PriceSource.EIA_REGIONAL_ESTIMATE,
+        PriceSource.OPIS_INDEXED,
+    ]
+
+    def _candidates(self):
+        span = Decimal(465)
+        start = Decimal(5)
+        fillers = []
+        for i in range(self.FILLER_COUNT):
+            frac = Decimal(i) / Decimal(self.FILLER_COUNT - 1)
+            position = start + span * frac
+            fillers.append(
+                Candidate(
+                    name=f"Filler {i}",
+                    opis_id=10_000 + i,
+                    price_per_gallon=self.FILLER_PRICE,
+                    distance_from_start_mi=position,
+                )
+            )
+        reals = [
+            Candidate(
+                name=f"Real {i}",
+                opis_id=20_000 + i,
+                price_per_gallon=self.REAL_PRICE,
+                distance_from_start_mi=position,
+                price_source=price_source,
+            )
+            for i, (position, price_source) in enumerate(
+                zip(self.REAL_POSITIONS, self.REAL_PRICE_SOURCES)
+            )
+        ]
+        return fillers + reals
+
+    def _solve(self):
+        return solve(
+            self._candidates(),
+            total_route_mi=self.TOTAL_ROUTE_MI,
+            tank_range_mi=self.TANK_RANGE_MI,
+            mpg=Decimal(10),
+            starting_fuel=Decimal(1),
+            penalty=Decimal(0),
+            prune=False,
+        )
+
+    def test_fixture_estimate_exceeds_the_dp_transition_budget(self):
+        """Sanity check that this fixture actually forces heuristic
+        dispatch -- otherwise the assertions below would pass vacuously
+        on the exact-DP arm instead of the arm this hop exists to cover."""
+        search_set = sorted(
+            self._candidates(),
+            key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
+        )
+        estimate = dp_module.estimate_transition_count(
+            search_set,
+            total_route_mi=self.TOTAL_ROUTE_MI,
+            tank_range_mi=self.TANK_RANGE_MI,
+            starting_fuel=Decimal(1),
+        )
+        self.assertGreater(estimate, dp_module.DP_TRANSITION_BUDGET)
+
+    def test_at_least_three_stops_each_carry_their_own_stations_provenance(self):
+        plan = self._solve()
+
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
+        self.assertGreaterEqual(len(plan.stops), 3)
+        self.assertEqual(
+            [s.distance_from_start_mi for s in plan.stops], self.REAL_POSITIONS
+        )
+        self.assertEqual(
+            [s.price_source for s in plan.stops], self.REAL_PRICE_SOURCES
         )
