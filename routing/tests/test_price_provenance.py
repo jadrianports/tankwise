@@ -23,10 +23,21 @@ from routing.management.commands.geocode_stations import EXPORT_HEADER
 from routing.management.commands.seed_stations import STRAIGHT_FIELDS
 from routing.models import GeocodePrecision, GeocodeStatus, PriceSource, Station
 from routing.services.corridor import candidates, price_source_counts, reset_index
+from routing.services.dp import solve_fixed_charge
 from routing.services.mapbox import Route
 from routing.services.solver import Candidate
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
+
+
+def _candidate_with_price_source(name, opis_id, price, distance, price_source):
+    return Candidate(
+        name=name,
+        opis_id=opis_id,
+        price_per_gallon=Decimal(price),
+        distance_from_start_mi=Decimal(distance),
+        price_source=price_source,
+    )
 
 
 def _make_station(opis_id, **overrides):
@@ -339,3 +350,63 @@ class PriceSourceCountsHopTests(TestCase):
         with self.assertNumQueries(0):
             price_source_counts()
             price_source_counts()
+
+
+class DpExactArmPriceSourceHopTests(SimpleTestCase):
+    """Hop 4a: the exact-DP arm (`dp.solve_fixed_charge`) copies
+    provenance onto the winning edge and carries it onto every stop it
+    emits, for both stops of a multi-stop plan -- not only the first.
+    Reuses `test_dp.py`'s own
+    `test_reaches_cheaper_stop_buying_only_enough_to_get_there` fixture
+    shape (forces exactly two stops, `[1, 2]`), with the two candidates
+    given DIFFERING provenance values so the test is positioned to fail
+    if either stop carried the wrong -- or a defaulted -- value."""
+
+    def _mixed_candidates(self):
+        return [
+            _candidate_with_price_source(
+                "A", 1, "4.00", 100, PriceSource.EIA_REGIONAL_ESTIMATE
+            ),
+            _candidate_with_price_source(
+                "B", 2, "3.00", 300, PriceSource.OPIS_INDEXED
+            ),
+        ]
+
+    def _solve(self, candidates):
+        return solve_fixed_charge(
+            candidates,
+            total_route_mi=Decimal(600),
+            tank_range_mi=Decimal(400),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.25"),
+            penalty=Decimal(0),
+        )
+
+    def test_each_stop_carries_its_own_stations_provenance(self):
+        plan = self._solve(self._mixed_candidates())
+
+        self.assertEqual([s.opis_id for s in plan.stops], [1, 2])
+        self.assertEqual(len(plan.stops), 2)
+        self.assertEqual(
+            plan.stops[0].price_source, PriceSource.EIA_REGIONAL_ESTIMATE
+        )
+        self.assertEqual(plan.stops[1].price_source, PriceSource.OPIS_INDEXED)
+        # The provenance thread must not perturb the DP's own decision --
+        # same station set/gallons this fixture already pins in test_dp.py.
+        self.assertEqual(plan.stops[0].gallons, Decimal("20.00"))
+
+    def test_all_recorded_price_candidates_return_stops_all_recorded_price(self):
+        candidates = [
+            _candidate_with_price_source(
+                "A", 1, "4.00", 100, PriceSource.OPIS_INDEXED
+            ),
+            _candidate_with_price_source(
+                "B", 2, "3.00", 300, PriceSource.OPIS_INDEXED
+            ),
+        ]
+
+        plan = self._solve(candidates)
+
+        self.assertTrue(
+            all(s.price_source == PriceSource.OPIS_INDEXED for s in plan.stops)
+        )

@@ -1225,7 +1225,9 @@ def useful_fill_levels_mi(
 class _EdgeInfo:
     """The rationale recorded on one relaxation edge, at the moment the
     purchase it represents was chosen -- never re-derived later by
-    inspecting the finished plan (D-03)."""
+    inspecting the finished plan (D-03). `price_source` is copied from the
+    candidate at edge-construction time, exactly like every other field
+    here, and is never re-looked-up from the finished plan either."""
 
     name: str
     opis_id: int
@@ -1238,6 +1240,7 @@ class _EdgeInfo:
     reason_target_name: str | None
     bypassed_cheaper_count: int
     bypassed_saving_forgone: Decimal | None
+    price_source: str | None = None
 
 
 @dataclass
@@ -1930,6 +1933,7 @@ def solve_fixed_charge(
                         reason_target_name=reason_target_name,
                         bypassed_cheaper_count=bypassed_count,
                         bypassed_saving_forgone=bypassed_saving,
+                        price_source=station.price_source,
                     )
                     # Already confirmed a winner by the inlined check
                     # above, with nothing else touching this exact
@@ -1978,6 +1982,7 @@ def solve_fixed_charge(
             reason_target_name=edge.reason_target_name,
             bypassed_cheaper_count=edge.bypassed_cheaper_count,
             bypassed_saving_forgone=edge.bypassed_saving_forgone,
+            price_source=edge.price_source,
         )
         for edge in edges
     ]
