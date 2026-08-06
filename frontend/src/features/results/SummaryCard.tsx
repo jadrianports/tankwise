@@ -89,6 +89,13 @@ function SummaryCard({ data }: SummaryCardProps) {
     ? trendChipContent(data.trend_region as string, data.trend_delta_cents as number)
     : null;
 
+  // Rendered unconditionally with respect to price_index_status (D-04):
+  // the composition fact is independent of price freshness, so it is not
+  // folded into disclaimerText's ternary above. A falsy value -- the
+  // empty-string zero-count case, or a legacy payload with no such key at
+  // all -- renders nothing rather than an empty paragraph.
+  const stationDataNote = data.station_data_note;
+
   return (
     <Card variant="outlined">
       <CardContent>
@@ -159,6 +166,11 @@ function SummaryCard({ data }: SummaryCardProps) {
                 sx={{ color: trendChip.color, borderColor: trendChip.color, fontWeight: 600 }}
               />
             </Tooltip>
+          )}
+          {stationDataNote && (
+            <Typography variant="body2" color="text.secondary" sx={{ width: '100%' }}>
+              {stationDataNote}
+            </Typography>
           )}
         </Box>
       </CardContent>

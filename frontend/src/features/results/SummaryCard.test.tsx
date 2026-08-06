@@ -153,6 +153,66 @@ test('a frozen status renders the legacy disclaimer and no chip', () => {
   expect(screen.queryByText(/diesel/)).not.toBeInTheDocument();
 });
 
+test('a response carrying a composition string renders it directly beneath the disclaimer', () => {
+  const data = {
+    ...BASE_FIXTURE,
+    station_data_note: '6,290 stations — all with recorded prices.',
+  } as unknown as RouteResponse;
+
+  render(<SummaryCard data={data} />);
+
+  expect(screen.getByText('6,290 stations — all with recorded prices.')).toBeInTheDocument();
+});
+
+test('the composition line renders identically across current, stale, and legacy price_index_status', () => {
+  const note = '6,290 stations — all with recorded prices.';
+
+  const current = {
+    ...BASE_FIXTURE,
+    price_index_status: 'current',
+    trend_region: 'Midwest',
+    trend_delta_cents: 4,
+    station_data_note: note,
+  } as unknown as RouteResponse;
+  const { unmount: unmountCurrent } = render(<SummaryCard data={current} />);
+  expect(screen.getByText(note)).toBeInTheDocument();
+  unmountCurrent();
+
+  const stale = {
+    ...BASE_FIXTURE,
+    price_index_status: 'stale',
+    station_data_note: note,
+  } as unknown as RouteResponse;
+  const { unmount: unmountStale } = render(<SummaryCard data={stale} />);
+  expect(screen.getByText(note)).toBeInTheDocument();
+  unmountStale();
+
+  // Legacy fixture: no price_index_status at all (BASE_FIXTURE's own shape).
+  const legacy = {
+    ...BASE_FIXTURE,
+    station_data_note: note,
+  } as unknown as RouteResponse;
+  render(<SummaryCard data={legacy} />);
+  expect(screen.getByText(note)).toBeInTheDocument();
+});
+
+test('an empty-string composition value renders no element at all', () => {
+  const data = {
+    ...BASE_FIXTURE,
+    station_data_note: '',
+  } as unknown as RouteResponse;
+
+  render(<SummaryCard data={data} />);
+
+  expect(screen.queryByText(/stations —/)).not.toBeInTheDocument();
+});
+
+test('a legacy fixture omitting station_data_note entirely renders no element and does not throw', () => {
+  expect(() => render(<SummaryCard data={BASE_FIXTURE} />)).not.toThrow();
+
+  expect(screen.queryByText(/stations —/)).not.toBeInTheDocument();
+});
+
 test('the trend chip carries the EIA source-citation tooltip title and is keyboard-reachable', () => {
   const data = {
     ...BASE_FIXTURE,
