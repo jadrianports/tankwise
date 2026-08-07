@@ -86,6 +86,45 @@ in a shared recursion, while this module's lemma ranges only over a
 fixed subset's own remaining members, because this module pre-selects
 the whole subset before ever computing a purchase amount. The
 comparison surfaced no correctness bug in this module.
+
+Phase 21 addendum (PROV-03, D-13/D-14/D-15): this module now also imports
+is_estimate_priced/trust_margin_for from routing.services.solver -- the
+phase's single shared, total, per-candidate margin-charge lookup (see
+solver.py's own docstrings, landed in this same phase's plan 21-04 Task
+1). This is not an exception to the independence claim above: neither
+function is part of the DP's fixed-charge recurrence or state machine --
+each is a two-line, mechanically-total answer to "what flat dollar
+charge does this one candidate carry," used here for the identical
+reason dp.py/heuristic.py/prune.py all call through them rather than
+re-deriving the read, so provenance decision logic stays concentrated at
+exactly one seam (routing/tests/test_boundaries.py's
+PriceSourceUsagePurityTest allowlist). Reimplementing an independent
+copy of that lookup in this oracle would not buy additional
+independence; it would only risk silently drifting from the pinned
+flat-per-purchase definition D-06 fixes.
+
+optimal_fixed_charge_plan() gained a keyword-only trust_margin=Decimal(0)
+parameter: the extended objective is fuel dollars plus penalty*stop_count
+plus the summed trust_margin_for(...) of the purchased stations
+(OraclePlan.fuel_cost still carries fuel dollars only and never absorbs
+either charge). At trust_margin=0, trust_margin_for(...) returns
+Decimal(0) for every candidate regardless of price_source, so this
+extension is provably inert on every pre-existing call site that never
+passes trust_margin= (D-15) -- FixedChargeOracleAnchorTests and
+MultiLegFlattenedFixedChargeTests each carry an explicit additional
+assertion proving that passing trust_margin=Decimal(0) is byte-identical
+to omitting it. single_leg_routes()/flattened_multi_leg_routes() also now
+draw price_source per station (D-14), so every existing property class in
+this module inherits mixed-provenance exploration even though most of
+them never vary trust_margin away from its Decimal(0) default --
+TrustMarginAnchorTests and TrustMarginPenaltyConsistencyTests below are
+the classes that actually exercise trust_margin != 0. MARGIN_LADDER is
+imported from routing.tests.test_trust_margin_rule, never retyped here --
+see that module's own docstring for D-09's derivation-before-measurement
+discipline. Per this plan's own scope fence, no DP-versus-oracle
+differential at non-zero trust_margin is added in this module -- the DP
+does not accept trust_margin yet (that lands in a later plan, alongside
+TrustMarginOracleDifferentialTests).
 """
 import random
 from dataclasses import dataclass, replace
@@ -99,7 +138,9 @@ from hypothesis import strategies as st
 from routing.services import Candidate
 from routing.services.dp import preflight_gap_check, solve_fixed_charge
 from routing.services.exceptions import InfeasibleRouteError
+from routing.services.solver import ESTIMATE_PRICE_SOURCE, is_estimate_priced, trust_margin_for
 from routing.tests import frozen_greedy
+from routing.tests.test_trust_margin_rule import MARGIN_LADDER
 
 # The D-12 tuning knob. Pre-authorized to step 6 -> 5 -> 4 if a measured
 # runtime breaches the ~30s ceiling for the oracle test classes. The
@@ -124,6 +165,22 @@ DEFAULT_PENALTY = Decimal("35")
 # full oracle solve per Hypothesis example, and FixedChargePenaltyConsistencyTests
 # already solves the same drawn route at every rung.
 PENALTY_LADDER = (Decimal(0), Decimal("10"), DEFAULT_PENALTY)
+
+# D-14: the value st.sampled_from draws alongside ESTIMATE_PRICE_SOURCE for
+# a station's provenance. This is Candidate.price_source's own dataclass
+# default (routing/services/solver.py), transcribed here rather than
+# imported -- no named constant for it exists in solver.py either; the
+# default is inlined there as the same literal.
+_RECORDED_PRICE_SOURCE = "opis_indexed"
+
+# D-13's adopted sweep shape (Task 2's measured verdict -- three
+# pre-extension wall-clock figures, the ~3x projection, and the module's
+# own ~30s ceiling are all recorded in 21-04-SUMMARY.md): the full
+# PENALTY_LADDER x MARGIN_LADDER cross product. Decimal(0) is prepended as
+# the margin ladder's own control rung, mirroring PENALTY_LADDER's own
+# leading Decimal(0) control entry -- MARGIN_LADDER itself (imported from
+# routing.tests.test_trust_margin_rule) carries no zero rung of its own.
+_MARGIN_SWEEP = (Decimal(0),) + MARGIN_LADDER
 
 
 @dataclass(frozen=True)
@@ -197,15 +254,23 @@ DISAGREEMENT_FLOOR = Decimal("0.20")
 
 @dataclass(frozen=True)
 class OraclePlan:
-    """The oracle's answer for one route at one penalty.
+    """The oracle's answer for one route at one penalty (and, as of Phase
+    21's PROV-03 extension, one trust_margin).
 
     objective is the equality target for comparisons against another
     solver's result. fuel_cost is the fuel-dollars-only figure Phase 18's
     INTG-02 check needs (total_cost must report fuel dollars only, never
-    the penalised total). stop_opis_ids is the station set Phase 17's
-    prune property will compare against. gallons makes the D-04
-    nonzero-purchase rule inspectable -- every entry is strictly positive
-    by construction.
+    the penalised total, and -- per D-06 -- never the trust margin
+    either). stop_opis_ids is the station set Phase 17's prune property
+    will compare against. gallons makes the D-04 nonzero-purchase rule
+    inspectable -- every entry is strictly positive by construction.
+
+    Phase 21: objective is fuel_cost + penalty*stop_count + the summed
+    trust_margin_for(...) of the purchased stations (see
+    optimal_fixed_charge_plan's own docstring). At trust_margin=0 this is
+    byte-identical to the pre-Phase-21 objective, since
+    trust_margin_for(...) returns Decimal(0) for every candidate
+    regardless of price_source whenever trust_margin is itself Decimal(0).
 
     stop_opis_ids is in increasing distance_from_start_mi order; gallons
     is index-aligned with it. Deliberately does not mirror solver.py's
@@ -395,9 +460,11 @@ def optimal_fixed_charge_plan(
     tank_range_mi=Decimal(500),
     mpg=Decimal(10),
     starting_fuel=Decimal(1),
+    trust_margin=Decimal(0),
 ) -> "OraclePlan | None":
     """Return the OraclePlan minimizing fuel dollars plus penalty times
-    stop count, over every subset of candidates, or None if no subset
+    stop count plus the summed per-candidate trust margin (Phase 21,
+    PROV-03), over every subset of candidates, or None if no subset
     yields a feasible plan.
 
     penalty is a required keyword-only plain function argument -- this
@@ -407,23 +474,50 @@ def optimal_fixed_charge_plan(
     oracle and a DP's own gap check can never agree merely because they
     share a reachability rule.
 
+    trust_margin is additive, keyword-only, and defaults to Decimal(0) --
+    D-15's inertness guarantee -- mirroring how solve()'s own deadline=
+    parameter was added in Phase 18.1. For each candidate purchased in a
+    subset, trust_margin_for(candidate, trust_margin) (imported from
+    routing.services.solver, the phase's single shared margin lookup --
+    see this module's own docstring) is added to that subset's objective;
+    it is Decimal(0) for every candidate whenever trust_margin itself is
+    Decimal(0), and is Decimal(0) for a real-priced (non-estimate)
+    candidate at any trust_margin. fuel_cost NEVER absorbs it (D-06):
+    OraclePlan.fuel_cost stays the plain sum of gallons*price only.
+
+    The margin is added exactly once per purchasing station, alongside
+    the penalty term, OUTSIDE _cheapest_fuel_cost_for_subset's own inner
+    enumeration -- never inside it. This is sound for the identical
+    reason penalty already sits outside that inner enumeration
+    (_useful_fill_levels_mi's own docstring proof): margin, like penalty,
+    is a flat charge that does not depend on the purchased AMOUNT, only
+    on whether a station is purchased at all and (unlike penalty) on that
+    station's own provenance -- so, conditional on a fixed subset,
+    minimizing fuel dollars is still exactly minimizing fuel dollars, and
+    both the penalty and the margin enter the objective once, after the
+    inner fuel-minimization is already decided.
+
     Ties are broken by an explicit total order (D-08): lowest objective,
     then fewest stops, then the sorted tuple of distance_from_start_mi
     (already the natural order of a subset from _subsets_by_distance),
     then the tuple of opis_id. Deterministic across Hypothesis seeds and
     repeat runs -- there is no last-writer-wins path.
 
-    Uniqueness (Phase 17): alongside best_plan/best_key, one
-    (objective, stop_opis_ids) entry is accumulated per feasible subset --
-    at MAX_STATIONS=6 that is at most 64 entries, so the memory cost is
-    nil. After the loop, with the winning objective known, the distinct
-    stop_opis_ids values whose objective is within COST_TOLERANCE of it
-    are counted; OraclePlan.is_unique_optimum is set to whether that count
-    is exactly one. COST_TOLERANCE -- never exact equality -- is used for
-    the same reason it is used everywhere else in this module: both sides
-    accumulate purchases in a different order and Decimal division at the
-    default context is inexact, so exact equality would report spurious
-    non-uniqueness for what is really the same tied optimum.
+    Uniqueness (Phase 17, extended Phase 21): alongside best_plan/best_key,
+    one (objective, stop_opis_ids) entry is accumulated per feasible
+    subset -- at MAX_STATIONS=6 that is at most 64 entries, so the memory
+    cost is nil. After the loop, with the winning (margin-augmented)
+    objective known, the distinct stop_opis_ids values whose objective is
+    within COST_TOLERANCE of it are counted; OraclePlan.is_unique_optimum
+    is set to whether that count is exactly one -- the margin introduces
+    new tie shapes (e.g. two same-priced real stations either of which
+    the margin makes equally attractive), and this signal is already the
+    tool Phase 17 built to handle a tie by narrowing the claim rather than
+    fudging a tie-break. COST_TOLERANCE -- never exact equality -- is used
+    for the same reason it is used everywhere else in this module: both
+    sides accumulate purchases in a different order and Decimal division
+    at the default context is inexact, so exact equality would report
+    spurious non-uniqueness for what is really the same tied optimum.
     """
     best_plan = None
     best_key = None
@@ -435,7 +529,10 @@ def optimal_fixed_charge_plan(
         fuel_cost, gallons = result
         stop_opis_ids = tuple(station.opis_id for station in subset)
         distances_mi = tuple(station.distance_from_start_mi for station in subset)
-        objective = fuel_cost + penalty * len(subset)
+        margin_total = sum(
+            (trust_margin_for(station, trust_margin) for station in subset), Decimal(0)
+        )
+        objective = fuel_cost + penalty * len(subset) + margin_total
         feasible_entries.append((objective, stop_opis_ids))
         key = (objective, len(subset), distances_mi, stop_opis_ids)
         if best_key is None or key < best_key:
@@ -458,15 +555,22 @@ def optimal_fixed_charge_plan(
 
 
 def _candidates_from_tuples(station_tuples, total_route_mi):
-    """Build Candidate objects from drawn (price, distance) tuples,
-    dropping any tuple whose distance exceeds total_route_mi. Dropping --
-    not raising -- keeps generated inputs inside solve()'s own contract:
-    an out-of-range candidate would trigger InvalidRouteInputError, which
-    is input validation on the caller's contract, not the optimality
-    property under test here.
+    """Build Candidate objects from drawn (price, distance, price_source)
+    tuples, dropping any tuple whose distance exceeds total_route_mi.
+    Dropping -- not raising -- keeps generated inputs inside solve()'s own
+    contract: an out-of-range candidate would trigger
+    InvalidRouteInputError, which is input validation on the caller's
+    contract, not the optimality property under test here.
+
+    price_source is the D-14 addition (Phase 21): every station tuple now
+    carries provenance alongside price and distance, drawn by
+    single_leg_routes()/flattened_multi_leg_routes() from
+    (_RECORDED_PRICE_SOURCE, ESTIMATE_PRICE_SOURCE), so the property
+    classes below explore mixed-provenance configurations adversarially
+    rather than only the all-recorded case.
     """
     candidates = []
-    for i, (price, dist) in enumerate(station_tuples):
+    for i, (price, dist, price_source) in enumerate(station_tuples):
         dist_mi = Decimal(dist)
         if dist_mi <= total_route_mi:
             candidates.append(
@@ -475,6 +579,7 @@ def _candidates_from_tuples(station_tuples, total_route_mi):
                     opis_id=i,
                     price_per_gallon=price,
                     distance_from_start_mi=dist_mi,
+                    price_source=price_source,
                 )
             )
     return candidates
@@ -659,6 +764,12 @@ def measure_disagreement(n_routes, *, params=CORPUS_PARAMS, penalty=None):
 def single_leg_routes(draw):
     """Draw a single-leg route: a candidate list plus the four scalar
     solve()/optimal_fixed_charge_plan() arguments, as Decimals throughout.
+
+    D-14 (Phase 21): each station tuple's third element draws a
+    price_source, so the candidate list this strategy produces is
+    adversarially mixed-provenance rather than uniformly
+    _RECORDED_PRICE_SOURCE. unique_by stays keyed on the tuple's distance
+    element only -- price_source never participates in station identity.
     """
     total_route_mi = Decimal(draw(st.integers(min_value=1, max_value=800)))
     station_tuples = draw(
@@ -666,6 +777,7 @@ def single_leg_routes(draw):
             st.tuples(
                 st.decimals(min_value=Decimal("1.00"), max_value=Decimal("6.00"), places=2),
                 st.integers(min_value=1, max_value=800),
+                st.sampled_from((_RECORDED_PRICE_SOURCE, ESTIMATE_PRICE_SOURCE)),
             ),
             max_size=MAX_STATIONS,
             unique_by=lambda t: t[1],
@@ -707,6 +819,10 @@ def flattened_multi_leg_routes(draw):
     total candidate count, not leg count, so three legs of MAX_STATIONS
     stations each would be MAX_STATIONS=18 in disguise and blow the
     D-12 runtime budget by orders of magnitude.
+
+    D-14 (Phase 21): each local station tuple's third element draws a
+    price_source, exactly as single_leg_routes() now does, so the
+    flattened candidate list is adversarially mixed-provenance too.
     """
     num_legs = draw(st.integers(min_value=2, max_value=3))
     per_leg_cap = max(1, MAX_STATIONS // num_legs)
@@ -722,13 +838,14 @@ def flattened_multi_leg_routes(draw):
                     st.decimals(min_value=Decimal("1.00"), max_value=Decimal("6.00"), places=2),
                     # strictly inside this leg -- never on or past its far boundary
                     st.integers(min_value=1, max_value=leg_len_mi - 1),
+                    st.sampled_from((_RECORDED_PRICE_SOURCE, ESTIMATE_PRICE_SOURCE)),
                 ),
                 max_size=per_leg_cap,
                 unique_by=lambda t: t[1],
             )
         )
-        for price, local_dist_mi in local_tuples:
-            flattened_tuples.append((price, offset_mi + Decimal(local_dist_mi)))
+        for price, local_dist_mi, price_source in local_tuples:
+            flattened_tuples.append((price, offset_mi + Decimal(local_dist_mi), price_source))
         offset_mi += Decimal(leg_len_mi)
         leg_boundaries_mi.append(offset_mi)
 
@@ -806,6 +923,29 @@ class FixedChargeOracleAnchorTests(SimpleTestCase):
                 COST_TOLERANCE,
                 f"oracle fuel_cost={oracle_plan.fuel_cost} vs greedy "
                 f"total_cost={greedy_fuel_cost} exceeds tolerance; {context}",
+            )
+            # D-15/PROV-03 inertness assertion (mandated by plan 21-04):
+            # passing trust_margin=Decimal(0) EXPLICITLY must be
+            # byte-identical to the call above, which omits trust_margin
+            # entirely and relies on its Decimal(0) default. Candidates
+            # here are drawn with mixed price_source (D-14) -- this is
+            # what proves the extension is inert at trust_margin=0
+            # regardless of provenance, not merely inert on an
+            # all-recorded-price corpus.
+            explicit_zero_margin_plan = optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=Decimal(0),
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                trust_margin=Decimal(0),
+            )
+            self.assertEqual(
+                explicit_zero_margin_plan,
+                oracle_plan,
+                f"passing trust_margin=Decimal(0) explicitly must be "
+                f"byte-identical to omitting it (D-15 inertness); {context}",
             )
 
 
@@ -1183,6 +1323,25 @@ class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
                 f"total_cost={greedy_fuel_cost} exceeds tolerance on "
                 f"flattened multi-leg input; {context}",
             )
+            # D-15/PROV-03 inertness assertion, mirroring
+            # FixedChargeOracleAnchorTests' own addition above, on
+            # flattened multi-leg input.
+            explicit_zero_margin_plan = optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=Decimal(0),
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                trust_margin=Decimal(0),
+            )
+            self.assertEqual(
+                explicit_zero_margin_plan,
+                oracle_plan,
+                f"passing trust_margin=Decimal(0) explicitly must be "
+                f"byte-identical to omitting it on flattened multi-leg "
+                f"input (D-15 inertness); {context}",
+            )
 
     @given(flattened_multi_leg_routes())
     @settings(deadline=None, max_examples=50)
@@ -1356,6 +1515,309 @@ class MultiLegFlattenedFixedChargeTests(SimpleTestCase):
                     f"oracle fuel_cost ({oracle_plan.fuel_cost}) beyond "
                     f"COST_TOLERANCE on flattened multi-leg input though "
                     f"the oracle optimum is strictly unique; {context}",
+                )
+
+
+class TrustMarginAnchorTests(SimpleTestCase):
+    """PROV-03/D-13/D-14: hand-built, fixed-provenance witnesses proving
+    the trust margin actually changes the oracle's answer -- the
+    anti-vacuity guard for this whole plan (per the plan's own action
+    text). An oracle that accepted a trust_margin argument and silently
+    ignored it would satisfy every margin-zero property elsewhere in this
+    module; only these two witnesses can catch that.
+
+    Both witnesses were verified against optimal_fixed_charge_plan()
+    directly before being transcribed here (never the reverse -- the
+    numbers below are not hand-derived and then reconciled with a buggy
+    implementation).
+    """
+
+    def test_swap_witness_cheap_estimate_beats_dearer_real_only_below_margin(self):
+        """The swap witness (D-13's first named behaviour): a cheap
+        estimate-priced station and a slightly dearer real-priced station,
+        both reachable at the identical position (distance_from_start_mi
+        =50) on a route that needs exactly one stop (tank_range_mi=60 on
+        a total_route_mi=100 route). At trust_margin=0 the oracle buys the
+        cheaper, estimate-priced station; at every rung of MARGIN_LADDER
+        (all of which comfortably exceed the $0.40 fuel-cost gap over the
+        4-gallon fill this witness purchases), the oracle SWAPS to the
+        dearer, real-priced station instead -- same stop_count (1), a
+        different station.
+        """
+        cheap_estimate = Candidate(
+            name="cheap-estimate",
+            opis_id=1,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("50"),
+            price_source=ESTIMATE_PRICE_SOURCE,
+        )
+        dearer_real = Candidate(
+            name="dearer-real",
+            opis_id=2,
+            price_per_gallon=Decimal("3.10"),
+            distance_from_start_mi=Decimal("50"),
+            price_source=_RECORDED_PRICE_SOURCE,
+        )
+        candidates = [cheap_estimate, dearer_real]
+        common_kwargs = dict(
+            total_route_mi=Decimal(100),
+            penalty=DEFAULT_PENALTY,
+            tank_range_mi=Decimal(60),
+            mpg=Decimal(10),
+            starting_fuel=Decimal(1),
+        )
+
+        zero_margin_plan = optimal_fixed_charge_plan(candidates, trust_margin=Decimal(0), **common_kwargs)
+        self.assertEqual(
+            zero_margin_plan.stop_opis_ids,
+            (cheap_estimate.opis_id,),
+            f"at trust_margin=0 the oracle must buy the cheaper, "
+            f"estimate-priced station; got {zero_margin_plan!r}",
+        )
+        self.assertEqual(zero_margin_plan.objective, Decimal("47.00"))
+        self.assertEqual(zero_margin_plan.fuel_cost, Decimal("12.00"))
+
+        for margin in MARGIN_LADDER:
+            swapped_plan = optimal_fixed_charge_plan(candidates, trust_margin=margin, **common_kwargs)
+            self.assertEqual(
+                swapped_plan.stop_opis_ids,
+                (dearer_real.opis_id,),
+                f"at trust_margin={margin} (>= MARGIN_LADDER's smallest "
+                f"rung) the oracle must swap to the dearer, real-priced "
+                f"station; got {swapped_plan!r}",
+            )
+            self.assertEqual(swapped_plan.objective, Decimal("47.40"))
+            self.assertEqual(swapped_plan.fuel_cost, Decimal("12.40"))
+
+    def test_drop_witness_extra_estimate_stop_dropped_not_swapped_at_high_margin(self):
+        """The drop witness (D-13's second named behaviour): a mandatory
+        real-priced station R (distance_from_start_mi=10, the only
+        reachable station from a near-empty starting tank) plus an
+        optional, much cheaper estimate-priced station T further along
+        (distance_from_start_mi=100) that -- at low margin -- is worth a
+        second stop to reach, and -- at high margin -- is not. Unlike the
+        swap witness, there is no substitute real-priced station at T's
+        position: the oracle must DROP T entirely and buy more at R
+        instead, proving the margin composes with the fixed per-stop
+        penalty rather than replacing it (buying more at R still pays R's
+        own fuel price and a single penalty charge; it never becomes
+        free just because T got expensive).
+        """
+        station_r = Candidate(
+            name="R",
+            opis_id=10,
+            price_per_gallon=Decimal("4.00"),
+            distance_from_start_mi=Decimal("10"),
+            price_source=_RECORDED_PRICE_SOURCE,
+        )
+        station_t = Candidate(
+            name="T",
+            opis_id=11,
+            price_per_gallon=Decimal("1.00"),
+            distance_from_start_mi=Decimal("100"),
+            price_source=ESTIMATE_PRICE_SOURCE,
+        )
+        candidates = [station_r, station_t]
+        common_kwargs = dict(
+            total_route_mi=Decimal(150),
+            penalty=Decimal("5"),
+            tank_range_mi=Decimal(150),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.10"),
+        )
+
+        retained_expectations = {
+            Decimal(0): Decimal("49.0000"),
+            MARGIN_LADDER[0]: Decimal("54.4700"),
+        }
+        for margin, expected_objective in retained_expectations.items():
+            plan = optimal_fixed_charge_plan(candidates, trust_margin=margin, **common_kwargs)
+            self.assertEqual(
+                plan.stop_opis_ids,
+                (station_r.opis_id, station_t.opis_id),
+                f"at trust_margin={margin} the extra estimate-priced stop "
+                f"T must still be worth taking (2 stops); got {plan!r}",
+            )
+            self.assertEqual(plan.objective, expected_objective)
+            self.assertEqual(plan.fuel_cost, Decimal("39.0000"))
+
+        for margin in (MARGIN_LADDER[1], MARGIN_LADDER[2]):
+            plan = optimal_fixed_charge_plan(candidates, trust_margin=margin, **common_kwargs)
+            self.assertEqual(
+                plan.stop_opis_ids,
+                (station_r.opis_id,),
+                f"at trust_margin={margin} station T must be DROPPED "
+                f"entirely (1 stop, R only, buying more fuel at R rather "
+                f"than swapping to any substitute) -- got {plan!r}",
+            )
+            self.assertEqual(plan.objective, Decimal("59.0000"))
+            self.assertEqual(plan.fuel_cost, Decimal("54.0000"))
+
+
+class TrustMarginPenaltyConsistencyTests(SimpleTestCase):
+    """D-13's full PENALTY_LADDER x MARGIN_LADDER cross product (Task 2's
+    measured verdict -- the three pre-extension wall-clock figures, the
+    ~3x projection, and the post-extension figure are all recorded in
+    21-04-SUMMARY.md, beside the module's own ~30s ceiling).
+
+    Unlike FixedChargePenaltyConsistencyTests' penalty-only properties,
+    stop_count and fuel_cost are deliberately NOT asserted monotonic in
+    trust_margin here: margin is added only to candidates for which
+    is_estimate_priced() is True, not uniformly to every stop the way
+    penalty is, so a revealed-preference argument only yields monotonicity
+    of the TAGGED stop count in the optimum -- never of the total stop
+    count or of fuel_cost -- as margin rises.
+
+    Proof sketch (revealed preference), for a fixed penalty and m1 < m2
+    with optimal subsets S1 (at margin=m1) and S2 (at margin=m2):
+        f(S1, m1) <= f(S2, m1)   [S1 optimal at m1]
+        f(S2, m2) <= f(S1, m2)   [S2 optimal at m2]
+    where f(S, m) = fuel(S) + penalty*|S| + m*tagged(S). Summing both
+    inequalities and cancelling the margin-free fuel(S)+penalty*|S| terms
+    on both sides gives (m1-m2)*tagged(S1) <= (m1-m2)*tagged(S2); since
+    m1-m2 < 0, dividing flips the inequality to tagged(S1) >= tagged(S2)
+    -- the tagged-station count of the optimum is non-increasing as
+    margin rises. This proof does NOT establish |S1| >= |S2| or
+    fuel(S1) <= fuel(S2) -- those would be the stronger, UNPROVEN claims
+    this class deliberately does not assert. (The same pointwise-min-of-
+    non-decreasing-functions argument used for penalty DOES generalize
+    to margin for the objective itself: each subset's own f(S, .) is
+    non-decreasing in margin, so their minimum is too.)
+
+    max_examples=50 mirrors FixedChargePenaltyConsistencyTests' own
+    discretionary formulation choice -- each example now performs
+    len(PENALTY_LADDER) * len(_MARGIN_SWEEP) = 12 oracle solves (the
+    Task-2-adopted full cross product), a real but bounded multiple of
+    that class's own 3-solves-per-example cost.
+    """
+
+    def _plans_by_penalty_and_margin(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        return {
+            (penalty, margin): optimal_fixed_charge_plan(
+                candidates,
+                total_route_mi,
+                penalty=penalty,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                trust_margin=margin,
+            )
+            for penalty in PENALTY_LADDER
+            for margin in _MARGIN_SWEEP
+        }
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_feasibility_is_margin_invariant(self, drawn_route):
+        """Margin can only change WHICH feasible subset wins, never
+        WHETHER any subset is feasible: margin is added to a subset's
+        cost only after _cheapest_fuel_cost_for_subset has already
+        determined that subset is feasible, independent of margin."""
+        plans = self._plans_by_penalty_and_margin(drawn_route)
+        for penalty in PENALTY_LADDER:
+            zero_feasible = plans[(penalty, Decimal(0))] is not None
+            for margin in _MARGIN_SWEEP:
+                self.assertEqual(
+                    plans[(penalty, margin)] is not None,
+                    zero_feasible,
+                    f"feasibility at penalty={penalty}, margin={margin} "
+                    f"disagrees with the margin=0 verdict={zero_feasible} "
+                    f"at the same penalty; drawn_route={drawn_route!r}",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_objective_at_least_margin_zero_objective(self, drawn_route):
+        plans = self._plans_by_penalty_and_margin(drawn_route)
+        for penalty in PENALTY_LADDER:
+            zero_plan = plans[(penalty, Decimal(0))]
+            if zero_plan is None:
+                continue
+            for margin in _MARGIN_SWEEP:
+                self.assertGreaterEqual(
+                    plans[(penalty, margin)].objective,
+                    zero_plan.objective,
+                    f"objective at penalty={penalty}, margin={margin} "
+                    f"({plans[(penalty, margin)].objective}) fell below "
+                    f"the margin=0 objective ({zero_plan.objective}) at "
+                    f"the same penalty; drawn_route={drawn_route!r}",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_objective_non_decreasing_across_margin_ladder(self, drawn_route):
+        plans = self._plans_by_penalty_and_margin(drawn_route)
+        for penalty in PENALTY_LADDER:
+            if plans[(penalty, Decimal(0))] is None:
+                continue
+            for m_lo, m_hi in zip(_MARGIN_SWEEP, _MARGIN_SWEEP[1:]):
+                self.assertGreaterEqual(
+                    plans[(penalty, m_hi)].objective,
+                    plans[(penalty, m_lo)].objective,
+                    f"objective fell from margin={m_lo} "
+                    f"({plans[(penalty, m_lo)].objective}) to margin="
+                    f"{m_hi} ({plans[(penalty, m_hi)].objective}) at "
+                    f"penalty={penalty}; drawn_route={drawn_route!r}",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_tagged_count_non_increasing_as_margin_rises(self, drawn_route):
+        """The class's own revealed-preference proof (see docstring
+        above), the correct margin analog of
+        FixedChargePenaltyConsistencyTests' stop-count property -- NOT
+        total stop_count, which is unproven for margin."""
+        candidates = drawn_route[0]
+        candidate_by_id = {c.opis_id: c for c in candidates}
+        plans = self._plans_by_penalty_and_margin(drawn_route)
+        for penalty in PENALTY_LADDER:
+            if plans[(penalty, Decimal(0))] is None:
+                continue
+            for m_lo, m_hi in zip(_MARGIN_SWEEP, _MARGIN_SWEEP[1:]):
+                plan_lo = plans[(penalty, m_lo)]
+                plan_hi = plans[(penalty, m_hi)]
+                tagged_lo = sum(
+                    1
+                    for opis_id in plan_lo.stop_opis_ids
+                    if is_estimate_priced(candidate_by_id[opis_id])
+                )
+                tagged_hi = sum(
+                    1
+                    for opis_id in plan_hi.stop_opis_ids
+                    if is_estimate_priced(candidate_by_id[opis_id])
+                )
+                self.assertLessEqual(
+                    tagged_hi,
+                    tagged_lo,
+                    f"tagged-station count rose from {tagged_lo} at "
+                    f"margin={m_lo} to {tagged_hi} at margin={m_hi}, "
+                    f"penalty={penalty} -- see this class's own "
+                    f"revealed-preference proof; drawn_route={drawn_route!r}",
+                )
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=50)
+    def test_plan_internal_consistency_across_margin_ladder(self, drawn_route):
+        candidates = drawn_route[0]
+        candidate_by_id = {c.opis_id: c for c in candidates}
+        plans = self._plans_by_penalty_and_margin(drawn_route)
+        for penalty in PENALTY_LADDER:
+            if plans[(penalty, Decimal(0))] is None:
+                continue
+            for margin in _MARGIN_SWEEP:
+                plan = plans[(penalty, margin)]
+                margin_total = sum(
+                    (trust_margin_for(candidate_by_id[opis_id], margin) for opis_id in plan.stop_opis_ids),
+                    Decimal(0),
+                )
+                self.assertEqual(
+                    plan.objective,
+                    plan.fuel_cost + penalty * plan.stop_count + margin_total,
+                    f"objective does not equal fuel_cost + "
+                    f"penalty*stop_count + margin_total at penalty="
+                    f"{penalty}, margin={margin}; plan={plan!r}; "
+                    f"drawn_route={drawn_route!r}",
                 )
 
 
