@@ -44,6 +44,8 @@ function makeStop(
       price_percentile: null,
       bypassed_cheaper_count: 0,
       bypassed_saving_forgone: null,
+      bypassed_estimate_count: 0,
+      bypassed_estimate_saving_forgone: null,
       ...rationale,
     },
     ...overrides,

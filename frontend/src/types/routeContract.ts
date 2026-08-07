@@ -40,6 +40,17 @@ export interface Rationale {
   // never `number`, matching this file's own header comment.
   bypassed_cheaper_count: number;
   bypassed_saving_forgone: string | null;
+  // Additive (Phase 21, PROV-03): the SAME kind of fact as the pair above,
+  // narrowed to only the bypassed stations that were `eia_regional_estimate`
+  // priced -- how many cheaper regional-estimate stations this stop passed
+  // over, and the fuel-dollar saving forgone, from raw prices only. NOT a
+  // duplicate of `bypassed_cheaper_count`/`bypassed_saving_forgone`: this
+  // pair is a subset, present only when this stop is itself recorded-price
+  // (`price_source: 'opis_indexed'`) and at least one bypassed candidate
+  // carried the estimate wire value. A zero count means the disclosure does
+  // not apply here, not that data is missing.
+  bypassed_estimate_count: number;
+  bypassed_estimate_saving_forgone: string | null;
 }
 
 // `FuelStopSerializer.to_representation` output.
