@@ -168,14 +168,23 @@ FUEL_STOP_PENALTY_USD = Decimal(_env("FUEL_STOP_PENALTY_USD", "35"))
 # Flat per-purchase trust margin (dollars) the fixed-charge solver charges
 # an `eia_regional_estimate`-priced candidate on top of fuel cost and the
 # stop penalty above -- PROV-03, mirrors FUEL_STOP_PENALTY_USD's own shape
-# exactly (env-backed, `Decimal`-typed, no float coercion). Defaults to
-# "0" here deliberately: plan 21-08 pins the derivation formula and
-# adoption rule, plan 21-09 measures the ladder against the twelve pinned
-# corridors, and only then does a non-zero value get adopted -- a zero
-# default keeps this commit's behaviour provably identical to the
-# previous one on every dataset, not just the all-recorded one Phase 22
-# ships before any `eia_regional_estimate` row exists.
-TRUST_MARGIN_USD = Decimal(_env("TRUST_MARGIN_USD", "0"))
+# exactly (env-backed, `Decimal`-typed, no float coercion).
+#
+# Shipped at $5.47 -- the value plan 21-08's adoption rule (`adopt_rung()`,
+# `routing/tests/test_trust_margin_rule.py`, pinned in plan 21-02 before
+# any number existed) returned when applied, exactly once, to the
+# twelve-corridor attribution sweep (`21-TRUST-MARGIN-SWEEP.txt`). It is
+# the smallest rung on `MARGIN_LADDER` that changes the stop set on at
+# least one pinned corridor -- a real, measured movement, not the sourced
+# middle rung an all-inert ladder would have adopted. See
+# `AttributionSweepAdoptionRoundTripTests` (same test module) for the
+# closed-form guard that keeps this literal from drifting away from the
+# adopted constant, and `21-08-SUMMARY.md` for the full `AdoptionResult`.
+# Regardless of which value the rule returns, this default must NEVER be
+# hand-edited to a different number without re-running the rule and
+# re-transcribing its evidence -- the same discipline every other
+# measured constant in this codebase follows.
+TRUST_MARGIN_USD = Decimal(_env("TRUST_MARGIN_USD", "5.47"))
 
 # Fuel price dataset vintage. A constant, not a Station column
 # -- the source CSV has one vintage and no per-row dates, so a column

@@ -37,6 +37,7 @@ import sys
 from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.test import SimpleTestCase
 
 from routing.services.solver import Candidate
@@ -635,3 +636,261 @@ class AdoptRungTests(SimpleTestCase):
     def test_fewer_than_two_rungs_raises_value_error(self):
         with self.assertRaises(ValueError):
             adopt_rung({_CONTROL: {"c1": ("s1",)}})
+
+
+# ---------------------------------------------------------------------------
+# Plan 21-08 Task 3 -- D-08's adoption rule applied, ONCE, to the
+# ATTRIBUTION sweep in 21-TRUST-MARGIN-SWEEP.txt (the margin is the sole
+# variable there, so any stop-set movement is provably the margin's; the
+# realism sweep is D-10's OTHER sweep and supplies plan 21-09's copy
+# witness instead, never an adoption input).
+#
+# _ATTRIBUTION_SWEEP_STOP_SETS_BY_RUNG below is transcribed verbatim from
+# that artifact's ATTRIBUTION SWEEP section (git_head_sha
+# 977bba90087c79432842ae202598ea786b7fece1, csv_git_blob_hash
+# bc4c809fe9b0b247cea12ee873da8470a38b3e21, capture_timestamp_utc
+# 2026-08-07T13:33:52Z), keyed exactly as D-08's own key shape requires:
+# corridor slug joined with its tag share, so every rung covers the
+# identical (slug, share) key set and adopt_rung()'s mismatched-key-set
+# ValueError stays armed. The zero rung is the control, then MARGIN_LADDER's
+# three rungs in order -- the same ordered shape the sweep itself printed.
+# Do not hand-edit any station tuple here; re-run
+# `manage.py measure_trust_margin` and re-transcribe the whole block if this
+# ever needs to change (the same discipline MARGIN_LADDER's own provenance
+# comment states for itself).
+_ATTRIBUTION_SWEEP_STOP_SETS_BY_RUNG = {
+    Decimal("0"): {
+        ("atlanta_ga-denver_co", Decimal("0.10")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.25")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.50")): (68856,),
+        ("dallas_tx-seattle_wa", Decimal("0.10")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.25")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.50")): (6944, 6960, 66341),
+        ("el_paso_tx-portland_me", Decimal("0.10")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.25")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.50")): (1669, 71079, 71647, 73058),
+        ("fargo_nd-amarillo_tx", Decimal("0.10")): (1163,),
+        ("fargo_nd-amarillo_tx", Decimal("0.25")): (1163,),
+        ("fargo_nd-amarillo_tx", Decimal("0.50")): (1163,),
+        ("houston_tx-chicago_il", Decimal("0.10")): (69962,),
+        ("houston_tx-chicago_il", Decimal("0.25")): (69962,),
+        ("houston_tx-chicago_il", Decimal("0.50")): (69962,),
+        ("jacksonville_fl-bangor_me", Decimal("0.10")): (72975,),
+        ("jacksonville_fl-bangor_me", Decimal("0.25")): (72975,),
+        ("jacksonville_fl-bangor_me", Decimal("0.50")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.10")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.25")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.50")): (72975,),
+        ("nashville_tn-buffalo_ny", Decimal("0.10")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.25")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.50")): (),
+        ("phoenix_az-minneapolis_mn", Decimal("0.10")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.25")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.50")): (70416,),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.10")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.25")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.50")): (),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.10")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.25")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.50")): (64422, 71079),
+        ("toronto_oh-hillsboro_or", Decimal("0.10")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.25")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.50")): (60245, 68368, 70669),
+    },
+    Decimal("5.47"): {
+        ("atlanta_ga-denver_co", Decimal("0.10")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.25")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.50")): (68856,),
+        ("dallas_tx-seattle_wa", Decimal("0.10")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.25")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.50")): (6944, 6960, 66341),
+        ("el_paso_tx-portland_me", Decimal("0.10")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.25")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.50")): (1669, 71079, 71647, 73058),
+        ("fargo_nd-amarillo_tx", Decimal("0.10")): (1163,),
+        ("fargo_nd-amarillo_tx", Decimal("0.25")): (52635,),
+        ("fargo_nd-amarillo_tx", Decimal("0.50")): (52635,),
+        ("houston_tx-chicago_il", Decimal("0.10")): (69962,),
+        ("houston_tx-chicago_il", Decimal("0.25")): (68256,),
+        ("houston_tx-chicago_il", Decimal("0.50")): (72899,),
+        ("jacksonville_fl-bangor_me", Decimal("0.10")): (72975,),
+        ("jacksonville_fl-bangor_me", Decimal("0.25")): (61205,),
+        ("jacksonville_fl-bangor_me", Decimal("0.50")): (67248,),
+        ("miami_fl-boston_ma", Decimal("0.10")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.25")): (61205,),
+        ("miami_fl-boston_ma", Decimal("0.50")): (67248,),
+        ("nashville_tn-buffalo_ny", Decimal("0.10")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.25")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.50")): (),
+        ("phoenix_az-minneapolis_mn", Decimal("0.10")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.25")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.50")): (70416,),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.10")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.25")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.50")): (),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.10")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.25")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.50")): (65690, 71079),
+        ("toronto_oh-hillsboro_or", Decimal("0.10")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.25")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.50")): (60245, 68368, 70669),
+    },
+    Decimal("10.93"): {
+        ("atlanta_ga-denver_co", Decimal("0.10")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.25")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.50")): (68856,),
+        ("dallas_tx-seattle_wa", Decimal("0.10")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.25")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.50")): (6944, 6960, 66341),
+        ("el_paso_tx-portland_me", Decimal("0.10")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.25")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.50")): (1669, 71079, 71647, 73058),
+        ("fargo_nd-amarillo_tx", Decimal("0.10")): (1163,),
+        ("fargo_nd-amarillo_tx", Decimal("0.25")): (52635,),
+        ("fargo_nd-amarillo_tx", Decimal("0.50")): (52635,),
+        ("houston_tx-chicago_il", Decimal("0.10")): (69962,),
+        ("houston_tx-chicago_il", Decimal("0.25")): (68256,),
+        ("houston_tx-chicago_il", Decimal("0.50")): (72899,),
+        ("jacksonville_fl-bangor_me", Decimal("0.10")): (72975,),
+        ("jacksonville_fl-bangor_me", Decimal("0.25")): (61205,),
+        ("jacksonville_fl-bangor_me", Decimal("0.50")): (67248,),
+        ("miami_fl-boston_ma", Decimal("0.10")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.25")): (61205,),
+        ("miami_fl-boston_ma", Decimal("0.50")): (67248,),
+        ("nashville_tn-buffalo_ny", Decimal("0.10")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.25")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.50")): (),
+        ("phoenix_az-minneapolis_mn", Decimal("0.10")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.25")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.50")): (70416,),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.10")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.25")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.50")): (),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.10")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.25")): (64422, 71079),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.50")): (65690, 71079),
+        ("toronto_oh-hillsboro_or", Decimal("0.10")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.25")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.50")): (60245, 68368, 70669),
+    },
+    Decimal("21.86"): {
+        ("atlanta_ga-denver_co", Decimal("0.10")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.25")): (68856,),
+        ("atlanta_ga-denver_co", Decimal("0.50")): (68856,),
+        ("dallas_tx-seattle_wa", Decimal("0.10")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.25")): (6944, 6960, 66341),
+        ("dallas_tx-seattle_wa", Decimal("0.50")): (6944, 6960, 66341),
+        ("el_paso_tx-portland_me", Decimal("0.10")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.25")): (1669, 71079, 71647, 73058),
+        ("el_paso_tx-portland_me", Decimal("0.50")): (1669, 71079, 71647, 73058),
+        ("fargo_nd-amarillo_tx", Decimal("0.10")): (1163,),
+        ("fargo_nd-amarillo_tx", Decimal("0.25")): (52635,),
+        ("fargo_nd-amarillo_tx", Decimal("0.50")): (52635,),
+        ("houston_tx-chicago_il", Decimal("0.10")): (69962,),
+        ("houston_tx-chicago_il", Decimal("0.25")): (68256,),
+        ("houston_tx-chicago_il", Decimal("0.50")): (72899,),
+        ("jacksonville_fl-bangor_me", Decimal("0.10")): (72975,),
+        ("jacksonville_fl-bangor_me", Decimal("0.25")): (61205,),
+        ("jacksonville_fl-bangor_me", Decimal("0.50")): (67248,),
+        ("miami_fl-boston_ma", Decimal("0.10")): (72975,),
+        ("miami_fl-boston_ma", Decimal("0.25")): (61205,),
+        ("miami_fl-boston_ma", Decimal("0.50")): (67248,),
+        ("nashville_tn-buffalo_ny", Decimal("0.10")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.25")): (),
+        ("nashville_tn-buffalo_ny", Decimal("0.50")): (),
+        ("phoenix_az-minneapolis_mn", Decimal("0.10")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.25")): (70416,),
+        ("phoenix_az-minneapolis_mn", Decimal("0.50")): (70416,),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.10")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.25")): (),
+        ("sacramento_ca-salt_lake_city_ut", Decimal("0.50")): (),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.10")): (7230, 64422),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.25")): (7230, 64422),
+        ("san_diego_ca-jacksonville_fl", Decimal("0.50")): (7230, 65690),
+        ("toronto_oh-hillsboro_or", Decimal("0.10")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.25")): (60245, 68368, 70669),
+        ("toronto_oh-hillsboro_or", Decimal("0.50")): (60245, 68368, 70669),
+    },
+}
+
+# adopt_rung() applied to the attribution sweep above returns rung=$5.47 --
+# the SMALLEST non-control rung, not an all-inert result. Real movement
+# happens already at this rung: 9 (corridor, share) cells move
+# (fargo_nd-amarillo_tx@0.25/0.50, houston_tx-chicago_il@0.25/0.50,
+# jacksonville_fl-bangor_me@0.25/0.50, miami_fl-boston_ma@0.25/0.50,
+# san_diego_ca-jacksonville_fl@0.50), spanning 5 distinct corridors --
+# `AttributionSweepAdoptionRoundTripTests` below asserts both counts and
+# their equivalence at the pinned ADOPTION_MIN_MOVED_CORRIDORS=1 rather
+# than asserting it in prose.
+#
+# Chosen from the ATTRIBUTION sweep, not the realism one (D-10): the margin
+# is the sole variable there (prices are untouched), so this movement is
+# provably the margin's and nothing else's. Full AdoptionResult:
+# AdoptionResult(rung=Decimal('5.47'), moved_corridor_count=9,
+# moved_corridor_slugs=(('fargo_nd-amarillo_tx', Decimal('0.25')),
+# ('fargo_nd-amarillo_tx', Decimal('0.50')), ('houston_tx-chicago_il',
+# Decimal('0.25')), ('houston_tx-chicago_il', Decimal('0.50')),
+# ('jacksonville_fl-bangor_me', Decimal('0.25')),
+# ('jacksonville_fl-bangor_me', Decimal('0.50')), ('miami_fl-boston_ma',
+# Decimal('0.25')), ('miami_fl-boston_ma', Decimal('0.50')),
+# ('san_diego_ca-jacksonville_fl', Decimal('0.50'))), all_inert=False).
+# Recorded verbatim in 21-08-SUMMARY.md, sourced from
+# 21-TRUST-MARGIN-SWEEP.txt (same provenance as the dict above). This
+# value was produced by applying, exactly once, a rule committed six plans
+# earlier (plan 21-02, D-09) and must NOT be adjusted by hand to make a
+# later measurement look better -- if it is ever wrong, the fix is
+# re-running measure_trust_margin and re-transcribing this whole block,
+# never a silent hand-edit to this one line.
+ADOPTED_MARGIN_USD = Decimal("5.47")
+
+
+class AttributionSweepAdoptionRoundTripTests(SimpleTestCase):
+    """T-21-40/T-21-44: closes the loop between plan 21-02's pinned
+    adoption rule, the measured attribution sweep, and the shipped
+    setting. If someone later edits ADOPTED_MARGIN_USD or
+    config.settings.base.TRUST_MARGIN_USD by hand without re-running the
+    rule, this fails -- the closed-form equality that makes the adoption
+    checkable rather than narrated."""
+
+    def test_adopt_rung_on_the_attribution_sweep_returns_the_adopted_rung(self):
+        result = adopt_rung(_ATTRIBUTION_SWEEP_STOP_SETS_BY_RUNG)
+
+        self.assertEqual(result.rung, ADOPTED_MARGIN_USD)
+        self.assertFalse(
+            result.all_inert,
+            "the attribution sweep genuinely moves stop sets at the smallest "
+            "non-control rung -- this is NOT an all-inert result",
+        )
+
+        distinct_moved_corridors = sorted(
+            {slug for slug, _share in result.moved_corridor_slugs}
+        )
+        self.assertEqual(result.moved_corridor_count, 9)
+        self.assertEqual(
+            distinct_moved_corridors,
+            [
+                "fargo_nd-amarillo_tx",
+                "houston_tx-chicago_il",
+                "jacksonville_fl-bangor_me",
+                "miami_fl-boston_ma",
+                "san_diego_ca-jacksonville_fl",
+            ],
+        )
+
+        # D-08 counts corridors; this input counts (corridor, share) cells.
+        # At the pinned ADOPTION_MIN_MOVED_CORRIDORS=1 the two predicates
+        # are provably the same: a moved cell implies its corridor moved,
+        # and a moved corridor implies at least one moved cell, so "at
+        # least one moved cell" and "at least one moved corridor" hold
+        # together or fail together. Asserted here as a closed-form
+        # equality, not narrated in prose.
+        self.assertEqual(
+            result.moved_corridor_count >= ADOPTION_MIN_MOVED_CORRIDORS,
+            len(distinct_moved_corridors) >= ADOPTION_MIN_MOVED_CORRIDORS,
+        )
+
+    def test_adopted_margin_is_a_member_of_margin_ladder(self):
+        self.assertIn(ADOPTED_MARGIN_USD, MARGIN_LADDER)
+
+    def test_shipped_setting_equals_adopted_margin(self):
+        self.assertEqual(settings.TRUST_MARGIN_USD, ADOPTED_MARGIN_USD)
