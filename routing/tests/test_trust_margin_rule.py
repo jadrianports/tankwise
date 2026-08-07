@@ -360,3 +360,204 @@ class PinnedConstantsAreUnmeasuredTests(SimpleTestCase):
         # average existed when the rule above was pinned.
         self.assertIsNone(MARGIN_LADDER)
         self.assertIsNone(PADD_AVERAGE_PRICE)
+
+
+# ---------------------------------------------------------------------------
+# D-08's adoption rule, pinned before any sweep result exists.
+
+
+@dataclass(frozen=True)
+class AdoptionResult:
+    """The outcome of applying D-08's adoption rule to one sweep.
+
+    `rung`: the adopted rung -- a key straight out of the input mapping,
+    carried through unchanged (never re-derived), so the caller can look
+    it up directly against whatever rung-to-dollar-value table it built
+    the sweep from.
+
+    `moved_corridor_count` / `moved_corridor_slugs`: how many, and which,
+    of the twelve pinned corridors had a DIFFERENT stop set at the
+    adopted rung than at the margin-zero control rung. Both are `0` / `()`
+    exactly when `all_inert` is `True`.
+
+    `all_inert`: `True` when NO non-control rung moved the stop set on ANY
+    corridor. This is a PASSING result under ROADMAP criterion 3, not a
+    failure -- it converts the ladder choice into a citability decision
+    with zero behavioural risk, exactly what the existing
+    `$20`/`$35`/`$45` `EIA_MULTIPLIER_LADDER` sweep already returned for
+    the fixed-charge penalty (18-07-SUMMARY.md, verdict RATIFIED). A
+    reader who finds `all_inert=True` in a future SUMMARY should read it
+    the same way: the rule ran correctly and found nothing to adopt beyond
+    the sourced middle rung, which is exactly what `adopt_rung()` returns
+    in that case.
+    """
+
+    rung: object
+    moved_corridor_count: int
+    moved_corridor_slugs: tuple
+    all_inert: bool
+
+
+def adopt_rung(stop_sets_by_rung):
+    """Apply D-08's adoption rule to one sweep's results.
+
+    `stop_sets_by_rung`: an ORDERED mapping (dict, insertion order is the
+    ladder's order) from rung value to a mapping of corridor slug -> a
+    stop-set tuple (e.g. a tuple of `opis_id`s or station names -- any
+    hashable, order-sensitive-or-not representation the caller's sweep
+    produced, compared here only with `!=`). The FIRST key is the
+    margin-zero control rung; every other key is a candidate rung, in
+    ascending order.
+
+    Returns an `AdoptionResult`. Walks the non-control rungs in the order
+    given and returns the FIRST (i.e. smallest) one whose stop set differs
+    from the control on at least `ADOPTION_MIN_MOVED_CORRIDORS` corridors,
+    with `all_inert=False`. If no rung moves any corridor, returns rather
+    than raising: the middle of the non-control rungs (matching
+    `MARGIN_LADDER_MULTIPLIERS`' own three-rung, unmultiplied-middle
+    shape when the input mirrors that ladder), with `all_inert=True` and
+    `moved_corridor_count=0` -- see `AdoptionResult`'s docstring for why
+    that is a pass, not an error.
+
+    Raises `ValueError` if `stop_sets_by_rung` has fewer than 2 keys (no
+    control-plus-candidate pair to compare), or if any non-control rung's
+    corridor slug set differs from the control's -- a sweep that silently
+    dropped or gained a corridor must not be able to produce a silent
+    adoption.
+    """
+    rungs = list(stop_sets_by_rung.keys())
+    if len(rungs) < 2:
+        raise ValueError(
+            f"adopt_rung() needs a control rung plus at least one candidate rung, got {len(rungs)}"
+        )
+
+    control_rung = rungs[0]
+    control_stop_sets = stop_sets_by_rung[control_rung]
+    control_slugs = set(control_stop_sets.keys())
+
+    candidate_rungs = rungs[1:]
+    for rung in candidate_rungs:
+        rung_slugs = set(stop_sets_by_rung[rung].keys())
+        if rung_slugs != control_slugs:
+            raise ValueError(
+                f"rung {rung!r} covers corridor slugs {sorted(rung_slugs)!r}, "
+                f"which differs from the control rung {control_rung!r}'s "
+                f"{sorted(control_slugs)!r} -- a truncated or expanded sweep "
+                "cannot be silently adopted from"
+            )
+
+    for rung in candidate_rungs:
+        rung_stop_sets = stop_sets_by_rung[rung]
+        moved_slugs = tuple(
+            sorted(
+                slug
+                for slug in control_slugs
+                if rung_stop_sets[slug] != control_stop_sets[slug]
+            )
+        )
+        if len(moved_slugs) >= ADOPTION_MIN_MOVED_CORRIDORS:
+            return AdoptionResult(
+                rung=rung,
+                moved_corridor_count=len(moved_slugs),
+                moved_corridor_slugs=moved_slugs,
+                all_inert=False,
+            )
+
+    # All-inert: no candidate rung moved any corridor. Adopt the sourced
+    # middle rung and say so plainly -- this is a PASSING result (see
+    # AdoptionResult.all_inert's docstring), never raised as an error.
+    middle_rung = candidate_rungs[len(candidate_rungs) // 2]
+    return AdoptionResult(
+        rung=middle_rung,
+        moved_corridor_count=0,
+        moved_corridor_slugs=(),
+        all_inert=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 2 tests -- adopt_rung(), including the all-inert PASS and three
+# anti-vacuity guards. All fixtures below are synthetic (plain small
+# integers standing in for rung identity, and lettered station-id tuples
+# standing in for stop sets) -- never a measured dispersion figure, ladder
+# rung, or PADD average, per this plan's own prohibition.
+
+_CONTROL = 0
+_RUNG_A = 1
+_RUNG_B = 2
+_RUNG_C = 3
+
+
+class AdoptRungTests(SimpleTestCase):
+    def test_only_the_largest_rung_moves_adopts_largest_rung_not_middle(self):
+        # Anti-vacuity guard 1: if adopt_rung() degenerated to always
+        # returning the middle rung, this input -- where ONLY the largest
+        # rung moves anything -- would still (wrongly) return the middle
+        # rung. Proves the function is not a constant.
+        stop_sets_by_rung = {
+            _CONTROL: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_A: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_B: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_C: {"c1": ("s1", "s6"), "c2": ("s3",), "c3": ("s4", "s5")},
+        }
+        result = adopt_rung(stop_sets_by_rung)
+        self.assertEqual(result.rung, _RUNG_C)
+        self.assertFalse(result.all_inert)
+        self.assertEqual(result.moved_corridor_count, 1)
+        self.assertEqual(result.moved_corridor_slugs, ("c1",))
+
+    def test_rungs_2_and_3_both_move_adopts_the_smaller_rung_2(self):
+        # Anti-vacuity guard 2: if adopt_rung() adopted ANY rung that
+        # moved something (rather than the SMALLEST such rung), this
+        # input -- where both rung B and rung C move -- would wrongly
+        # return rung C. Proves "smallest that moves" is actually
+        # enforced, not merely "any that moves".
+        stop_sets_by_rung = {
+            _CONTROL: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_A: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_B: {"c1": ("s1", "s6"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_C: {"c1": ("s1", "s6"), "c2": ("s7",), "c3": ("s4", "s5")},
+        }
+        result = adopt_rung(stop_sets_by_rung)
+        self.assertEqual(result.rung, _RUNG_B)
+        self.assertFalse(result.all_inert)
+        self.assertEqual(result.moved_corridor_count, 1)
+        self.assertEqual(result.moved_corridor_slugs, ("c1",))
+
+    def test_all_inert_ladder_returns_middle_rung_and_passes(self):
+        # D-08/ROADMAP criterion 3: an all-inert ladder is a PASS. This
+        # test asserts adopt_rung() RETURNS a rung -- never
+        # assertRaises() -- and that the returned rung is specifically
+        # the middle one, exactly as AdoptionResult.all_inert's docstring
+        # specifies. If a future reader finds this test failing, the
+        # rule's PASS behaviour for the all-inert case has regressed.
+        stop_sets_by_rung = {
+            _CONTROL: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_A: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_B: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+            _RUNG_C: {"c1": ("s1", "s2"), "c2": ("s3",), "c3": ("s4", "s5")},
+        }
+        result = adopt_rung(stop_sets_by_rung)
+        self.assertEqual(
+            result.rung,
+            _RUNG_B,
+            "an all-inert sweep must adopt the sourced middle rung as a PASS, "
+            "not raise -- see D-08/ROADMAP criterion 3",
+        )
+        self.assertTrue(result.all_inert)
+        self.assertEqual(result.moved_corridor_count, 0)
+        self.assertEqual(result.moved_corridor_slugs, ())
+
+    def test_mismatched_corridor_slug_set_raises_value_error(self):
+        # Anti-vacuity guard 3: a rung whose sweep silently dropped a
+        # corridor must not be adoptable from at all.
+        stop_sets_by_rung = {
+            _CONTROL: {"c1": ("s1",), "c2": ("s2",)},
+            _RUNG_A: {"c1": ("s1",)},
+        }
+        with self.assertRaises(ValueError):
+            adopt_rung(stop_sets_by_rung)
+
+    def test_fewer_than_two_rungs_raises_value_error(self):
+        with self.assertRaises(ValueError):
+            adopt_rung({_CONTROL: {"c1": ("s1",)}})
