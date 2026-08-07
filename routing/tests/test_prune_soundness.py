@@ -34,7 +34,7 @@ call.
 import inspect
 import io
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -46,7 +46,7 @@ from hypothesis import strategies as st
 from routing.services import Candidate, corridor, dp, heuristic, solve
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
-from routing.services.solver import SolverStrategy
+from routing.services.solver import ESTIMATE_PRICE_SOURCE, SolverStrategy
 from routing.tests.test_corridor_fixtures import (
     factor_lookup_for_basis,
     load_corridor_route,
@@ -58,6 +58,7 @@ from routing.tests.test_solver_fixed_charge_optimality import (
     optimal_fixed_charge_plan,
     single_leg_routes,
 )
+from routing.tests.test_trust_margin_rule import TAG_SHARE_LADDER, tagged_candidates
 
 
 def _candidate(opis_id, price, position, name=None):
@@ -1515,4 +1516,337 @@ class PruneReductionGuardTests(SimpleTestCase):
             "consecutive calls -- it must be freshly seeded from "
             "PRUNE_CORPUS_PARAMS.seed on every call, never consuming the "
             "global random module's state.",
+        )
+
+
+# ---------------------------------------------------------------------------
+# D-03's sibling apparatus: a mixed-provenance corpus, its own reduction
+# floor, and the mutation-checked anti-vacuity guard proving condition 3
+# actually fires. Mirrors PruneCorpusParams/PRUNE_CORPUS_PARAMS/
+# PRUNE_REDUCTION_FLOOR/build_prune_corpus() above precisely, so the ONLY
+# structural difference between the two corpora is provenance.
+
+
+@dataclass(frozen=True)
+class PruneMixedCorpusParams:
+    """D-03's sibling to PruneCorpusParams above -- a distinct dataclass
+    (rather than an `estimate_share` field bolted onto PruneCorpusParams)
+    so PRUNE_CORPUS_PARAMS itself stays byte-unchanged and this corpus's
+    provenance-specific field never leaks into its all-recorded shape.
+    Every field fixed here, before the mixed-corpus reduction rate below
+    was ever measured, following PRUNE_CORPUS_PARAMS' own D-14 precedent
+    exactly.
+    """
+
+    seed: int
+    station_count: int
+    total_route_mi: Decimal
+    tank_range_mi: Decimal
+    min_price_cents: int
+    max_price_cents: int
+    colocated_share: Decimal
+    estimate_share: Decimal
+
+
+# Every field except seed and estimate_share mirrors PRUNE_CORPUS_PARAMS
+# exactly, so provenance is the ONLY variable between the two corpora.
+# seed=20260807 is distinct from PRUNE_CORPUS_PARAMS.seed (20260731) and
+# from TAG_SEED (test_trust_margin_rule.py's own is_tagged() selector
+# seed) so this corpus's random.Random(seed) draw never interleaves with
+# either -- today's date, following both precedents' own convention.
+# estimate_share is pinned to TAG_SHARE_LADDER[1] (test_trust_margin_rule
+# .py, D-11's middle rung), so the tagging share is one this phase already
+# committed to elsewhere, never invented here.
+PRUNE_MIXED_CORPUS_PARAMS = PruneMixedCorpusParams(
+    seed=20260807,
+    station_count=500,
+    total_route_mi=Decimal(2200),
+    tank_range_mi=Decimal(1050),
+    min_price_cents=100,
+    max_price_cents=600,
+    colocated_share=Decimal("0.10"),
+    estimate_share=TAG_SHARE_LADDER[1],
+)
+
+# D-03: measured ONCE against PRUNE_MIXED_CORPUS_PARAMS above -- 47.20%
+# (264/500 retained, vs 259/500 for the same positions/prices with every
+# provenance forced to the recorded value) reduction, recorded verbatim in
+# 21-05-SUMMARY.md. Set at roughly a third of that measured rate
+# (0.14 / 0.472 ~= 0.30), following PRUNE_REDUCTION_FLOOR's own precedent
+# exactly. This floor is EXPECTED, and CORRECT, to sit below
+# PRUNE_REDUCTION_FLOOR (0.15): condition 3 deliberately retains MORE on a
+# mixed-provenance corpus than the margin-free rule retains on an
+# all-recorded one, so a lower reduction rate here is the predicate
+# working, not a regression. Do not adjust PRUNE_MIXED_CORPUS_PARAMS or
+# this floor to make a future run pass -- see the failure message on the
+# guard below.
+PRUNE_MIXED_REDUCTION_FLOOR = Decimal("0.14")
+
+
+def build_mixed_provenance_corpus(*, params=PRUNE_MIXED_CORPUS_PARAMS):
+    """Deterministically build a mixed-provenance candidate corpus,
+    mirroring build_prune_corpus() exactly for position/price generation
+    (a fresh random.Random(params.seed), never the global module) and
+    layering D-11's is_tagged() selector on top -- via tagged_candidates()
+    from test_trust_margin_rule.py -- to assign provenance. Reproducible
+    across processes: is_tagged() is hash-based (blake2b), not
+    RNG-derived, so tagging never depends on random.Random's internal
+    state or draw order.
+    """
+    rng = random.Random(params.seed)
+    n_colocated = int(params.station_count * params.colocated_share)
+    n_fresh = params.station_count - n_colocated
+
+    fresh_positions = rng.sample(range(1, int(params.total_route_mi)), n_fresh)
+    colocated_positions = [rng.choice(fresh_positions) for _ in range(n_colocated)]
+    positions = fresh_positions + colocated_positions
+
+    candidates = []
+    for i, position_mi in enumerate(positions):
+        price_cents = rng.randint(params.min_price_cents, params.max_price_cents)
+        candidates.append(
+            Candidate(
+                name=f"M{i}",
+                opis_id=i,
+                price_per_gallon=Decimal(price_cents) / Decimal(100),
+                distance_from_start_mi=Decimal(position_mi),
+            )
+        )
+    return tagged_candidates(candidates, params.estimate_share)
+
+
+class PruneMixedCorpusReductionGuardTests(SimpleTestCase):
+    """D-03's sibling reduction-floor guard, mirroring PruneReductionGuardTests'
+    shape exactly: a plain SimpleTestCase (not a Hypothesis property) so it
+    runs identically -- same corpus, same result -- on every commit.
+    """
+
+    def test_mixed_corpus_reduction_rate_exceeds_floor(self):
+        """A prune that has silently become a no-op, or one where
+        condition 3 never actually restricts anything, both score lower
+        here than the genuine measured rate. Do not adjust
+        PRUNE_MIXED_CORPUS_PARAMS or PRUNE_MIXED_REDUCTION_FLOOR to make
+        this pass (D-14/D-17)."""
+        candidates = build_mixed_provenance_corpus()
+        retained = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=PRUNE_MIXED_CORPUS_PARAMS.tank_range_mi,
+            total_route_mi=PRUNE_MIXED_CORPUS_PARAMS.total_route_mi,
+        )
+        reduction_rate = Decimal(1) - Decimal(len(retained)) / Decimal(len(candidates))
+
+        self.assertGreater(
+            reduction_rate,
+            PRUNE_MIXED_REDUCTION_FLOOR,
+            f"measured mixed-corpus reduction rate {reduction_rate} did not "
+            f"exceed PRUNE_MIXED_REDUCTION_FLOOR={PRUNE_MIXED_REDUCTION_FLOOR}. "
+            "Do not adjust PRUNE_MIXED_CORPUS_PARAMS or this floor to make a "
+            f"future run pass; candidate_count={len(candidates)}, "
+            f"retained_count={len(retained)}",
+        )
+
+    def test_build_mixed_provenance_corpus_is_deterministic_across_two_calls(self):
+        """Without random.Random(seed) freshly seeded per call, a corpus
+        that quietly consumed global RNG state would make the guard above
+        unreproducible."""
+        first = build_mixed_provenance_corpus()
+        second = build_mixed_provenance_corpus()
+        self.assertEqual(
+            [
+                (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                for c in first
+            ],
+            [
+                (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                for c in second
+            ],
+            "build_mixed_provenance_corpus() returned different corpora "
+            "across two consecutive calls -- it must be freshly seeded on "
+            "every call, never consuming global RNG state.",
+        )
+
+
+class PruneMarginBlockedRetentionTests(SimpleTestCase):
+    """D-03's mutation check and the anti-vacuity heart of this plan.
+
+    Without this class, a bug making condition 3 always TRUE -- i.e. the
+    margin never actually restricting anything -- is indistinguishable
+    from correct behaviour on an all-recorded corpus: every other test in
+    this module still passes, because condition 3 never fires there
+    either way, correct or broken.
+
+    Confirmed by hand (recorded verbatim in 21-05-SUMMARY.md): temporarily
+    editing prune.py so the provenance condition is always satisfied made
+    this class fail, specifically naming PruneMarginBlockedRetentionTests,
+    and reverting restored a byte-identical prune.py (confirmed via
+    `git diff --stat`, empty relative to this plan's Task 1 commit) and a
+    green suite.
+    """
+
+    def test_mixed_corpus_retained_set_is_a_strict_superset_of_the_forced_real_control(self):
+        """The primary evidence: prune the mixed corpus, then prune the
+        SAME corpus with every provenance forced to the recorded value,
+        and assert the first retained set STRICTLY contains the second.
+        Equal length is a FAILURE here, not a pass -- that is exactly what
+        a condition-3-never-fires bug would produce.
+        """
+        mixed = build_mixed_provenance_corpus()
+        forced_real = [replace(c, price_source="opis_indexed") for c in mixed]
+
+        mixed_retained = prune_dominated_candidates(
+            mixed,
+            tank_range_mi=PRUNE_MIXED_CORPUS_PARAMS.tank_range_mi,
+            total_route_mi=PRUNE_MIXED_CORPUS_PARAMS.total_route_mi,
+        )
+        control_retained = prune_dominated_candidates(
+            forced_real,
+            tank_range_mi=PRUNE_MIXED_CORPUS_PARAMS.tank_range_mi,
+            total_route_mi=PRUNE_MIXED_CORPUS_PARAMS.total_route_mi,
+        )
+
+        mixed_ids = {c.opis_id for c in mixed_retained}
+        control_ids = {c.opis_id for c in control_retained}
+
+        self.assertTrue(
+            control_ids.issubset(mixed_ids),
+            "the margin-aware retained set on the mixed-provenance corpus "
+            "must contain every opis_id the forced-real control retains -- "
+            f"missing={control_ids - mixed_ids!r}",
+        )
+        self.assertGreater(
+            len(mixed_ids),
+            len(control_ids),
+            "the margin-aware retained set must be a STRICT superset of "
+            "the forced-real control's retained set -- equal length is a "
+            "FAILURE here, not a pass; a prune where condition 3 never "
+            f"actually fires would retain the identical set. "
+            f"mixed_count={len(mixed_ids)}, control_count={len(control_ids)}",
+        )
+
+    def test_earlier_cheap_estimate_and_later_dear_real_tail_station_both_survive(self):
+        """Hand-built witness (pass 2, the tail branch): a cheap
+        estimate-priced station sits earlier in the total order than a
+        dearer real-priced station, and both reach FINISH. Under the
+        pre-margin rule the real-priced station would have been removed
+        -- the cheaper estimate-priced one would have qualified as its
+        dominator.
+        """
+        candidates = [
+            Candidate(
+                name="Cheap Estimate",
+                opis_id=1,
+                price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(10),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="Dear Real",
+                opis_id=2,
+                price_per_gallon=Decimal("2.00"),
+                distance_from_start_mi=Decimal(20),
+            ),
+        ]
+        # tank_range_mi == total_route_mi so every position's own supply
+        # interval trivially reaches FINISH, isolating pass 2's tail
+        # branch (the two distinct positions never collide in pass 1).
+        tank_range_mi = Decimal(1000)
+        total_route_mi = Decimal(1000)
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            {c.opis_id for c in result},
+            {1, 2},
+            "the dearer real-priced tail-reaching station (opis_id=2) must "
+            "survive despite an earlier, cheaper, estimate-priced station "
+            "(opis_id=1) also reaching FINISH -- under the pre-margin rule "
+            f"opis_id=2 would have been removed. Got "
+            f"{[c.opis_id for c in result]!r}",
+        )
+
+    def test_cheaper_co_located_estimate_and_dearer_co_located_real_both_survive_pass_one(self):
+        """Hand-built witness (pass 1, the co-located branch): at a shared
+        position, the cheaper station is estimate-priced and the dearer is
+        real-priced. Both must survive -- the estimate-priced station
+        because it is cheapest at the position, and the real-priced
+        station because its only cheaper-or-equal co-located rival is
+        estimate-priced, which may not dominate it.
+        """
+        candidates = [
+            Candidate(
+                name="Cheap Co-located Estimate",
+                opis_id=3,
+                price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(50),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="Dear Co-located Real",
+                opis_id=4,
+                price_per_gallon=Decimal("1.50"),
+                distance_from_start_mi=Decimal(50),
+            ),
+        ]
+        # A short tank range keeps neither station reaching FINISH, so
+        # this witness isolates pass 1 -- pass 2 never touches either
+        # candidate.
+        tank_range_mi = Decimal(10)
+        total_route_mi = Decimal(1000)
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            {c.opis_id for c in result},
+            {3, 4},
+            "both co-located stations must survive pass 1 -- the "
+            "estimate-priced one (opis_id=3) as the position's cheapest, "
+            "and the real-priced one (opis_id=4) because an "
+            "estimate-priced station may not dominate it. Got "
+            f"{[c.opis_id for c in result]!r}",
+        )
+
+    def test_cheaper_co_located_real_still_removes_dearer_co_located_estimate(self):
+        """Hand-built COUNTER-witness: at a shared position, the cheaper
+        station is real-priced and the dearer is estimate-priced. The
+        estimate-priced station must still be removed --
+        real-dominates-anything is unchanged. This is what rules out a
+        blanket dedup-within-provenance-class implementation, which would
+        pass the two witnesses above while quietly abandoning legitimate
+        reduction: such an implementation would wrongly retain BOTH
+        stations here too.
+        """
+        candidates = [
+            Candidate(
+                name="Cheap Co-located Real",
+                opis_id=5,
+                price_per_gallon=Decimal("1.00"),
+                distance_from_start_mi=Decimal(70),
+            ),
+            Candidate(
+                name="Dear Co-located Estimate",
+                opis_id=6,
+                price_per_gallon=Decimal("1.50"),
+                distance_from_start_mi=Decimal(70),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+        ]
+        tank_range_mi = Decimal(10)
+        total_route_mi = Decimal(1000)
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            {c.opis_id for c in result},
+            {5},
+            "the dearer co-located estimate-priced station (opis_id=6) "
+            "must still be removed by the cheaper co-located real-priced "
+            "station (opis_id=5) -- real-dominates-anything is unchanged. "
+            "A blanket dedup-within-provenance-class implementation would "
+            f"wrongly retain both. Got {[c.opis_id for c in result]!r}",
         )
