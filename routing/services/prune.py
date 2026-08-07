@@ -61,20 +61,29 @@ Write ``T`` for ``tank_range_mi``, ``L`` for ``total_route_mi``, ``pos_S``
 for a station's ``distance_from_start_mi``.
 
 **Station A is removable if and only if some station B, ranked strictly
-before A under the total order, satisfies both:**
+before A under the total order, satisfies all three:**
 
   1. ``price_B <= price_A``
   2. ``pos_B == pos_A``  **OR**  ``pos_B + T >= L``
+  3. ``margin_B <= margin_A`` (D-01, PROV-03)
 
 (``pos_B <= pos_A`` is implied by the total order and needs no separate
-check.) This is exactly interval containment: ``supply(B) = [pos_B,
-min(pos_B + T, L)]`` **contains** ``supply(A) = [pos_A, min(pos_A + T,
-L)]`` under precisely those two alternatives -- co-located (``pos_B ==
-pos_A``, so the two intervals start together and ``B``'s price is no
-higher) or B's own interval already reaches FINISH (``pos_B + T >= L``, so
-``supply(B) = [pos_B, L]`` contains any downstream station's interval
-automatically, since ``pos_B <= pos_A`` and any interval's right edge is
-``<= L``).
+check.) Conditions 1 and 2 together are exactly interval containment:
+``supply(B) = [pos_B, min(pos_B + T, L)]`` **contains** ``supply(A) =
+[pos_A, min(pos_A + T, L)]`` under precisely those two alternatives --
+co-located (``pos_B == pos_A``, so the two intervals start together and
+``B``'s price is no higher) or B's own interval already reaches FINISH
+(``pos_B + T >= L``, so ``supply(B) = [pos_B, L]`` contains any downstream
+station's interval automatically, since ``pos_B <= pos_A`` and any
+interval's right edge is ``<= L``).
+
+Condition 3 is the trust margin, read only through
+``routing.services.solver.trust_margin_for`` (equivalently, its
+``is_estimate_priced`` boolean, since the margin is binary: ``trust_margin``
+for an ``eia_regional_estimate``-priced candidate, ``0`` otherwise). It
+reduces to one sentence, derived in full in "Fixed-charge objective" below:
+**an estimate-priced B may not dominate a real-priced A.**
+Real-dominates-anything and estimate-dominates-estimate are unchanged.
 
 **Total order and co-located pairs (D-11), carried forward.** The total
 order is load-bearing, not cosmetic: two stations at the identical position
@@ -107,25 +116,64 @@ route infeasible -- whatever ``A`` could do, ``B`` alone can already do at
 least as cheaply.
 
 **Fixed-charge objective (fuel dollars plus a flat penalty per station
-actually purchased at).** This is the one line the old proof got wrong.
-With a uniform per-stop charge, folding ``A``'s purchase into ``B`` costs
+actually purchased at, plus a flat per-candidate trust margin -- D-01,
+PROV-03).** This is the one line the old proof got wrong, twice now.
+Before the trust margin, folding ``A``'s purchase into ``B`` cost
 
     cost_B(q) = penalty + price_B * q  <=  penalty + price_A * q = cost_A(q)
 
-**pointwise in q** -- for any quantity ``q`` of gallons, buying it at ``B``
-instead of ``A`` is never more expensive, and it costs **zero extra
-stops**: a single station absorbs ``A``'s entire role, whether that
-station already had a purchase in the plan (the gallons merge into an
-existing stop) or not (one purchase simply relocates to an earlier
-position; the stop count is unchanged). This single-station substitution is
-exactly what condition 2 guarantees is always available.
+**pointwise in q**, which needed only ``price_B <= price_A``. With a
+per-candidate margin (``margin_B``/``margin_A``, read through
+``routing.services.solver.trust_margin_for``) added to the same per-purchase
+cost, those become
+
+    cost_B(q) = penalty + margin_B + price_B * q
+             <= penalty + margin_A + price_A * q = cost_A(q)
+
+which holds pointwise in ``q`` iff **both** ``margin_B <= margin_A`` **and**
+``price_B <= price_A``. Because the margin is a *fixed* charge while price
+is *per-gallon*, no finite bound on the margin restores the old
+price-only condition -- at small enough ``q`` the margin term always
+dominates, so this cannot be dissolved by choosing a small margin value.
+The single-station substitution still costs **zero extra stops**: a single
+station absorbs ``A``'s entire role, whether that station already had a
+purchase in the plan (the gallons merge into an existing stop) or not (one
+purchase simply relocates to an earlier position; the stop count is
+unchanged). This single-station substitution is exactly what condition 2
+guarantees is always available, so the ``2 * penalty`` obstruction to
+multi-station covers described two paragraphs below is unaffected by the
+margin, and the rule stays scoped to single-station covers exactly as
+before.
+
+The margin is binary (``routing.services.solver.is_estimate_priced``), so
+the new predicate reduces to one sentence: **an estimate-priced station may
+not dominate a real-priced one.** Real-dominates-anything and
+estimate-dominates-estimate are unchanged. Two consequences follow, both
+recorded deliberately. First, the rule is **strictly weaker** than the
+margin-free rule -- it retains a superset of what the margin-free rule
+retains, never fewer, so ``estimate_transition_count`` (the dispatch
+signal downstream code reads) can only move *upward*, the conservative
+direction for dispatch. Second, at zero estimate-priced rows every
+candidate's margin is equal (``0``), so condition 3 is vacuously satisfied
+for every pair and the retained set is **provably identical** to what the
+margin-free rule would retain -- this is the phase's own inertness proof,
+not merely an assertion about one measured run.
+
+One further consequence the proof must not omit, because it is the thing a
+later reader will otherwise get wrong: condition 3 is
+**provenance-shaped, not magnitude-shaped**. It compares which side of the
+binary each station sits on, never the margin's dollar value, so it
+applies at every ``trust_margin`` including zero. The inertness claim
+above therefore rests on the dataset holding zero estimate-priced rows,
+not on the margin itself being zero.
 
 This does **not** extend to two stations jointly covering ``A``: with a
 per-stop charge, splitting ``A``'s purchase across ``B1`` and ``B2`` costs
-``2 * penalty + price_B1 * q1 + price_B2 * q2``, which is not
-pointwise-comparable to ``penalty + price_A * q`` -- the ``2 * penalty``
-term can dominate an arbitrarily small fuel saving. That is why this rule
-admits single-station covers only, never multi-station ones.
+``2 * penalty + margin_B1 + margin_B2 + price_B1 * q1 + price_B2 * q2``,
+which is not pointwise-comparable to ``penalty + margin_A + price_A * q``
+-- the ``2 * penalty`` term alone can already dominate an arbitrarily small
+fuel saving, before the margin terms are even considered. That is why this
+rule admits single-station covers only, never multi-station ones.
 
 ## Feasibility corollary
 
@@ -213,7 +261,7 @@ consequence of the input shape, not an oversight.
 """
 from decimal import Decimal
 
-from routing.services.solver import Candidate
+from routing.services.solver import Candidate, is_estimate_priced
 
 
 def _as_decimal(value):
@@ -230,20 +278,34 @@ def prune_dominated_candidates(
     returned element is one of the input objects, never a reconstruction.
     An empty input returns an empty list.
 
-    Implementation shape (a plain sort plus one linear pass, no tuned
-    constants): first keep only the first-ranked (cheapest, lowest
-    ``opis_id``) station at each distinct position -- this alone resolves
-    every co-located-pair case, because the total order already places the
-    dominating station first among ties at a shared position. Then, among
-    the survivors whose own supply interval reaches FINISH
-    (``pos + T >= L``), keep only the strict price prefix-minima in total
-    order -- a later such station is removable exactly when an earlier one
-    is no more expensive, per condition 2's ``pos_B + T >= L`` branch.
-    Stations whose own interval does not reach FINISH are never dominators
-    under that branch (their own condition 2 fails), and any B that could
-    remove one of them there would already have to sit at or before it in
-    position with `pos_B + T >= L`, which -- since B ranks first in the
-    total order -- means B is at least as cheap as any co-located duplicate
+    Carries no ``penalty`` parameter and no undeclared knob of any kind --
+    the parameter tuple is exactly ``(candidates, tank_range_mi,
+    total_route_mi)`` -- and, per D-01, no ``trust_margin`` parameter
+    either: the margin, like the penalty, is never a prune parameter. It is
+    read off each candidate through ``routing.services.solver
+    .is_estimate_priced`` (condition 3 above), the module's single shared
+    decision-position provenance read.
+
+    Implementation shape (a plain sort plus two linear passes, no tuned
+    constants): first keep only the candidates at each distinct position
+    that are not dominated by an already-retained candidate there under
+    both condition 1 (price) and condition 3 (provenance) -- this alone
+    resolves every co-located-pair case, because the total order already
+    places cheaper stations first among ties at a shared position, and an
+    estimate-priced candidate may be dominated by any cheaper-or-equal
+    retained candidate while a real-priced candidate may only be dominated
+    by a cheaper-or-equal retained *real-priced* one. Then, among the
+    survivors whose own supply interval reaches FINISH (``pos + T >= L``),
+    keep only the candidates not dominated by an earlier retained
+    tail-reaching candidate under the same two conditions -- a later such
+    station is removable exactly when an earlier, no-more-expensive,
+    non-dominated-by-provenance one is available, per condition 2's
+    ``pos_B + T >= L`` branch. Stations whose own interval does not reach
+    FINISH are never dominators under that branch (their own condition 2
+    fails), and any B that could remove one of them there would already
+    have to sit at or before it in position with `pos_B + T >= L`, which --
+    since B ranks first in the total order -- means B is at least as cheap
+    as, and no more provenance-restricted than, any co-located duplicate
     already removed in the first pass; nothing is lost by resolving the two
     passes in this order.
     """
@@ -255,25 +317,89 @@ def prune_dominated_candidates(
         key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
     )
 
-    # Pass 1: keep only the first-ranked station at each distinct position.
+    # Pass 1: keep only candidates not dominated by an already-retained
+    # candidate at the same position, under conditions 1 (price) and 3
+    # (provenance). Candidates sharing a position are visited in ascending
+    # price order (the total order's second key), so the cheapest retained
+    # price seen so far at the current position -- tracked separately for
+    # "any provenance" and "real provenance only" -- is enough; no
+    # already-visited candidate at the position can later become cheaper.
     deduped = []
-    seen_positions = set()
+    current_position = None
+    position_best_any_price = None
+    position_best_real_price = None
     for candidate in ordered:
-        if candidate.distance_from_start_mi in seen_positions:
+        if candidate.distance_from_start_mi != current_position:
+            current_position = candidate.distance_from_start_mi
+            position_best_any_price = None
+            position_best_real_price = None
+
+        estimate_priced = is_estimate_priced(candidate)
+        if estimate_priced:
+            # An estimate-priced candidate may be dominated by ANY
+            # cheaper-or-equal retained candidate at this position,
+            # real or estimate (real-dominates-anything,
+            # estimate-dominates-estimate).
+            dominated = (
+                position_best_any_price is not None
+                and candidate.price_per_gallon >= position_best_any_price
+            )
+        else:
+            # A real-priced candidate may be dominated only by a
+            # cheaper-or-equal retained REAL-priced candidate -- an
+            # estimate-priced one may never dominate it (condition 3).
+            dominated = (
+                position_best_real_price is not None
+                and candidate.price_per_gallon >= position_best_real_price
+            )
+        if dominated:
             continue
-        seen_positions.add(candidate.distance_from_start_mi)
+
         deduped.append(candidate)
+        if position_best_any_price is None:
+            position_best_any_price = candidate.price_per_gallon
+        if not estimate_priced and position_best_real_price is None:
+            position_best_real_price = candidate.price_per_gallon
 
     # Pass 2: among stations whose own supply interval reaches FINISH,
-    # keep only the strict price prefix-minima in total order.
+    # keep only the candidates not dominated by an earlier retained
+    # tail-reaching candidate under conditions 1 and 3 -- two running
+    # minima, one over every retained tail-reaching candidate ("any") and
+    # one over retained tail-reaching real-priced candidates only
+    # ("real"), since unlike pass 1's single-position scope, price is not
+    # monotonic across positions and either minimum can be set by an
+    # earlier, geographically distant station.
     survivors = []
-    running_min_price = None
+    running_min_price_any = None
+    running_min_price_real = None
     for candidate in deduped:
         reaches_finish = candidate.distance_from_start_mi + tank_range_mi >= total_route_mi
         if reaches_finish:
-            if running_min_price is not None and candidate.price_per_gallon >= running_min_price:
+            estimate_priced = is_estimate_priced(candidate)
+            if estimate_priced:
+                removed = (
+                    running_min_price_any is not None
+                    and candidate.price_per_gallon >= running_min_price_any
+                )
+            else:
+                removed = (
+                    running_min_price_real is not None
+                    and candidate.price_per_gallon >= running_min_price_real
+                )
+            if removed:
                 continue
-            running_min_price = candidate.price_per_gallon
+
+            running_min_price_any = (
+                candidate.price_per_gallon
+                if running_min_price_any is None
+                else min(running_min_price_any, candidate.price_per_gallon)
+            )
+            if not estimate_priced:
+                running_min_price_real = (
+                    candidate.price_per_gallon
+                    if running_min_price_real is None
+                    else min(running_min_price_real, candidate.price_per_gallon)
+                )
         survivors.append(candidate)
 
     return survivors
