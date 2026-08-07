@@ -101,20 +101,59 @@ TAG_SEED = 20260807
 # D-11's share ladder, fixed before any measurement is taken against it.
 TAG_SHARE_LADDER = (Decimal("0.10"), Decimal("0.25"), Decimal("0.50"))
 
-# D-09: explicitly unset. Plan 21-03 is the ONLY plan permitted to give
-# this a value -- by inverting `PinnedConstantsAreUnmeasuredTests` below,
-# never by deleting it. Its being `None` here, committed before any
-# dispersion figure existed, is what makes "the ladder predates the
-# number" a checkable property of the git history rather than an
-# assertion in a SUMMARY.
-MARGIN_LADDER = None
+# D-09/D-07: measured by plan 21-03's `manage.py measure_price_dispersion`
+# (routing/management/commands/measure_price_dispersion.py), against the
+# committed data/stations_geocoded.csv replayed via seed_stations, and
+# recorded verbatim in
+# .planning/phases/21-provenance-trust-margin/21-PRICE-DISPERSION.txt
+# (git_head_sha 3428fe4f79b856e842252b61255ec6d977468784,
+# csv_git_blob_hash bc4c809fe9b0b247cea12ee873da8470a38b3e21).
+#
+# Measured inputs (from that artifact):
+#   pooled_median_absolute_deviation_usd_per_gallon = 0.19304809
+#     (median_absolute_deviation_from_padd_mean, pooled_deviation_sample_
+#     size=6290, equal to the total routable station count)
+#   typical_fill_median_gallons = 56.63065035
+#     (median_purchased_gallons_across_the_twelve_pinned_corridors,
+#     typical_fill_sample_size=18)
+#   base = 0.19304809 * 56.63065035 = 10.9324388855253315
+#
+# Applying MARGIN_LADDER_MULTIPLIERS (0.5x, 1x, 2x) to that base, quantized
+# to cents with ROUND_HALF_UP, gives the three rungs below -- this is
+# `derive_margin_rungs()` applied exactly, not a hand-picked or rounded
+# figure; see `MarginLadderDerivationRoundTripTests` below, which asserts
+# `derive_margin_rungs(<these two measured literals>) == MARGIN_LADDER`
+# byte-for-byte. These rungs were produced by applying a formula committed
+# one plan earlier (21-02) and must NOT be adjusted by hand to make a
+# later sweep (plan 21-08) produce a more convenient answer -- if a rung
+# is ever wrong, the fix is re-running the measurement and re-transcribing
+# every value here, never a silent hand-edit to one number.
+MARGIN_LADDER = (Decimal("5.47"), Decimal("10.93"), Decimal("21.86"))
 
-# D-09/D-07: also explicitly unset for the same reason as `MARGIN_LADDER`
-# above. Plan 21-03 instantiates this alongside the ladder, since both
-# come out of the same dispersion measurement pass (per-PADD averages are
-# a byproduct of computing the per-PADD deviations `MARGIN_LADDER`'s base
-# is derived from).
-PADD_AVERAGE_PRICE = None
+# D-09/D-07: measured in the same `measure_price_dispersion` pass as
+# `MARGIN_LADDER` above (the per-PADD averages are a byproduct of
+# computing the per-PADD deviations the ladder's base is derived from),
+# recorded verbatim in the same 21-PRICE-DISPERSION.txt artifact. Keyed on
+# the PADD identifier form `routing.services.regions.REGION_LABELS` /
+# `REGION_STATES` use (e.g. "PADD2", "CALIFORNIA", "PADD5_EX_CA"). Station
+# counts behind each average, for provenance:
+#   CALIFORNIA=8, PADD1A=84, PADD1B=447, PADD1C=1002, PADD2=2659,
+#   PADD3=1457, PADD4=356, PADD5_EX_CA=277 (sums to 6290, the total
+#   routable station count).
+#
+# Plan 21-08's realism sweep substitutes these prices into tagged
+# candidates, reproducing the real property that same-region estimates
+# share one price and carry zero differentiation among themselves.
+PADD_AVERAGE_PRICE = {
+    "CALIFORNIA": Decimal("4.79150000"),
+    "PADD1A": Decimal("3.76667857"),
+    "PADD1B": Decimal("3.77763535"),
+    "PADD1C": Decimal("3.40426846"),
+    "PADD2": Decimal("3.39745437"),
+    "PADD3": Decimal("3.20413223"),
+    "PADD4": Decimal("3.52822706"),
+    "PADD5_EX_CA": Decimal("3.70196029"),
+}
 
 
 def derive_margin_rungs(dispersion_usd_per_gallon, typical_fill_gallons):
@@ -352,14 +391,49 @@ class TaggedCandidatesTests(SimpleTestCase):
         self.assertFalse(all(tagged_flags))
 
 
-class PinnedConstantsAreUnmeasuredTests(SimpleTestCase):
-    def test_margin_ladder_and_padd_average_price_are_none(self):
-        # Plan 21-03 inverts this test (rather than deleting it) once the
-        # dispersion measurement runs. Until then, this passing assertion
-        # is the checkable proof that no numeric margin value or PADD
-        # average existed when the rule above was pinned.
-        self.assertIsNone(MARGIN_LADDER)
-        self.assertIsNone(PADD_AVERAGE_PRICE)
+class MarginLadderAndPaddAveragePriceAreMeasuredTests(SimpleTestCase):
+    """Formerly `PinnedConstantsAreUnmeasuredTests.
+    test_margin_ladder_and_padd_average_price_are_none` -- until plan
+    21-03, that test asserted both constants were `None`, and its passing
+    was the checkable proof that no numeric margin value or PADD average
+    existed when the rule above was pinned (plan 21-02, D-09). Plan 21-03
+    inverts it here, per this project's standing "invert the guard, don't
+    delete it" rule: the `None` state was the evidence that the rule
+    predated the numbers; this inverted form is the evidence that the
+    numbers arrived exactly once, in the correct pinned shape, and no
+    earlier."""
+
+    def test_margin_ladder_is_a_strictly_increasing_three_tuple_of_cent_quantized_decimals(self):
+        self.assertIsInstance(MARGIN_LADDER, tuple)
+        self.assertEqual(len(MARGIN_LADDER), 3)
+        for value in MARGIN_LADDER:
+            self.assertIsInstance(value, Decimal)
+            self.assertEqual(value, value.quantize(Decimal("0.01")))
+        self.assertTrue(MARGIN_LADDER[0] < MARGIN_LADDER[1] < MARGIN_LADDER[2])
+
+    def test_padd_average_price_is_a_non_empty_mapping_of_positive_decimals(self):
+        self.assertIsInstance(PADD_AVERAGE_PRICE, dict)
+        self.assertGreater(len(PADD_AVERAGE_PRICE), 0)
+        for region_code, price in PADD_AVERAGE_PRICE.items():
+            self.assertIsInstance(region_code, str)
+            self.assertIsInstance(price, Decimal)
+            self.assertGreater(price, 0)
+
+
+class MarginLadderDerivationRoundTripTests(SimpleTestCase):
+    """T-21-11: closes the loop between plan 21-02's pinned formula and
+    plan 21-03's measured numbers. If someone later edits a rung by hand
+    without re-deriving it, this fails -- the closed-form equality that
+    makes the derivation chain checkable rather than narrated."""
+
+    def test_derive_margin_rungs_on_the_measured_inputs_reproduces_margin_ladder(self):
+        # The two literals below are transcribed verbatim from
+        # 21-PRICE-DISPERSION.txt -- the same measured pooled median
+        # absolute deviation and typical-fill median cited in
+        # MARGIN_LADDER's own provenance comment above.
+        measured_dispersion = Decimal("0.19304809")
+        measured_fill = Decimal("56.63065035")
+        self.assertEqual(derive_margin_rungs(measured_dispersion, measured_fill), MARGIN_LADDER)
 
 
 # ---------------------------------------------------------------------------
