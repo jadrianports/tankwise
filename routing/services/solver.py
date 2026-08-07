@@ -97,6 +97,14 @@ class FuelStop:
     `station_data_note`) and never read by the recurrence in either solver
     arm. `greedy.py`, `naive_baseline.py` and the frozen-greedy referee
     build `FuelStop`s without it and take the `None` default by design.
+
+    The bypass pair gains a companion PROV-03 pair, last and additive
+    like every field before it, defaulting to `0`/`None` identically:
+    narrows the SAME bypass event to only its estimate-priced members,
+    populated only when this stop itself is real-priced -- how many
+    cheaper `eia_regional_estimate` stations were reachable and not
+    taken, and what fuel-dollar saving those rejections gave up, from raw
+    prices only. Set by both solver arms (D-04), never by `greedy.py`.
     """
 
     name: str
@@ -115,6 +123,8 @@ class FuelStop:
     bypassed_cheaper_count: int = 0
     bypassed_saving_forgone: Decimal | None = None
     price_source: str | None = None
+    bypassed_estimate_count: int = 0
+    bypassed_estimate_saving_forgone: Decimal | None = None
 
 
 @dataclass(frozen=True)

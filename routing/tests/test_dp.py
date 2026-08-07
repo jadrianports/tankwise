@@ -15,7 +15,8 @@ from routing.services.dp import (
     useful_fill_levels_mi,
 )
 from routing.services.exceptions import InfeasibleRouteError
-from routing.services.solver import Candidate, PurchaseReason
+from routing.services.heuristic import solve_penalty_aware_heuristic
+from routing.services.solver import ESTIMATE_PRICE_SOURCE, Candidate, PurchaseReason
 
 
 def _candidate(name, opis_id, price, distance):
@@ -355,3 +356,117 @@ class ReasonReconstructionRegressionTests(SimpleTestCase):
         self.assertEqual(only_stop.purchase_reason, PurchaseReason.REACH_FINISH)
         self.assertEqual(only_stop.gallons, Decimal("1"))
         self.assertEqual(only_stop.cost, Decimal("1.01"))
+
+
+class BypassedEstimateDisclosureTests(SimpleTestCase):
+    """PROV-03 (D-19/D-20): `bypassed_estimate_count`/
+    `bypassed_estimate_saving_forgone` -- how many strictly-cheaper
+    estimate-priced stations a kept REAL-priced stop passed over, and
+    what fuel-dollar saving those rejections gave up, from raw prices
+    only. Built on `test_bypass_cheaper_not_worth_stop_at_high_penalty`'s
+    own scenario (three stations, penalty=35 bypasses the cheaper middle
+    one) -- here B additionally carries `ESTIMATE_PRICE_SOURCE`, so the
+    same bypass now has a provenance direction to disclose.
+
+    The both-arms test is this class's own anti-vacuity guard (mirrors
+    the plan's own stated concern): without it, a DP-only implementation
+    would pass every other assertion here, because a hand-built
+    three-station scenario like this one dispatches to the exact arm by
+    construction -- the heuristic's OWN bypass branch is only proven by
+    running it directly, not by inference from the DP's result."""
+
+    def _mixed_provenance_candidates(self):
+        return [
+            Candidate(
+                name="A", opis_id=1, price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal(250),
+            ),
+            Candidate(
+                name="B", opis_id=2, price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal(500),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="C", opis_id=3, price_per_gallon=Decimal("3.55"),
+                distance_from_start_mi=Decimal(700),
+            ),
+        ]
+
+    def _params(self):
+        return dict(
+            total_route_mi=Decimal(1050),
+            tank_range_mi=Decimal(500),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.5"),
+            penalty=Decimal(35),
+        )
+
+    def test_dp_arm_populates_the_pair_on_the_kept_real_priced_stop(self):
+        plan = solve_fixed_charge(self._mixed_provenance_candidates(), **self._params())
+        self.assertNotIn(2, [s.opis_id for s in plan.stops])
+        first_stop = plan.stops[0]
+        self.assertEqual(
+            first_stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+        )
+        self.assertEqual(first_stop.bypassed_estimate_count, 1)
+        self.assertGreater(first_stop.bypassed_estimate_saving_forgone, Decimal(0))
+
+    def test_heuristic_arm_populates_the_same_pair_on_the_same_scenario(self):
+        """The both-arms parity anti-vacuity guard (see class docstring)."""
+        plan = solve_penalty_aware_heuristic(
+            self._mixed_provenance_candidates(), **self._params()
+        )
+        self.assertNotIn(2, [s.opis_id for s in plan.stops])
+        first_stop = plan.stops[0]
+        self.assertEqual(
+            first_stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+        )
+        self.assertEqual(first_stop.bypassed_estimate_count, 1)
+        self.assertGreater(first_stop.bypassed_estimate_saving_forgone, Decimal(0))
+
+    def test_estimate_priced_stop_never_carries_the_pair_regardless_of_what_it_bypassed(self):
+        # The purchasing station itself (A) is now ALSO estimate-priced --
+        # the pair must stay at its default even though A still bypasses
+        # the cheaper estimate-priced B, because the sentence only ever
+        # fires on a kept REAL-priced stop (D-19).
+        candidates = [
+            Candidate(
+                name="A", opis_id=1, price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal(250),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="B", opis_id=2, price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal(500),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="C", opis_id=3, price_per_gallon=Decimal("3.55"),
+                distance_from_start_mi=Decimal(700),
+            ),
+        ]
+        for solver_fn in (solve_fixed_charge, solve_penalty_aware_heuristic):
+            plan = solver_fn(candidates, **self._params())
+            first_stop = plan.stops[0]
+            self.assertEqual(
+                first_stop.purchase_reason,
+                PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP,
+            )
+            self.assertEqual(first_stop.bypassed_estimate_count, 0)
+            self.assertIsNone(first_stop.bypassed_estimate_saving_forgone)
+
+    def test_all_recorded_dataset_gives_zero_count_on_every_stop(self):
+        # The unmodified all-`opis_indexed` scenario
+        # (`test_bypass_cheaper_not_worth_stop_at_high_penalty`'s own
+        # candidates): a genuine bypass still fires (bypassed_cheaper_count
+        # >= 1), but zero of it is estimate-priced, on either arm.
+        candidates = [
+            _candidate("A", 1, "3.50", 250),
+            _candidate("B", 2, "3.00", 500),
+            _candidate("C", 3, "3.55", 700),
+        ]
+        for solver_fn in (solve_fixed_charge, solve_penalty_aware_heuristic):
+            plan = solver_fn(candidates, **self._params())
+            for stop in plan.stops:
+                self.assertEqual(stop.bypassed_estimate_count, 0)
+                self.assertIsNone(stop.bypassed_estimate_saving_forgone)

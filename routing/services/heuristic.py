@@ -146,13 +146,15 @@ def solve_penalty_aware_heuristic(
 
     Only `name`, `opis_id`, `price_per_gallon`, `distance_from_start_mi`,
     `gallons`, `cost`, `purchase_reason`, `reason_target_opis_id`,
-    `reason_target_name`, `bypassed_cheaper_count`, and
-    `bypassed_saving_forgone` are populated on each returned `FuelStop` --
-    `skipped_count`, `skipped_avg_price`, `price_percentile`, and
-    `corridor_avg_price` are left at their dataclass defaults, exactly as
-    `dp.solve_fixed_charge` and `greedy.solve_greedy` leave them, because
-    `solver.solve()` rebuilds those over the FULL, unpruned candidate list
-    itself (D-20) regardless of which producer built the raw plan.
+    `reason_target_name`, `bypassed_cheaper_count`,
+    `bypassed_saving_forgone`, and (PROV-03, D-04) the
+    `bypassed_estimate_*` disclosure pair are populated on each returned
+    `FuelStop` -- `skipped_count`, `skipped_avg_price`, `price_percentile`,
+    and `corridor_avg_price` are left at their dataclass defaults, exactly
+    as `dp.solve_fixed_charge` and `greedy.solve_greedy` leave them,
+    because `solver.solve()` rebuilds those over the FULL, unpruned
+    candidate list itself (D-20) regardless of which producer built the
+    raw plan.
     """
     candidates = list(candidates)
     ordered = sorted(
@@ -221,7 +223,9 @@ def solve_penalty_aware_heuristic(
 
     def _make_stop(
         name, opis_id, price, position, buy_mi, reason, target, *,
-        bypassed_count=0, bypassed_saving=None, price_source,
+        bypassed_count=0, bypassed_saving=None,
+        bypassed_estimate_count=0, bypassed_estimate_saving_forgone=None,
+        price_source,
     ):
         # `price_source` is keyword-only with NO default, deliberately --
         # every call site must state it explicitly, so a forgotten site is
@@ -231,6 +235,11 @@ def solve_penalty_aware_heuristic(
         # the walk currently stands), never the upcoming target's own
         # provenance (where the walk is going next) -- getting that
         # backwards would produce a plausible-looking but wrong plan.
+        #
+        # `bypassed_estimate_count`/`bypassed_estimate_saving_forgone`
+        # (PROV-03, D-04/D-19/D-20) DO default -- only the
+        # BYPASS_CHEAPER_NOT_WORTH_STOP call site ever passes them, the
+        # same asymmetry `bypassed_count`/`bypassed_saving` already have.
         gallons = buy_mi / mpg
         return FuelStop(
             name=name,
@@ -245,6 +254,8 @@ def solve_penalty_aware_heuristic(
             bypassed_cheaper_count=bypassed_count,
             bypassed_saving_forgone=bypassed_saving,
             price_source=price_source,
+            bypassed_estimate_count=bypassed_estimate_count,
+            bypassed_estimate_saving_forgone=bypassed_estimate_saving_forgone,
         )
 
     pos = Decimal(0)
@@ -253,6 +264,13 @@ def solve_penalty_aware_heuristic(
     current_name = "START"
     current_opis_id = None
     current_price_source = None
+    # PROV-03: the walk's own current-station Candidate object, tracked
+    # alongside the walk's existing provenance-string local so the gate
+    # on the purchasing station's own provenance can go through
+    # `solver.is_estimate_priced` directly (a real Candidate already has
+    # the attribute that function reads), rather than reconstructing one
+    # from the bare string.
+    current_candidate = None
     stops = []
 
     while True:
@@ -288,6 +306,7 @@ def solve_penalty_aware_heuristic(
             current_name = target.name
             current_opis_id = target.opis_id
             current_price_source = target.price_source
+            current_candidate = target
             continue
 
         # Real, purchasable station from here on.
@@ -335,6 +354,7 @@ def solve_penalty_aware_heuristic(
             current_name = target.name
             current_opis_id = target.opis_id
             current_price_source = target.price_source
+            current_candidate = target
             continue
 
         # A cheaper station exists within one tank -- the penalty-aware
@@ -365,10 +385,16 @@ def solve_penalty_aware_heuristic(
             current_name = target_full.name
             current_opis_id = target_full.opis_id
             current_price_source = target_full.price_source
+            current_candidate = target_full
             continue
 
         target_full_pos = total_route_mi if target_full is None else target_full.distance_from_start_mi
         bypassed = [c for c in cheaper if c.distance_from_start_mi < target_full_pos]
+        # PROV-03 (D-19/D-20): the same `bypassed` list, narrowed to its
+        # estimate-priced members -- via `solver.is_estimate_priced`
+        # directly on each real Candidate, never a direct provenance
+        # comparison here (see PriceSourceUsagePurityTest).
+        bypassed_estimate = [c for c in bypassed if solver.is_estimate_priced(c)]
         saving_total = Decimal(0)
         for c in bypassed:
             c_gap = c.distance_from_start_mi - pos
@@ -410,11 +436,27 @@ def solve_penalty_aware_heuristic(
                 break
             buy_mi = tank_range_mi - fuel
             if buy_mi > 0:
+                # PROV-03 (D-19/D-20): the disclosure pair, gated on the
+                # PURCHASING station itself being real-priced -- an
+                # estimate-priced stop never carries this pair, regardless
+                # of what it bypassed.
+                estimate_bypassed_count = 0
+                estimate_bypassed_saving = None
+                if bypassed_estimate and not solver.is_estimate_priced(current_candidate):
+                    estimate_saving_total = Decimal(0)
+                    for c in bypassed_estimate:
+                        c_gap = c.distance_from_start_mi - pos
+                        c_buy_mi = max(Decimal(0), c_gap - fuel)
+                        estimate_saving_total += (c_buy_mi / mpg) * (price_here - c.price_per_gallon)
+                    estimate_bypassed_count = len(bypassed_estimate)
+                    estimate_bypassed_saving = estimate_saving_total
                 stops.append(
                     _make_stop(
                         current_name, current_opis_id, price_here, pos, buy_mi,
                         PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP, target_full,
                         bypassed_count=len(bypassed), bypassed_saving=saving_total,
+                        bypassed_estimate_count=estimate_bypassed_count,
+                        bypassed_estimate_saving_forgone=estimate_bypassed_saving,
                         price_source=current_price_source,
                     )
                 )
@@ -424,6 +466,7 @@ def solve_penalty_aware_heuristic(
             current_name = target_full.name
             current_opis_id = target_full.opis_id
             current_price_source = target_full.price_source
+            current_candidate = target_full
             continue
 
         # Worth the extra stop -- buy just enough here to reach the
@@ -449,6 +492,7 @@ def solve_penalty_aware_heuristic(
         current_name = target.name
         current_opis_id = target.opis_id
         current_price_source = target.price_source
+        current_candidate = target
 
     # The walk above commits to a cheaper `target` and advances
     # `current_name`/`current_opis_id` to it before checking whether the

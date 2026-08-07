@@ -595,7 +595,13 @@ from decimal import Decimal
 from fractions import Fraction
 
 from routing.services.exceptions import DeadlineExceededError, InfeasibleRouteError
-from routing.services.solver import FuelPlan, FuelStop, PurchaseReason, trust_margin_for
+from routing.services.solver import (
+    FuelPlan,
+    FuelStop,
+    PurchaseReason,
+    is_estimate_priced,
+    trust_margin_for,
+)
 
 # D-12's tolerance band for the DP's own relaxation and winner-selection
 # comparisons: two objectives within this band are treated as tied and
@@ -1253,7 +1259,12 @@ class _EdgeInfo:
     purchase it represents was chosen -- never re-derived later by
     inspecting the finished plan (D-03). `price_source` is copied from the
     candidate at edge-construction time, exactly like every other field
-    here, and is never re-looked-up from the finished plan either."""
+    here, and is never re-looked-up from the finished plan either.
+
+    The trailing pair narrows the same truly-bypassed set (see the
+    relaxation loop below) to its estimate-priced members, populated only
+    when the purchasing station itself is real-priced -- PROV-03's
+    disclosure fact, mirroring the bypass pair above it exactly."""
 
     name: str
     opis_id: int
@@ -1267,6 +1278,8 @@ class _EdgeInfo:
     bypassed_cheaper_count: int
     bypassed_saving_forgone: Decimal | None
     price_source: str | None = None
+    bypassed_estimate_count: int = 0
+    bypassed_estimate_saving_forgone: Decimal | None = None
 
 
 @dataclass
@@ -1929,6 +1942,8 @@ def solve_fixed_charge(
                     )
                     bypassed_count = 0
                     bypassed_saving = None
+                    estimate_bypassed_count = 0
+                    estimate_bypassed_saving = None
 
                     if target_index == finish:
                         # REACH_FINISH always overrides -- this edge's
@@ -1984,6 +1999,33 @@ def solve_fixed_charge(
                             reason = PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
                             bypassed_count = len(truly_bypassed)
                             bypassed_saving = saving_total
+                            # PROV-03 (D-19/D-20): narrow this SAME
+                            # truly-bypassed set to its estimate-priced
+                            # members, gated on the purchasing station
+                            # itself being real-priced -- read only
+                            # through `is_estimate_priced`, never a direct
+                            # provenance comparison here (see
+                            # PriceSourceUsagePurityTest).
+                            if not is_estimate_priced(station):
+                                truly_bypassed_estimate = [
+                                    (p, idx)
+                                    for (p, idx) in truly_bypassed
+                                    if is_estimate_priced(ordered[idx])
+                                ]
+                                if truly_bypassed_estimate:
+                                    estimate_saving_total = Decimal(0)
+                                    for cheaper_pos, cheaper_idx in truly_bypassed_estimate:
+                                        cheaper_gap = cheaper_pos - pos
+                                        cheaper_buy_mi = max(
+                                            Decimal(0), cheaper_gap - fuel_on_arrival
+                                        )
+                                        cheaper_gallons = cheaper_buy_mi / mpg
+                                        estimate_saving_total += cheaper_gallons * (
+                                            station.price_per_gallon
+                                            - ordered[cheaper_idx].price_per_gallon
+                                        )
+                                    estimate_bypassed_count = len(truly_bypassed_estimate)
+                                    estimate_bypassed_saving = estimate_saving_total
                         elif ahead_has_cheaper:
                             reason = PurchaseReason.FILL_TO_CONTINUE
                         else:
@@ -2004,6 +2046,8 @@ def solve_fixed_charge(
                         bypassed_cheaper_count=bypassed_count,
                         bypassed_saving_forgone=bypassed_saving,
                         price_source=station.price_source,
+                        bypassed_estimate_count=estimate_bypassed_count,
+                        bypassed_estimate_saving_forgone=estimate_bypassed_saving,
                     )
                     # Already confirmed a winner by the inlined check
                     # above, with nothing else touching this exact
@@ -2053,6 +2097,8 @@ def solve_fixed_charge(
             bypassed_cheaper_count=edge.bypassed_cheaper_count,
             bypassed_saving_forgone=edge.bypassed_saving_forgone,
             price_source=edge.price_source,
+            bypassed_estimate_count=edge.bypassed_estimate_count,
+            bypassed_estimate_saving_forgone=edge.bypassed_estimate_saving_forgone,
         )
         for edge in edges
     ]
