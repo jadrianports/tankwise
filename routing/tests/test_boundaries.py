@@ -423,9 +423,16 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # legitimate classification drift this guard's own docstring exists to
 # catch, not something to route around. 9 -> 11 production, 72 test
 # unchanged, 81 -> 83 total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 83
+#
+# Updated again in plan 21-09: `routing/tests/test_price_provenance.py`
+# gained one new TEST `solve()` call site
+# (`FuelStopRebuildHopTests.test_hop5_estimate_bypass_pair_survives_the_solve_rebuild`,
+# the regression test for the rebuild-loop bug this plan found and fixed
+# in `routing/services/solver.py`) -- 11 production unchanged, 72 -> 73
+# test, 83 -> 84 total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 84
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 72
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 73
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):

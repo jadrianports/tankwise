@@ -619,6 +619,60 @@ class FuelStopRebuildHopTests(SimpleTestCase):
         )
         self.assertEqual(plan.stops[1].price_source, PriceSource.OPIS_INDEXED)
 
+    def test_hop5_estimate_bypass_pair_survives_the_solve_rebuild(self):
+        """Regression (plan 21-09): this same rebuild loop dropped the
+        newer `bypassed_estimate_count`/`bypassed_estimate_saving_forgone`
+        pair (plan 21-07) even though it never dropped `price_source`
+        above. `dp.solve_fixed_charge` and
+        `heuristic.solve_penalty_aware_heuristic` both populate the pair
+        correctly on their OWN returned `FuelStop`s (proven directly by
+        `routing.tests.test_dp.BypassedEstimateDisclosureTests`, which
+        calls them without going through `solve()`), but `solve()`'s
+        `FuelStop(...)` reconstruction had no line copying this specific
+        pair across from `raw_stop` -- so the real production request
+        path always reported `0`/`None` regardless of what either arm
+        computed internally, which is what made plan 21-08's realism
+        sweep (itself a `solve()` caller) come back with a literal-zero
+        witness count across all 288 measured cells. Found and fixed
+        while implementing this plan's own fallback witness action, which
+        the plan's own text says must call `solver.solve()` -- not
+        discovered by re-running or re-parameterizing that sweep, which
+        this plan is explicitly forbidden from doing.
+
+        Reuses `BypassedEstimateDisclosureTests._mixed_provenance_candidates()`'s
+        exact scenario (three stations, penalty=35, B estimate-priced) but
+        calls `solve()` itself, the one call this bug needed to hide
+        behind."""
+        candidates = [
+            _candidate_with_price_source(
+                "A", 1, "3.50", 250, PriceSource.OPIS_INDEXED
+            ),
+            _candidate_with_price_source(
+                "B", 2, "3.00", 500, PriceSource.EIA_REGIONAL_ESTIMATE
+            ),
+            _candidate_with_price_source(
+                "C", 3, "3.55", 700, PriceSource.OPIS_INDEXED
+            ),
+        ]
+
+        plan = solve(
+            candidates,
+            total_route_mi=Decimal(1050),
+            tank_range_mi=Decimal(500),
+            mpg=Decimal(10),
+            starting_fuel=Decimal("0.5"),
+            penalty=Decimal(35),
+        )
+
+        first_stop = plan.stops[0]
+        self.assertEqual(
+            first_stop.purchase_reason, PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP
+        )
+        self.assertEqual(first_stop.bypassed_estimate_count, 1)
+        self.assertEqual(
+            first_stop.bypassed_estimate_saving_forgone, Decimal("12.50")
+        )
+
 
 class RenderedStopRowPointerHopTests(SimpleTestCase):
     """Hop 8: the rendered stop row. This Python module cannot execute
@@ -724,6 +778,53 @@ class FixtureCrossLanguageHopTests(SimpleTestCase):
     artefacts, then
     ``Path(...).write_text(json.dumps(fresh, indent=2) + "\\n", encoding="utf-8")``
     to `frontend/src/test/fixtures/route-response.json`.
+
+    PROV-03 (plan 21-09, D-19/D-21) -- the real instance behind
+    `bypassed_estimate_count=1`/`bypassed_estimate_saving_forgone=Decimal("12.50")`
+    on the recorded-price stop below. Plan 21-08's realism sweep found no
+    qualifying corridor across all 288 measured cells (its own SUMMARY,
+    confirmed against `21-TRUST-MARGIN-SWEEP.txt` directly), so this plan
+    took the fallback branch its own action text authorizes: run
+    `solver.solve()` over a hand-built fixed-provenance witness. The two
+    `TrustMarginAnchorTests` witnesses named for that fallback
+    (`routing/tests/test_solver_fixed_charge_optimality.py`, plan 21-04)
+    were tried first, at every `MARGIN_LADDER` rung including the adopted
+    `TRUST_MARGIN_USD=5.47` -- both change WHICH station gets bought, but
+    neither ever populates `bypassed_estimate_count` at any rung, because
+    that pair is only computed inside `dp.py`'s
+    `truly_bypassed and penalty > saving_total` branch (a full-tank fill
+    that flies PAST a reachable-but-not-worth-a-stop cheaper station), a
+    structurally different decision than either witness's same-position
+    swap or optional-stop drop. Rather than invent numbers or re-run the
+    zero-result sweep (both forbidden), this plan fell back one step
+    further to a second real, already-committed hand-built witness that
+    DOES exercise that exact branch:
+    `routing.tests.test_dp.BypassedEstimateDisclosureTests._mixed_provenance_candidates()`
+    (landed by plan 21-07 to prove this very disclosure pair), run through
+    `solver.solve()` -- three stations, `total_route_mi=1050mi`,
+    `tank_range_mi=500mi`, `mpg=10`, `starting_fuel=0.5`, `penalty=$35`:
+    station A (opis_id=1, $3.50/gal, 250mi, recorded price) is kept,
+    buying 50.0 gallons with `purchase_reason=bypass_cheaper_not_worth_stop`,
+    flying past station B (opis_id=2, $3.00/gal, 500mi, regional
+    estimate) on its way to station C (opis_id=3, $3.55/gal, 700mi,
+    reach_finish) -- `bypassed_estimate_count=1`,
+    `bypassed_estimate_saving_forgone=Decimal("12.500")` (quantizes to
+    `"12.50"`), reproduced identically at `trust_margin=Decimal(0)` and
+    at `trust_margin=Decimal("5.47")` (the adopted value): this
+    disclosure pair is gated on `penalty`, not on `trust_margin`, an
+    honest structural finding recorded here rather than smoothed over.
+
+    Running this exact scenario through `solver.solve()` is also what
+    surfaced a genuine, unrelated production bug this plan had to fix
+    (Rule 1) to make its own fallback action possible at all: `solve()`'s
+    own post-processing rebuild loop (`routing/services/solver.py`) never
+    copied `bypassed_estimate_count`/`bypassed_estimate_saving_forgone`
+    from `raw_stop` onto the `FuelStop`s it returns, even though both
+    solver arms already compute the pair correctly internally -- see
+    `FuelStopRebuildHopTests.test_hop5_estimate_bypass_pair_survives_the_solve_rebuild`
+    above and 21-09-SUMMARY.md for the full account. This is almost
+    certainly why plan 21-08's realism sweep (itself a `solver.solve()`
+    caller) came back with a literal zero across all 288 cells.
     """
 
     FIXTURE_PATH = (
@@ -759,6 +860,14 @@ class FixtureCrossLanguageHopTests(SimpleTestCase):
                 price_percentile=Decimal("0.30"),
                 corridor_avg_price=Decimal("3.95"),
                 price_source=PriceSource.OPIS_INDEXED,
+                # PROV-03 (plan 21-09, D-19/D-21): the recorded-price stop
+                # is the ONLY one D-19's sentence can ever fire on -- set
+                # here, never on the estimate-priced stop below, which
+                # stays at its class defaults (0/None). See this class's
+                # own docstring, below, for the real instance these two
+                # numbers were transcribed from.
+                bypassed_estimate_count=1,
+                bypassed_estimate_saving_forgone=Decimal("12.50"),
             ),
             FuelStop(
                 name="Regional Estimate Fuel Stop",

@@ -609,6 +609,22 @@ def solve(
                 bypassed_cheaper_count=raw_stop.bypassed_cheaper_count,
                 bypassed_saving_forgone=raw_stop.bypassed_saving_forgone,
                 price_source=raw_stop.price_source,
+                # PROV-03 (D-19/D-20): the estimate-narrowed companion
+                # pair must be carried through this rebuild exactly like
+                # its bypassed_cheaper_count/bypassed_saving_forgone
+                # sibling two lines above -- both arms already populate
+                # it on raw_stop (dp.py/heuristic.py), but this loop
+                # silently dropped it until plan 21-09 found solve()'s
+                # own output always reporting 0/None regardless of what
+                # either arm computed internally (routing/tests/
+                # test_price_provenance.py's Hop 5 -- solve()'s rebuild
+                # -- had no test exercising this specific pair; plan
+                # 21-07's own BypassedEstimateDisclosureTests called
+                # solve_fixed_charge/solve_penalty_aware_heuristic
+                # directly, never solve() itself, so the gap went
+                # uncaught).
+                bypassed_estimate_count=raw_stop.bypassed_estimate_count,
+                bypassed_estimate_saving_forgone=raw_stop.bypassed_estimate_saving_forgone,
             )
         )
 
