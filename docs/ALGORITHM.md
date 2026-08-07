@@ -596,3 +596,82 @@ actually examined, including two clean runs taken specifically to try. It is
 tracked as a todo rather than hidden, and stays open until it either
 reproduces with enough information to diagnose it or a much longer clean
 streak makes it safe to consider resolved.
+
+**8. The penalty-aware heuristic's trust margin covers one comparison, not
+all of them (PROV-03, D-04).** Since Phase 21, both solver arms charge a flat
+per-purchase margin for an `eia_regional_estimate`-priced station before
+selecting it, but the two arms are not equally thorough. The exact DP applies
+the margin to **every** purchase transition in its objective — the fixed-charge
+integer key it searches already accounts for it at every station. The
+penalty-aware heuristic (`routing/services/heuristic.py`) enters the margin
+into exactly **one** comparison: the bypass test, `penalty + current_margin >
+saving_total`, which decides whether a full-tank fill is worth flying past
+one or more strictly-cheaper reachable stations. That is the only comparison
+in this arm that was already fixed-charge-aware (it already sums a
+per-station dollar saving against the flat penalty); every other price
+comparison in the module — the cheapest-in-window `min()`, `_farthest`'s
+tiebreak, and the direct `c.price_per_gallon < price_here` test — is a raw
+per-gallon quantity with no purchase amount attached, so a flat charge has no
+defined meaning there, and **none is synthesized** (D-05): a per-gallon
+equivalent was considered and rejected because the two arms would then mean
+different things by "trust margin," and the per-gallon form is unprovable
+against the oracle's flat one.
+
+The honest consequence, stated plainly in the module's own docstring: this
+arm will still **hop toward** a cheap `eia_regional_estimate`-priced station
+without paying its margin whenever the bypass test itself is never reached —
+i.e., whenever there is no strictly-cheaper station in the current window to
+trigger the comparison at all. This is a documented limitation of this
+proof-free arm, not a defect being hidden.
+
+Why it matters, cross-referenced rather than restated: limitation 1 above
+already documents the current share of measured cells that dispatch to this
+heuristic at the shipped `DP_TRANSITION_BUDGET=50,000` — including
+`demo_la_ca-new_york_ny`, the LA → NYC demo chip, the app's highest-traffic
+corridor, among the cells it names. Denser candidate sets push more cells
+toward this arm (limitation 3 above), so the arm most likely to actually
+meet real `eia_regional_estimate` rows once Phase 22 imports them is
+precisely the one with only partial margin coverage.
+
+**9. `prune.py`'s domination test retains a strict superset on
+mixed-provenance data, and can never retain fewer (PROV-03, D-01).** Since
+Phase 21, the domination test that shrinks the candidate set before either
+solver arm searches it gained a third admission condition, alongside the
+existing price and geometric ones: `margin_B <= margin_A`. Because the margin
+is binary (a station either is or is not `eia_regional_estimate`-priced),
+the new predicate reduces to one sentence, stated in the module's own
+docstring: **an estimate-priced station may not dominate a real-priced one.**
+Real-dominates-anything and estimate-dominates-estimate are unchanged.
+
+No finite bound on the margin's dollar value restores the old price-only
+condition — because the margin is a *fixed* charge while price is
+*per-gallon*, at a small enough purchase quantity the margin term always
+dominates the comparison, so this cannot be dissolved by choosing a small
+margin. The rule is therefore **strictly weaker** than the margin-free rule:
+it retains a superset of what the margin-free rule would retain, never
+fewer, so `estimate_transition_count` — the signal the dispatch policy reads
+— can only move **upward**. That is the conservative direction for
+correctness (nothing that should survive is pruned away) and the unhelpful
+direction for dispatch (more candidates pushes more cells toward limitation
+1's heuristic-demotion figure and toward limitation 3's budget ceiling).
+
+The inertness half of this claim is proven, not asserted: at zero
+`eia_regional_estimate` rows, every candidate's margin is equal (`0`), so
+condition 3 is vacuously satisfied for every pair and the retained set is
+**provably identical** to what the margin-free rule retained. Plan 21-10's
+closing 26-cell `measure_dispatch_grid` diff against the pre-change baseline
+(`.planning/phases/21-provenance-trust-margin/`, 2026-08-07) came back
+byte-empty on every deterministic field, confirming this in the actual
+dispatch pipeline, not just the domination test in isolation. Measured
+separately on a mixed-provenance corpus (`PRUNE_MIXED_CORPUS_PARAMS`,
+25% tagged, plan 21-05, 2026-08-07): the margin-aware rule retains 264/500
+candidates against 259/500 for the same corpus with every provenance forced
+to `opis_indexed` — 5 more, confirming the strict-superset direction on real
+(if synthetically tagged) data, not just by proof.
+
+This also settles `.planning/research/ARCHITECTURE.md`'s Question 2 versus
+Question 5 contradiction, dated 2026-08-07: Question 5's claim that the
+margin can shift what `prune.py` keeps is correct, and Question 2's claim
+that `estimate_transition_count` is untouched is superseded — both amended
+in place on the research document itself, per this project's standing
+amend-in-place convention.
