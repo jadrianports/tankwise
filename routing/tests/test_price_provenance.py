@@ -55,7 +55,12 @@ from routing.serializers import (
     station_data_note,
 )
 from routing.services import dp as dp_module
-from routing.services.corridor import candidates, price_source_counts, reset_index
+from routing.services.corridor import (
+    candidates,
+    price_source_counts,
+    reset_index,
+    warm_index,
+)
 from routing.services.dp import solve_fixed_charge
 from routing.services.legs import Leg
 from routing.services.mapbox import Route
@@ -68,6 +73,12 @@ from routing.services.solver import (
     SolverStrategy,
     solve,
 )
+from routing.tests.test_corridor_fixtures import (
+    PRICE_BASIS_NEUTRAL,
+    factor_lookup_for_basis,
+    load_corridor_route,
+)
+from routing.tests.test_plan_objective import OBJECTIVE_PARAMS
 # Imported as a MODULE, never as `from ... import ResponseContractTests` --
 # Django's test loader discovers every `TestCase` subclass that is a direct
 # attribute of a scanned test module, so importing the class itself here
@@ -76,6 +87,11 @@ from routing.services.solver import (
 # `TestCase` subclass, so it is invisible to that discovery and safe to
 # hold a live reference to `CURRENT_TOP_LEVEL_KEYS`/`CURRENT_FUEL_STOP_KEYS`.
 from routing.tests import test_serializers
+from routing.tests.test_trust_margin_rule import (
+    MARGIN_LADDER,
+    TAG_SHARE_LADDER,
+    tagged_candidates,
+)
 
 COMMITTED_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
@@ -672,6 +688,150 @@ class FuelStopRebuildHopTests(SimpleTestCase):
         self.assertEqual(
             first_stop.bypassed_estimate_saving_forgone, Decimal("12.50")
         )
+
+
+class RealCorridorEstimateBypassWitnessTests(TestCase):
+    """ROADMAP Phase 21 criterion 5's corridor-replay witness.
+
+    This is NOT a ninth hop -- `HopCoverageGuardHopTests` below still pins
+    exactly the eight-hop set this module's docstring names, and none of
+    this class's methods carry a `test_hop` prefix. It exists to close a
+    verification gap: criterion 5 requires the shipped disclosure sentence
+    be authored against a real observed instance from THIS PHASE'S OWN
+    estimate-tagged corridor replay, not a hand-built witness.
+
+    What happened: plan 21-08's original realism sweep (the corridor
+    replay the criterion names) searched all 288 measured cells and found
+    zero qualifying instances -- a false negative caused by a real
+    production bug in `solver.py`'s `solve()` rebuild loop, which never
+    copied `bypassed_estimate_count`/`bypassed_estimate_saving_forgone`
+    onto the returned `FuelStop` even though both solver arms computed the
+    pair correctly internally. Plan 21-09 found and fixed that bug (commit
+    `d32c8c0`) while authoring the shipped sentence against a hand-built
+    fallback witness (`FuelStopRebuildHopTests`/`FixtureCrossLanguageHopTests`
+    above). Plan 21-10, directed by the orchestrator, regenerated the
+    sweep at the post-fix HEAD and found a real corridor-replay witness
+    DOES exist: corridor `el_paso_tx-portland_me`, tag share 0.50, the
+    `penalty_aware_heuristic` arm, station `QUIKTRIP #667`
+    (`opis_id=71647`) bypassing one strictly cheaper estimate-priced
+    station for a forgone saving of $1.19 -- firing identically at every
+    rung of `(Decimal("0"), *MARGIN_LADDER)` including the zero control,
+    because this disclosure is gated on the flat per-stop penalty, not on
+    the trust margin's own value.
+
+    The sweep artifact itself (`21-TRUST-MARGIN-SWEEP.txt`) lives under
+    `.planning/`, which is git-excluded (`commit_docs: false` in
+    `.planning/config.json`), so no committed test may read it at runtime.
+    This class instead reproduces the witness from committed inputs alone
+    -- the committed station CSV and the committed
+    `el_paso_tx-portland_me` corridor geometry fixture.
+
+    Reproduces the ATTRIBUTION sweep's path (tag only, price left
+    unchanged), not the realism sweep's (tag plus PADD-average price
+    substitution): a fresh run of `manage.py measure_trust_margin` at this
+    plan's start SHA shows the QUIKTRIP #667 bypass witness firing only in
+    the ATTRIBUTION table's `el_paso_tx-portland_me`/`share=0.50` cell --
+    the REALISM table's same cell reports `bypassed_estimate_total=0` at
+    every rung (a different, cheaper 3-stop plan). The disclosure only
+    ever depends on a candidate's `price_source` tag, never on which
+    price it carries, so an attribution-sweep instance is exactly as
+    genuine an "estimate-tagged corridor replay" witness as a realism-
+    sweep one would be -- it is simply the sweep that actually produced
+    one on this corridor.
+    """
+
+    WITNESS_SLUG = "el_paso_tx-portland_me"
+    WITNESS_TAG_SHARE = Decimal("0.50")
+    WITNESS_OPIS_ID = 71647
+    WITNESS_STOP_NAME = "QUIKTRIP #667"
+    WITNESS_STATION_IDS = (1669, 71079, 71647, 73058)
+    WITNESS_STOP_COUNT = 4
+    WITNESS_TOTAL_COST = Decimal("674.40")
+    WITNESS_BYPASSED_COUNT = 1
+    WITNESS_SAVING_FORGONE = Decimal("1.19")
+
+    @classmethod
+    def setUpTestData(cls):
+        call_command("seed_stations", stdout=io.StringIO())
+        warm_index()
+
+    def test_corridor_replay_reproduces_the_quiktrip_667_estimate_bypass(self):
+        self.assertIn(
+            self.WITNESS_TAG_SHARE,
+            TAG_SHARE_LADDER,
+            f"WITNESS_TAG_SHARE={self.WITNESS_TAG_SHARE} is no longer in "
+            f"TAG_SHARE_LADDER={TAG_SHARE_LADDER} -- the sweep never swept "
+            "this share, so this witness can no longer be reproduced at it.",
+        )
+
+        route = load_corridor_route(self.WITNESS_SLUG)
+        base_candidates = candidates(
+            route, factor_for=factor_lookup_for_basis(PRICE_BASIS_NEUTRAL)
+        )
+        tagged_list = tagged_candidates(base_candidates, self.WITNESS_TAG_SHARE)
+
+        for rung in (Decimal("0"), *MARGIN_LADDER):
+            with self.subTest(rung=rung):
+                plan = solve(
+                    tagged_list,
+                    route.total_route_mi,
+                    tank_range_mi=OBJECTIVE_PARAMS.tank_range_mi,
+                    mpg=OBJECTIVE_PARAMS.mpg,
+                    starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
+                    penalty=OBJECTIVE_PARAMS.penalty,
+                    trust_margin=rung,
+                    # D-05 precedent: this verdict is about station
+                    # selection, not timing.
+                    deadline=None,
+                )
+
+                context = (
+                    f"rung={rung}, stop_count={len(plan.stops)}, "
+                    f"station_ids={tuple(sorted(s.opis_id for s in plan.stops))}, "
+                    f"total_cost={plan.total_cost}, "
+                    f"raw_candidates={len(base_candidates)}, "
+                    f"tagged_candidates={len(tagged_list)}"
+                )
+
+                self.assertEqual(
+                    plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC, context
+                )
+                self.assertEqual(len(plan.stops), self.WITNESS_STOP_COUNT, context)
+                self.assertEqual(
+                    tuple(sorted(s.opis_id for s in plan.stops)),
+                    self.WITNESS_STATION_IDS,
+                    context,
+                )
+                self.assertEqual(
+                    plan.total_cost.quantize(Decimal("0.01")),
+                    self.WITNESS_TOTAL_COST,
+                    context,
+                )
+
+                bypassed_stops = [
+                    s for s in plan.stops if s.bypassed_estimate_count > 0
+                ]
+                self.assertEqual(len(bypassed_stops), 1, context)
+                witness_stop = bypassed_stops[0]
+                self.assertEqual(witness_stop.name, self.WITNESS_STOP_NAME, context)
+                self.assertEqual(witness_stop.opis_id, self.WITNESS_OPIS_ID, context)
+                self.assertEqual(
+                    witness_stop.bypassed_estimate_count,
+                    self.WITNESS_BYPASSED_COUNT,
+                    context,
+                )
+                self.assertEqual(
+                    witness_stop.bypassed_estimate_saving_forgone.quantize(
+                        Decimal("0.01")
+                    ),
+                    self.WITNESS_SAVING_FORGONE,
+                    context,
+                )
+                self.assertEqual(
+                    sum(s.bypassed_estimate_count for s in plan.stops),
+                    self.WITNESS_BYPASSED_COUNT,
+                    context,
+                )
 
 
 class RenderedStopRowPointerHopTests(SimpleTestCase):

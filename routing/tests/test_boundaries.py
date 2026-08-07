@@ -430,9 +430,16 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # the regression test for the rebuild-loop bug this plan found and fixed
 # in `routing/services/solver.py`) -- 11 production unchanged, 72 -> 73
 # test, 83 -> 84 total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 84
+#
+# Updated again in plan 21-11: `routing/tests/test_price_provenance.py`
+# gained one more TEST `solve()` call site
+# (`RealCorridorEstimateBypassWitnessTests`, the corridor-replay
+# regression test pinning ROADMAP criterion 5's real
+# el_paso_tx-portland_me/QUIKTRIP #667 witness) -- 11 production
+# unchanged, 73 -> 74 test, 84 -> 85 total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 85
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 73
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 74
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):
