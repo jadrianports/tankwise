@@ -24,19 +24,39 @@ and load_corridor_route are all imported from
 routing.tests.test_corridor_fixtures, the single shared source of truth
 pinned by plan 17-02 before any measurement was taken.
 
-Two correctness guards, following benchmark_corridor.py's own
-alternate-computation-must-agree idiom -- either one raises CommandError
+Four correctness guards (D-03 widened this from two to four -- guards 3
+and 4 below are new), following benchmark_corridor.py's own
+alternate-computation-must-agree idiom -- any one raises CommandError
 rather than printing a table that quietly contradicts itself:
 
   1. A corridor's raw (pre-prune) candidate count must be identical across
      both price bases, since a price factor only scales money and can
      never change which stations sit inside the geometric corridor.
   2. `classify_removals()` (below) is written independently from
-     `prune.py`'s own implementation, straight off the rule's two
-     conditions, and cross-checked: every removal it cannot attribute to
-     either a co-located dominator or a tail dominator means the prune and
-     an independent reading of its own stated rule disagree, and that must
+     `prune.py`'s own implementation, straight off the rule's three
+     conditions (D-01 added the third, provenance-based one), and
+     cross-checked: every removal it cannot attribute to either a
+     co-located dominator or a tail dominator means the prune and an
+     independent reading of its own stated rule disagree, and that must
      stop the report rather than appear silently inside it.
+  3. Every margin-blocked RETENTION -- a candidate a price-only reading
+     would have removed but the actual margin-aware prune keeps -- must
+     be individually attributable to a specific estimate-priced dominator
+     that a price-only reading would have accepted as sufficient. An
+     unattributable one is the same disagreement as guard 2, in the
+     retention direction rather than the removal direction.
+  4. The closed-form equality `margin_blocked_count == price_only_removal
+     _count - actual_removal_count` must hold exactly. Adding a third
+     bucket without this equality would re-open the `prune(x) -> x`
+     vacuity hole Phase 17 closed: a prune that retained everything would
+     produce zero removals, zero unexplained removals, and a passing sum,
+     with nothing left to say the third bucket ever did anything. The
+     equality is a true set identity -- the margin-aware qualifying set
+     is a subset of the price-only one, so margin-aware removals are a
+     subset of price-only removals and their difference is exactly the
+     margin-blocked set -- and it fails in both directions: a prune that
+     over-prunes trips guards 2/3 above, a prune that under-prunes beyond
+     what the margin justifies trips this one.
 
 This report measures candidate-set reduction only and makes NO latency
 claim -- Phase 18 criterion 5's measured solver latency is where that is
@@ -50,6 +70,7 @@ from django.core.management.base import BaseCommand, CommandError
 from routing.models import GeocodePrecision, Station
 from routing.services import corridor
 from routing.services.prune import prune_dominated_candidates
+from routing.services.solver import is_estimate_priced
 from routing.tests.test_corridor_fixtures import (
     CORRIDORS,
     PRICE_BASES,
@@ -74,12 +95,57 @@ class CorridorReductionRow:
     retained_count: int
     co_located_removals: int
     tail_removals: int
+    margin_blocked_removals: int = 0
+
+
+def _would_be_removed_under_price_only(candidate, earlier, *, tank_range_mi, total_route_mi):
+    """Whether `candidate` would be removed under the PRE-margin,
+    price-only reading of the rule -- conditions 1 (price) and 2
+    (position) only, ignoring provenance entirely -- given `earlier`, the
+    candidates ranked strictly before it under the D-11 total order.
+
+    Written independently of `prune.py`'s implementation, straight off
+    the rule's own two pre-margin conditions.
+    """
+    return any(
+        b.price_per_gallon <= candidate.price_per_gallon
+        and (
+            b.distance_from_start_mi == candidate.distance_from_start_mi
+            or b.distance_from_start_mi + tank_range_mi >= total_route_mi
+        )
+        for b in earlier
+    )
+
+
+def _margin_blocking_dominator_exists(candidate, earlier, *, tank_range_mi, total_route_mi):
+    """Whether an earlier-ranked, estimate-priced B exists that would
+    have qualified as `candidate`'s dominator under the price-only
+    reading (price plus position), but is blocked by condition 3 (D-01)
+    because `candidate` itself is real-priced. Only ever `True` for a
+    real-priced `candidate` -- condition 3 restricts exactly and only
+    "an estimate-priced station may not dominate a real-priced one", so
+    an estimate-priced candidate can never be margin-blocked.
+    """
+    if is_estimate_priced(candidate):
+        return False
+    return any(
+        is_estimate_priced(b)
+        and b.price_per_gallon <= candidate.price_per_gallon
+        and (
+            b.distance_from_start_mi == candidate.distance_from_start_mi
+            or b.distance_from_start_mi + tank_range_mi >= total_route_mi
+        )
+        for b in earlier
+    )
 
 
 def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
     """Attribute every station removed by the prune to either a co-located
-    or a tail dominator, derived independently from prune.py's own two
-    admission conditions rather than by inspecting its implementation.
+    or a tail dominator, AND every margin-blocked RETENTION to a specific
+    estimate-priced dominator a price-only reading would have accepted --
+    all derived independently from `prune.py`'s own implementation,
+    straight off the rule's three admission conditions (D-01 added the
+    third, provenance-based one) rather than by inspecting the code.
 
     `ordered`: the full candidate list sorted by the D-11 total order
     `(distance_from_start_mi, price_per_gallon, opis_id)`. `retained`: the
@@ -88,30 +154,79 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
     identity, since the prune returns input objects unchanged.
 
     For each removed station A, this looks for an earlier-ranked station B
-    (earlier under the SAME total order) with `price_B <= price_A`. Among
-    all such B, A is classified `co_located` when at least one shares A's
-    exact position (`pos_B == pos_A`) -- tested FIRST so the two buckets
-    stay disjoint -- otherwise `tail` when at least one has
+    (earlier under the SAME total order) with `price_B <= price_A` AND
+    NOT (B is estimate-priced while A is real-priced) -- condition 3's
+    margin-aware qualifying set. Among all such B, A is classified
+    `co_located` when at least one shares A's exact position
+    (`pos_B == pos_A`) -- tested FIRST so the two buckets stay disjoint --
+    otherwise `tail` when at least one has
     `pos_B + tank_range_mi >= total_route_mi`.
 
-    Returns `(co_located_count, tail_count)`. Raises `CommandError` if any
-    removal cannot be explained by either bucket, or if the two tallies do
-    not sum to the total number of removed stations -- either outcome
-    means this independent reading of the rule disagrees with what the
-    prune actually did, and the report must stop rather than mis-report.
+    Separately, for each RETAINED station A that a price-only reading
+    (conditions 1 and 2 only, ignoring provenance) would have removed,
+    this is a margin-blocked retention: A survives only because condition
+    3 disqualified every dominator a price-only reading would have
+    accepted. Each such A must be individually attributable to a specific
+    earlier-ranked, estimate-priced B satisfying the price-only
+    conditions -- not merely counted.
+
+    Because the margin-aware qualifying set (used for the removal
+    attribution above) is a STRICT SUBSET of the price-only qualifying set
+    (D-03's extended closed-form equality), margin-aware removals are
+    themselves a subset of price-only removals, and their difference is
+    exactly the margin-blocked set: `margin_blocked_count ==
+    price_only_removal_count - actual_removal_count`. Adding this third
+    bucket without asserting that equality would re-open the
+    `prune(x) -> x` vacuity hole Phase 17 closed -- a prune that retained
+    everything would pass every OTHER check here with zero unexplained
+    removals and a passing sum, leaving nothing to say the third bucket
+    ever did anything; the equality closes that hole in both directions.
+
+    Returns `(co_located_count, tail_count, margin_blocked_count)`.
+    Raises `CommandError` if: any removal cannot be explained by either
+    the co-located or the tail bucket; the co-located and tail tallies do
+    not sum to the total number of removed stations; any margin-blocked
+    retention cannot be individually attributed to a specific
+    estimate-priced dominator; or `margin_blocked_count` does not equal
+    the price-only removal count minus the actual removal count. Any of
+    these means this independent reading of the rule disagrees with what
+    the prune actually did, and the report must stop rather than
+    mis-report.
     """
     retained_ids = {id(c) for c in retained}
 
     co_located = 0
     tail = 0
     unexplained = []
+    margin_blocked = 0
+    margin_blocked_unexplained = []
+    price_only_removed_count = 0
 
     for index, candidate in enumerate(ordered):
-        if id(candidate) in retained_ids:
+        earlier = ordered[:index]
+        is_retained = id(candidate) in retained_ids
+
+        price_only_would_remove = _would_be_removed_under_price_only(
+            candidate, earlier, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+        if price_only_would_remove:
+            price_only_removed_count += 1
+
+        if is_retained:
+            if price_only_would_remove:
+                margin_blocked += 1
+                if not _margin_blocking_dominator_exists(
+                    candidate, earlier, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+                ):
+                    margin_blocked_unexplained.append(candidate)
             continue
 
-        earlier = ordered[:index]
-        qualifying = [b for b in earlier if b.price_per_gallon <= candidate.price_per_gallon]
+        qualifying = [
+            b
+            for b in earlier
+            if b.price_per_gallon <= candidate.price_per_gallon
+            and not (is_estimate_priced(b) and not is_estimate_priced(candidate))
+        ]
 
         if any(b.distance_from_start_mi == candidate.distance_from_start_mi for b in qualifying):
             co_located += 1
@@ -128,6 +243,16 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
             "the prune and an independent reading of its own stated rule disagree."
         )
 
+    if margin_blocked_unexplained:
+        opis_ids = [c.opis_id for c in margin_blocked_unexplained]
+        raise CommandError(
+            f"classify_removals could not individually attribute "
+            f"{len(margin_blocked_unexplained)} margin-blocked retention(s) "
+            f"(opis_id={opis_ids}) to a specific estimate-priced dominator that a "
+            "price-only reading would have accepted as sufficient -- the "
+            "margin-aware retention and an independent reading of the rule disagree."
+        )
+
     total_removed = len(ordered) - len(retained)
     if co_located + tail != total_removed:
         raise CommandError(
@@ -136,7 +261,16 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
             "independent reading of its own stated rule disagree."
         )
 
-    return co_located, tail
+    expected_margin_blocked = price_only_removed_count - total_removed
+    if margin_blocked != expected_margin_blocked:
+        raise CommandError(
+            f"margin_blocked_count ({margin_blocked}) does not equal the price-only "
+            f"removal count ({price_only_removed_count}) minus the actual removal "
+            f"count ({total_removed}) -- the closed-form equality that catches "
+            "over-pruning and under-pruning alike has failed."
+        )
+
+    return co_located, tail, margin_blocked
 
 
 def _station_provenance():
@@ -274,7 +408,7 @@ class Command(BaseCommand):
                     tank_range_mi=tank_range_mi,
                     total_route_mi=route.total_route_mi,
                 )
-                co_located, tail = classify_removals(
+                co_located, tail, margin_blocked = classify_removals(
                     ordered,
                     retained,
                     tank_range_mi=tank_range_mi,
@@ -291,6 +425,7 @@ class Command(BaseCommand):
                         retained_count=len(retained),
                         co_located_removals=co_located,
                         tail_removals=tail,
+                        margin_blocked_removals=margin_blocked,
                     )
                 )
         return rows
@@ -315,7 +450,8 @@ class Command(BaseCommand):
                 self.stdout.write(
                     f"    tank={row.tank_range_mi}mi price={row.price_basis}: "
                     f"retained={row.retained_count} "
-                    f"co_located={row.co_located_removals} tail={row.tail_removals}"
+                    f"co_located={row.co_located_removals} tail={row.tail_removals} "
+                    f"margin_blocked={row.margin_blocked_removals}"
                 )
 
     def _print_provenance(self):
