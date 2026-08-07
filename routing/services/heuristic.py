@@ -25,13 +25,29 @@ station exists, this heuristic asks the same question `dp.py`'s own
 `BYPASS_CHEAPER_NOT_WORTH_STOP` reason answers structurally: if I fill
 the tank here and drive straight to the farthest node a full tank
 reaches, how many strictly-cheaper stations would I fly past, and how
-much fuel-dollar saving would that cost me? If the flat `penalty`
-outweighs that saving, filling up and bypassing them is cheaper than
-stopping at each -- so this heuristic fills the tank and skips ahead. If
-the saving outweighs the penalty, the detour is worth it, so the
-heuristic buys just enough fuel here to reach the single CHEAPEST
-reachable station (not merely the nearest cheaper one -- see "Design
-choice" below) and asks the same question again there.
+much fuel-dollar saving would that cost me? If the flat `penalty` --
+plus, since phase 21 (PROV-03), this station's own flat trust-margin
+charge when it is `eia_regional_estimate`-priced -- outweighs that
+saving, filling up and bypassing them is cheaper than stopping at each --
+so this heuristic fills the tank and skips ahead. If the saving outweighs
+the penalty (plus margin), the detour is worth it, so the heuristic buys
+just enough fuel here to reach the single CHEAPEST reachable station (not
+merely the nearest cheaper one -- see "Design choice" below) and asks the
+same question again there.
+
+**D-04's honest partial, recorded here in plain words:** the
+`penalty > saving_total` comparison above is the ONLY place this arm's
+trust margin changes behaviour (`_margin_for`, PROV-03). The
+cheapest-in-window `min()`, `_farthest`'s tiebreak, and the direct
+`c.price_per_gallon < price_here` test all stay margin-blind -- they are
+raw per-gallon quantities with no quantity attached, so a flat margin has
+no defined meaning there and none is invented (D-05). Consequently this
+heuristic will still HOP TOWARD a cheap `eia_regional_estimate`-priced
+station without paying its margin whenever the bypass test itself is
+never reached (no strictly-cheaper station in the window at all) -- a
+documented limitation of this proof-free arm, not a defect being hidden.
+The exact DP (`dp.py`) carries no such gap: its margin applies to every
+purchase transition, not just a bypass decision.
 
 ## What this heuristic does NOT guarantee
 
@@ -82,13 +98,16 @@ Request-path math only -- no Django, no DB, no HTTP client, exactly as
 import bisect
 from dataclasses import replace
 from decimal import Decimal
+from types import SimpleNamespace
 
+from routing.services import solver
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
 
 
 def solve_penalty_aware_heuristic(
-    candidates, total_route_mi, *, tank_range_mi, mpg, starting_fuel, penalty=Decimal(0)
+    candidates, total_route_mi, *, tank_range_mi, mpg, starting_fuel,
+    penalty=Decimal(0), trust_margin=Decimal(0),
 ) -> FuelPlan:
     """Return a feasible, `penalty`-aware (but not fixed-charge-optimal)
     fueling plan for a route of `total_route_mi` miles, given an iterable
@@ -105,6 +124,11 @@ def solve_penalty_aware_heuristic(
     takes at `penalty=0` (though not always byte-identical to it, since
     this heuristic targets the CHEAPEST reachable station rather than the
     NEAREST cheaper one -- see the module docstring's "Design choice").
+
+    `trust_margin` (PROV-03, D-04/D-16) mirrors `penalty`'s own default
+    shape (`Decimal(0)`, inert) and joins it on the bypass test's left-hand
+    side ONLY -- see the module docstring's "D-04's honest partial" for
+    which comparisons stay margin-blind and why.
 
     Assumes the caller has already run `dp.preflight_gap_check` (or
     equivalent) over `candidates`/`total_route_mi`/`tank_range_mi`/
@@ -165,6 +189,20 @@ def solve_penalty_aware_heuristic(
         (but just as real as) the nearest-vs-cheapest chain the module
         docstring's "Design choice" section already covers."""
         return min(items, key=lambda c: (-c.distance_from_start_mi, c.price_per_gallon, c.opis_id))
+
+    def _margin_for(price_source):
+        """The flat PROV-03 trust-margin charge for a purchase whose
+        station carries `price_source`, read through the phase's ONE
+        shared provenance lookup on `solver` (see that module's own
+        function of this name) rather than a direct `price_source`
+        comparison in this module -- see `PriceSourceUsagePurityTest`.
+        `SimpleNamespace` stands in for a full `Candidate` here because
+        this walk only ever tracks a station's own `price_source` string
+        locally (`current_price_source`), never the original `Candidate`
+        object it came from."""
+        return solver.trust_margin_for(
+            SimpleNamespace(price_source=price_source), trust_margin
+        )
 
     def _raise_infeasible(from_name, from_pos, max_range):
         remaining_nodes = [
@@ -337,7 +375,18 @@ def solve_penalty_aware_heuristic(
             c_buy_mi = max(Decimal(0), c_gap - fuel)
             saving_total += (c_buy_mi / mpg) * (price_here - c.price_per_gallon)
 
-        if bypassed and penalty > saving_total:
+        # D-04: the ONE place this arm's margin joins a selection decision
+        # -- the current station's own margin (PROV-03) added onto the
+        # penalty side of the flat-charge-vs-fuel-saving comparison this
+        # branch was already making. `saving_total`'s accumulation above
+        # already converts per-gallon prices into dollars, exactly what a
+        # flat charge needs to be comparable against. No other comparison
+        # in this module (the cheapest-in-window `min()`, `_farthest`'s
+        # tiebreak, the direct `c.price_per_gallon < price_here` test) is
+        # touched -- those are raw per-gallon quantities with no quantity
+        # attached, so a flat charge has no defined meaning there (D-05).
+        current_margin = _margin_for(current_price_source)
+        if bypassed and penalty + current_margin > saving_total:
             # The flat per-stop penalty strictly outweighs the summed
             # fuel-dollar saving the bypassed stations would have offered
             # -- filling up and skipping them is cheaper than stopping at
@@ -425,11 +474,15 @@ def solve_penalty_aware_heuristic(
 
     total_cost = sum((s.cost for s in stops), Decimal(0))
     total_gallons = sum((s.gallons for s in stops), Decimal(0))
+    total_margin_applied = sum(
+        (_margin_for(s.price_source) for s in stops), Decimal(0)
+    )
 
     return FuelPlan(
         stops=stops,
         total_cost=total_cost,
         total_gallons=total_gallons,
-        penalised_objective=total_cost + penalty * len(stops),
+        penalised_objective=total_cost + penalty * len(stops) + total_margin_applied,
         penalty_applied=penalty,
+        trust_margin_applied=trust_margin,
     )

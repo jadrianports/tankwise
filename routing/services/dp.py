@@ -284,6 +284,31 @@ every prior version of this module -- this section changes only what the
 recurrence *compares* while deciding which states survive, never what a
 winning stop's own reported numbers are built from.
 
+**Trust-margin extension (2026-08-07, phase 21, PROV-03, D-01/D-06/D-16).**
+The full per-purchase objective contribution generalizes one more step, to
+`cost_i + penalty + margin_i`, where `margin_i` is the flat trust-margin
+charge for purchase `i`'s own candidate (`0` for a recorded-price
+candidate, `trust_margin` for an `eia_regional_estimate`-priced one --
+`solver.trust_margin_for`, this phase's one shared provenance seam). The
+margin lives in the SAME `MONEY_SCALE`-implied units the penalty ratio
+above already lives in -- a second, per-candidate fixed charge, never a
+new price scale -- so it is folded over a SINGLE shared denominator with
+`P_NUM`/`P_DEN` (`math.lcm` of `P_DEN` and every drawn margin ratio's own
+denominator) rather than introducing an independent one: `key[0] +=
+purchase_ticks * P_DEN + P_NUM + margin_numerators[node_index]` per
+purchase, where `margin_numerators[node_index]` is that station's own
+margin ratio rescaled to the shared denominator. At `trust_margin=0`
+`Fraction(0)` has denominator `1`, so `math.lcm(P_DEN, 1) == P_DEN`
+exactly -- the shared denominator collapses to today's `P_DEN`, `P_NUM` is
+rescaled by the no-op factor `P_DEN // P_DEN == 1`, and every
+`margin_numerators` entry is `0`, so the zero-margin key is
+byte-identical to the pre-margin key, not merely numerically equal.
+`total_cost` is unaffected either way: it stays this function's own
+accumulated `sum(cost_i)` over the reconstructed stops, never a
+reconstruction from raw prices, which is the structural reason the margin
+is a flat per-purchase charge rather than a per-gallon one (D-06, and see
+`solver.trust_margin_for`'s own docstring for the full argument).
+
 ## Position-domain subtraction must be exact, not merely well-scaled
 
 The "Implementation note" above proves the *conversion* from `Decimal` to
@@ -563,13 +588,14 @@ The full twelve-corridor x four-multiplier table lives in the
 CI-enforcing guard.
 """
 import bisect
+import math
 import time
 from dataclasses import dataclass
 from decimal import Decimal
 from fractions import Fraction
 
 from routing.services.exceptions import DeadlineExceededError, InfeasibleRouteError
-from routing.services.solver import FuelPlan, FuelStop, PurchaseReason
+from routing.services.solver import FuelPlan, FuelStop, PurchaseReason, trust_margin_for
 
 # D-12's tolerance band for the DP's own relaxation and winner-selection
 # comparisons: two objectives within this band are treated as tied and
@@ -1364,6 +1390,7 @@ def solve_fixed_charge(
     mpg,
     starting_fuel,
     penalty,
+    trust_margin=Decimal(0),
     deadline=None,
 ) -> FuelPlan:
     """Return the `FuelPlan` minimising fuel dollars plus `penalty` times
@@ -1424,9 +1451,27 @@ def solve_fixed_charge(
     `corridor_avg_price` are left at their defaults -- those are computed
     over the full, unpruned candidate list by `solve()` itself (D-20),
     never by this module. `total_cost` never includes the penalty
-    (INTG-02); `penalised_objective` is `total_cost + penalty * len(stops)`,
-    computed fresh from the reconstructed stops rather than reused from
-    internal DP bookkeeping.
+    (INTG-02); `penalised_objective` is `total_cost + penalty * len(stops)
+    + sum(margin_i for each purchased stop)` (PROV-03, D-06), computed
+    fresh from the reconstructed stops rather than reused from internal DP
+    bookkeeping.
+
+    `trust_margin`: the flat per-candidate PROV-03 trust-margin rate (a
+    `Decimal`), mirroring `penalty`'s own shape exactly and defaulting to
+    `Decimal(0)` so every existing direct caller of this function --
+    the fixed-charge oracle differentials, the frozen-greedy referee, and
+    `measure_dispatch_predictor`'s spawned worker among them -- is
+    unaffected by construction, exactly like `deadline` below. Read per
+    candidate through `solver.trust_margin_for` (never a direct
+    `price_source` comparison in this module -- see
+    `PriceSourceUsagePurityTest`), it folds into the recurrence's integer
+    comparison key at the same site the penalty numerator already folds
+    in, over a single shared denominator with the penalty ratio (see the
+    "Exact-integer money-domain comparison" section's trust-margin
+    extension below). `total_cost` structurally cannot contain it -- it
+    stays the DP's own accumulated `sum(cost_i)`, never a reconstruction
+    from raw prices, which is exactly why the margin is a flat charge and
+    not a per-gallon one (D-06).
 
     `deadline`: optional wall-clock budget in seconds (a `Decimal` or
     anything `Decimal(str(...))` can parse), same style as `solve()`'s own
@@ -1485,6 +1530,7 @@ def solve_fixed_charge(
     mpg = _as_decimal(mpg)
     starting_fuel = _as_decimal(starting_fuel)
     penalty = _as_decimal(penalty)
+    trust_margin = _as_decimal(trust_margin)
 
     # D-05/D-06: a single absolute cutoff, computed once here at the
     # boundary -- never inside the loop below. `None` means unlimited, so
@@ -1638,6 +1684,27 @@ def solve_fixed_charge(
     # the same MONEY_SCALE-implied units as `buy_ticks * price_ticks`.
     _penalty_ratio = Fraction(penalty) / _money_scale
     P_NUM, P_DEN = _penalty_ratio.numerator, _penalty_ratio.denominator
+
+    # D-01/D-06/D-16 (PROV-03): each candidate's flat trust-margin charge,
+    # read through `solver.trust_margin_for` (never a direct price_source
+    # comparison here -- see PriceSourceUsagePurityTest), converted to the
+    # same MONEY_SCALE-implied ratio the penalty above already uses, then
+    # folded over a SINGLE shared denominator with P_NUM/P_DEN -- never a
+    # second, independent denominator (see the module docstring's
+    # "Trust-margin extension" section for the full derivation and the
+    # zero-margin byte-identity argument).
+    _margin_ratios = [
+        Fraction(trust_margin_for(c, trust_margin)) / _money_scale for c in ordered
+    ]
+    _shared_den = P_DEN
+    for _ratio in _margin_ratios:
+        _shared_den = math.lcm(_shared_den, _ratio.denominator)
+    P_NUM = P_NUM * (_shared_den // P_DEN)
+    P_DEN = _shared_den
+    margin_numerators = [
+        _ratio.numerator * (_shared_den // _ratio.denominator)
+        for _ratio in _margin_ratios
+    ]
 
     # COST_TOLERANCE/MONEY_SCALE, scaled by P_DEN and reduced: the exact
     # rational threshold `_make_key_less` cross-multiplies against, so its
@@ -1799,7 +1866,10 @@ def solve_fixed_charge(
                 purchase_ticks = buy_ticks * price_ticks[node_index]
                 is_full_fill = level == tank_range_mi
                 new_key = (
-                    record.key[0] + purchase_ticks * P_DEN + P_NUM,
+                    record.key[0]
+                    + purchase_ticks * P_DEN
+                    + P_NUM
+                    + margin_numerators[node_index],
                     record.key[1] + 1,
                     record.key[2] + (pos,),
                     record.key[3] + (station.opis_id,),
@@ -1989,11 +2059,15 @@ def solve_fixed_charge(
 
     total_cost = sum((s.cost for s in stops), Decimal(0))
     total_gallons = sum((s.gallons for s in stops), Decimal(0))
+    total_margin_applied = sum(
+        (trust_margin_for(s, trust_margin) for s in stops), Decimal(0)
+    )
 
     return FuelPlan(
         stops=stops,
         total_cost=total_cost,
         total_gallons=total_gallons,
-        penalised_objective=total_cost + penalty * len(stops),
+        penalised_objective=total_cost + penalty * len(stops) + total_margin_applied,
         penalty_applied=penalty,
+        trust_margin_applied=trust_margin,
     )

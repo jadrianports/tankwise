@@ -163,6 +163,19 @@ class FuelPlan:
     `Decimal` -- it is diagnostic only (`time.monotonic()` differences,
     read off `dp.DeadlineExceededError.elapsed_seconds`), and never enters
     a monetary, gallon or position computation.
+
+    `trust_margin_applied` is additive and defaults to `None`, landing
+    last per this dataclass's own additive-field convention (PROV-03,
+    D-06/D-16). It mirrors `penalty_applied` exactly: the flat per-purchase
+    trust-margin rate (`trust_margin`) that produced `penalised_objective`,
+    never the summed dollar amount actually charged across stops. Like
+    `penalty_applied`, `total_cost` NEVER includes it -- `total_cost`
+    remains fuel dollars only, `penalised_objective` is
+    `total_cost + penalty_applied * len(stops) + sum(margin_i for
+    purchased stops)`, the quantity the DP actually minimises now that an
+    estimate-priced purchase carries its own additive charge. Both fields
+    stay internal-only, exactly like `penalised_objective`/`penalty_applied`
+    above.
     """
 
     stops: list[FuelStop]
@@ -173,6 +186,7 @@ class FuelPlan:
     strategy: str | None = None
     deadline_breached: bool = False
     deadline_breach_elapsed_s: float | None = None
+    trust_margin_applied: Decimal | None = None
 
 
 def _as_decimal(value):
@@ -320,6 +334,7 @@ def solve(
     mpg=Decimal(10),
     starting_fuel=Decimal(1),
     penalty=Decimal(0),
+    trust_margin=Decimal(0),
     prune=True,
     deadline=dp.DP_DEADLINE_SECONDS,
 ) -> FuelPlan:
@@ -407,6 +422,19 @@ def solve(
     (``routing/views.py``, AST-gated by ``SolvePenaltyKwargGateTest``) --
     this module stays pure.
 
+    ``trust_margin`` mirrors ``penalty``'s shape exactly (PROV-03,
+    D-16): a plain ``Decimal`` this function never resolves itself,
+    defaulting to ``Decimal(0)`` (inert -- every existing caller that never
+    passes it stays byte-identical), threaded unchanged into both
+    ``dp.solve_fixed_charge`` and
+    ``heuristic.solve_penalty_aware_heuristic``. It is the flat per-purchase
+    charge an ``eia_regional_estimate``-priced candidate's selection
+    carries in the DP's internal objective only (never in ``total_cost`` or
+    any reported price -- see ``FuelPlan``'s own docstring). Resolving it
+    from a live setting is likewise the caller's job (``routing/views.py``,
+    AST-gated by ``SolveTrustMarginKwargGateTest``, cloned from
+    ``SolvePenaltyKwargGateTest`` above).
+
     ``prune`` is Phase 17 D-21's rollback hatch: set it to ``False`` to run
     the DP over the complete, unpruned candidate set (sorted by the same
     total order the prune would have used) without a revert.
@@ -445,6 +473,7 @@ def solve(
     mpg = _as_decimal(mpg)
     starting_fuel = _as_decimal(starting_fuel)
     penalty = _as_decimal(penalty)
+    trust_margin = _as_decimal(trust_margin)
 
     candidates = list(candidates)
 
@@ -488,6 +517,7 @@ def solve(
                 mpg=mpg,
                 starting_fuel=starting_fuel,
                 penalty=penalty,
+                trust_margin=trust_margin,
                 deadline=deadline,
             )
         except dp.DeadlineExceededError as exc:
@@ -508,6 +538,7 @@ def solve(
                 mpg=mpg,
                 starting_fuel=starting_fuel,
                 penalty=penalty,
+                trust_margin=trust_margin,
             )
             deadline_breached = True
             deadline_breach_elapsed_s = exc.elapsed_seconds
@@ -520,6 +551,7 @@ def solve(
             mpg=mpg,
             starting_fuel=starting_fuel,
             penalty=penalty,
+            trust_margin=trust_margin,
         )
 
     total_candidates = len(candidates)
@@ -579,4 +611,5 @@ def solve(
         strategy=strategy,
         deadline_breached=deadline_breached,
         deadline_breach_elapsed_s=deadline_breach_elapsed_s,
+        trust_margin_applied=raw_plan.trust_margin_applied,
     )
