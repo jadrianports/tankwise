@@ -299,10 +299,14 @@ class Command(BaseCommand):
             label = "None" if rung is None else str(rung)
             result.admitted_by_rung[label] = (rung is None) or (estimate <= rung)
 
-        # `penalty=PENALTY` is passed as an explicit literal keyword at
-        # every solve() call site below (never bundled into a **kwargs
-        # dict) so `SolvePenaltyKwargGateTest`'s AST gate
-        # (`routing/tests/test_boundaries.py`) can see it statically.
+        # `penalty=PENALTY` and `trust_margin=Decimal(0)` are passed as
+        # explicit literal keywords at every solve() call site below
+        # (never bundled into a **kwargs dict) so `SolvePenaltyKwargGateTest`
+        # and `SolveTrustMarginKwargGateTest`'s AST gates (PROV-03,
+        # `routing/tests/test_boundaries.py`) can see them statically.
+        # `Decimal(0)` keeps this D-22 baseline command's own behaviour
+        # provably unchanged -- it measures dispatch admission, not the
+        # trust margin's effect.
         solve_kwargs = dict(
             tank_range_mi=tank_range_mi,
             mpg=mpg,
@@ -321,6 +325,7 @@ class Command(BaseCommand):
                     route.total_route_mi,
                     deadline=None,
                     penalty=PENALTY,
+                    trust_margin=Decimal(0),
                     **solve_kwargs,
                 )
                 elapsed = Decimal(str(time.perf_counter() - started))
@@ -351,6 +356,7 @@ class Command(BaseCommand):
                 raw_candidates,
                 route.total_route_mi,
                 penalty=PENALTY,
+                trust_margin=Decimal(0),
                 **solve_kwargs,
             )
             elapsed = Decimal(str(time.perf_counter() - started))

@@ -374,6 +374,11 @@ class Command(BaseCommand):
                     mpg=Decimal(vehicle["mpg"]),
                     starting_fuel=Decimal(vehicle["starting_fuel"]),
                     penalty=settings.FUEL_STOP_PENALTY_USD,
+                    # PROV-03: the production setting, matching penalty
+                    # above -- this workstation baseline exists to compare
+                    # like with live, so it must solve under the SAME
+                    # settings a live request would.
+                    trust_margin=settings.TRUST_MARGIN_USD,
                     deadline=None,  # D-05: untimed -- the workstation baseline must report the DP's true solve time so the workstation-to-live transfer factor compares like with like
                 )
                 times_s.append(time.perf_counter() - started)

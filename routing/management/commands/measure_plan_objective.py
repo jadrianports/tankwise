@@ -232,6 +232,11 @@ class Command(BaseCommand):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=penalty,
+                # PROV-03/D-18: this module has no trust-margin basis of
+                # its own either, mirroring its own "no basis, vehicle,
+                # penalty or trivial-stop threshold of its own" docstring
+                # -- Decimal(0) keeps this command's own figures unchanged.
+                trust_margin=Decimal(0),
                 deadline=None,  # D-05: untimed -- this offline figure must describe the DP's objective, not the cap
             )
         except InfeasibleRouteError:
@@ -372,6 +377,7 @@ class Command(BaseCommand):
                     mpg=OBJECTIVE_PARAMS.mpg,
                     starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                     penalty=penalty,
+                    trust_margin=Decimal(0),
                     deadline=None,  # D-05: untimed -- this offline figure must describe the DP's objective, not the cap
                 )
             except InfeasibleRouteError:

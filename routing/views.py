@@ -626,6 +626,7 @@ class RouteView(APIView):
             validated,
             eia_vintage=eia_vintage,
             penalty=settings.FUEL_STOP_PENALTY_USD,
+            trust_margin=settings.TRUST_MARGIN_USD,
         )
         with self._timing.stage("cache"):
             cached = cache.get(cache_key)
@@ -784,6 +785,7 @@ class RouteView(APIView):
                         mpg=vehicle["mpg"],
                         starting_fuel=vehicle["starting_fuel"],
                         penalty=settings.FUEL_STOP_PENALTY_USD,
+                        trust_margin=settings.TRUST_MARGIN_USD,
                     )
                 if plan.deadline_breached:
                     # D-08: the breach is visible via a Server-Timing

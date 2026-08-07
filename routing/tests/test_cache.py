@@ -112,8 +112,9 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v9: and contains exactly
-    four | separators (stops-chain|vehicle|eia|dispatch|penalty)."""
+    """Every produced key starts with route:v10: (PROV-03, plan 21-06) and
+    contains exactly five | separators
+    (stops-chain|vehicle|eia|dispatch|penalty|trust_margin)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
         key = build_cache_key(
@@ -123,8 +124,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v9:"))
-        self.assertEqual(key.count("|"), 4)
+        self.assertTrue(key.startswith("route:v10:"))
+        self.assertEqual(key.count("|"), 5)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -167,7 +168,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v9:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v10:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -218,6 +219,37 @@ class PenaltyCacheKeyTests(SimpleTestCase):
         key_b = build_cache_key(self._payload())
 
         self.assertEqual(key_a, key_b)
+
+
+class TrustMarginCacheKeyTests(SimpleTestCase):
+    """The `t:` trust-margin token (PROV-03, D-17, plan 21-06) ties a
+    cached payload to the flat per-purchase trust margin it was priced
+    under -- a sibling of `PenaltyCacheKeyTests` above, for the identical
+    reason: two different margins never collide, while an omitted margin
+    (a legacy or test caller) still produces a stable key."""
+
+    def _payload(self):
+        return {
+            "start": coord("41.8781", "-87.6298"),
+            "finish": coord("38.6270", "-90.1994"),
+        }
+
+    def test_different_trust_margin_produces_different_key(self):
+        key_a = build_cache_key(self._payload(), trust_margin=Decimal("10.93"))
+        key_b = build_cache_key(self._payload(), trust_margin=Decimal("0"))
+
+        self.assertNotEqual(key_a, key_b)
+
+    def test_omitted_trust_margin_is_stable_across_calls(self):
+        key_a = build_cache_key(self._payload())
+        key_b = build_cache_key(self._payload())
+
+        self.assertEqual(key_a, key_b)
+
+    def test_trust_margin_token_is_the_final_segment(self):
+        key = build_cache_key(self._payload(), trust_margin=Decimal("5.47"))
+        self.assertTrue(key.split("|")[-1].startswith("t:"))
+        self.assertIn("5.47", key.split("|")[-1])
 
 
 class EiaVintageCacheKeyTests(SimpleTestCase):
@@ -328,13 +360,13 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
 
     def test_new_prefix_appears_in_a_built_key(self):
         key = build_cache_key(self._payload())
-        self.assertTrue(key.startswith("route:v9:"))
+        self.assertTrue(key.startswith("route:v10:"))
 
     def test_dispatch_policy_token_is_present_and_correctly_placed(self):
         key = build_cache_key(self._payload(), eia_vintage="2026-07-20", penalty=Decimal("35"))
-        segments = key[len("route:v9:") :].split("|")
-        # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token
-        self.assertEqual(len(segments), 5)
+        segments = key[len("route:v10:") :].split("|")
+        # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token | trust_margin_token
+        self.assertEqual(len(segments), 6)
         dispatch_segment = segments[3]
         self.assertTrue(
             dispatch_segment.startswith("d:"),

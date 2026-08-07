@@ -200,6 +200,11 @@ class Command(BaseCommand):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=settings.FUEL_STOP_PENALTY_USD,
+                # PROV-03/D-07: this command derives the margin's own
+                # typical-fill input from the shipped, pre-margin plan --
+                # Decimal(0) keeps it that way, never circularly measuring
+                # a fill size the margin itself would have changed.
+                trust_margin=Decimal(0),
                 deadline=None,  # untimed -- this figure is about purchase sizes, not timing
             )
             gallons.extend(stop.gallons for stop in plan.stops)

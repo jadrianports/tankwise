@@ -140,6 +140,11 @@ class Command(BaseCommand):
                 mpg=OBJECTIVE_PARAMS.mpg,
                 starting_fuel=OBJECTIVE_PARAMS.starting_fuel,
                 penalty=OBJECTIVE_PARAMS.penalty,
+                # PROV-03/D-18: this command measures the EIA x penalty
+                # coupling (18-07), a subject the trust margin has nothing
+                # to do with -- Decimal(0) keeps this measurement's own
+                # behaviour provably unchanged.
+                trust_margin=Decimal(0),
                 deadline=None,  # D-05: untimed -- the coupling verdict is about station selection, not timing
             )
             station_ids = tuple(sorted(s.opis_id for s in plan.stops))

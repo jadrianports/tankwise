@@ -236,6 +236,11 @@ class Command(BaseCommand):
                         mpg=mpg,
                         starting_fuel=starting_fuel,
                         penalty=penalty,
+                        # PROV-03/D-18: this command measures wall-clock
+                        # latency across a penalty sweep, a subject the
+                        # trust margin has nothing to do with -- Decimal(0)
+                        # keeps this measurement's own behaviour unchanged.
+                        trust_margin=Decimal(0),
                         deadline=None,  # D-05: untimed -- measures the DP's own solve time, not a capped one
                     )
                     times_s.append(time.perf_counter() - started)

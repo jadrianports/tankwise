@@ -114,14 +114,24 @@ class SolverPurityTest(SimpleTestCase):
         )
 
 
-def _collect_solve_calls_missing_penalty(path):
+def _collect_solve_calls_missing_kwarg(path, kwarg_name):
     """Find every fixed-charge `solve(...)` call site in `path` missing an
-    explicit `penalty=` keyword. Treats a node as a `solve()` call when
-    `func` is a bare `ast.Name` with `id == "solve"`, or an
+    explicit `{kwarg_name}=` keyword. Treats a node as a `solve()` call
+    when `func` is a bare `ast.Name` with `id == "solve"`, or an
     `ast.Attribute` with `attr == "solve"` whose base object name is not
     in `_NON_TARGET_SOLVE_BASES` -- `naive_baseline.solve()` has no
-    `penalty` parameter at all (it is a different function entirely, the
-    deliberately price-blind baseline) and must never be flagged here.
+    `penalty`/`trust_margin` parameter at all (it is a different function
+    entirely, the deliberately price-blind baseline) and must never be
+    flagged here.
+
+    Generalized from the plan's own two faithful options (clone the
+    walker, or parameterize it and run it twice) -- this file picks the
+    latter: `_collect_solve_calls_missing_penalty` and
+    `_collect_solve_calls_missing_trust_margin` below are both thin,
+    single-line wrappers over this one walker, so the AST-matching logic
+    (which node counts as a target `solve()` call) is defined exactly
+    once rather than duplicated and risking the two copies drifting apart
+    on what counts as a target call.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     violations = []
@@ -143,10 +153,25 @@ def _collect_solve_calls_missing_penalty(path):
             is_target = True
         if not is_target:
             continue
-        has_penalty_kwarg = any(kw.arg == "penalty" for kw in node.keywords)
-        if not has_penalty_kwarg:
-            violations.append(f"{path}:{node.lineno}: solve() call missing penalty=")
+        has_kwarg = any(kw.arg == kwarg_name for kw in node.keywords)
+        if not has_kwarg:
+            violations.append(
+                f"{path}:{node.lineno}: solve() call missing {kwarg_name}="
+            )
     return violations
+
+
+def _collect_solve_calls_missing_penalty(path):
+    """`penalty=` specialization of `_collect_solve_calls_missing_kwarg`
+    -- see that function's own docstring."""
+    return _collect_solve_calls_missing_kwarg(path, "penalty")
+
+
+def _collect_solve_calls_missing_trust_margin(path):
+    """`trust_margin=` specialization of
+    `_collect_solve_calls_missing_kwarg` (PROV-03, D-16) -- see that
+    function's own docstring."""
+    return _collect_solve_calls_missing_kwarg(path, "trust_margin")
 
 
 _PRICE_SOURCE_DECISION_TYPES = (ast.Compare, ast.BoolOp, ast.IfExp)
@@ -382,4 +407,106 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 
         self.assertEqual(
             violations, [], f"solve() call(s) missing penalty=: {violations}"
+        )
+
+
+# D-18: every production `solve()` call site, classified by `ast`. Recorded
+# here (and in 21-06-SUMMARY.md in full) rather than left as a plain count
+# so a future reader can see the total/production/test split at a glance
+# without re-running the walk -- 18.1-05 did the identical thing for the
+# `deadline=` kwarg and found 57 sites; this headline count is that same
+# discipline applied to `trust_margin=`.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 79
+TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 9
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 70
+
+
+class SolveTrustMarginKwargGateTest(SimpleTestCase):
+    """Statically enforces that every production call to the fixed-charge
+    solver's `solve()` (`routing/services/solver.py`) passes an explicit
+    `trust_margin=` keyword -- PROV-03, D-16, cloned from
+    `SolvePenaltyKwargGateTest` above via the shared
+    `_collect_solve_calls_missing_kwarg` walker (see that function's own
+    docstring for why a shared walker was chosen over a hand-duplicated
+    second copy). A future production code path calling `solve()` without
+    an explicit `trust_margin=` would silently default to `Decimal(0)` and
+    never price an `eia_regional_estimate`-priced candidate's provenance
+    into the objective, undetected -- this gate recovers the only property
+    a required keyword-only parameter would have bought, without forcing
+    mechanical edits to every test module that deliberately omits
+    `trust_margin=` to exercise the documented `trust_margin=0` default
+    (byte-identical-to-pre-margin behaviour).
+
+    Scoped identically to `SolvePenaltyKwargGateTest`: every `.py` file
+    under `routing/` excluding `routing/tests/`, with the same
+    `_NON_TARGET_SOLVE_BASES` exclusion for `naive_baseline.solve()` (a
+    different function entirely, with no `trust_margin` parameter).
+
+    `TRUST_MARGIN_CALL_SITE_TOTAL_COUNT` /
+    `..._PRODUCTION_COUNT` / `..._TEST_COUNT` above are the D-18
+    call-site classification headline counts, walked once by
+    `test_call_site_classification_matches_pinned_counts` below and cross-
+    checked to sum correctly -- the same non-vacuity discipline every
+    other pinned-count guard in this codebase uses.
+    """
+
+    def test_every_production_solve_call_passes_trust_margin(self):
+        violations = []
+        for path in ROUTING_DIR.rglob("*.py"):
+            if "tests" in path.relative_to(ROUTING_DIR).parts:
+                continue
+            violations.extend(_collect_solve_calls_missing_trust_margin(path))
+
+        self.assertEqual(
+            violations, [], f"solve() call(s) missing trust_margin=: {violations}"
+        )
+
+    def test_call_site_classification_matches_pinned_counts(self):
+        production_count = 0
+        test_count = 0
+        for path in ROUTING_DIR.rglob("*.py"):
+            is_test_path = "tests" in path.relative_to(ROUTING_DIR).parts
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func = node.func
+                is_target = False
+                if isinstance(func, ast.Name) and func.id == "solve":
+                    is_target = True
+                elif (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "solve"
+                    and not (
+                        isinstance(func.value, ast.Name)
+                        and func.value.id in _NON_TARGET_SOLVE_BASES
+                    )
+                ):
+                    is_target = True
+                if not is_target:
+                    continue
+                if is_test_path:
+                    test_count += 1
+                else:
+                    production_count += 1
+
+        self.assertEqual(
+            production_count,
+            TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT,
+            "production solve() call-site count drifted from the pinned "
+            f"D-18 classification: found {production_count}, "
+            f"pinned {TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT}",
+        )
+        self.assertEqual(
+            test_count,
+            TRUST_MARGIN_CALL_SITE_TEST_COUNT,
+            "test solve() call-site count drifted from the pinned D-18 "
+            f"classification: found {test_count}, "
+            f"pinned {TRUST_MARGIN_CALL_SITE_TEST_COUNT}",
+        )
+        self.assertEqual(
+            production_count + test_count,
+            TRUST_MARGIN_CALL_SITE_TOTAL_COUNT,
+            "production + test solve() call-site counts do not sum to the "
+            "pinned D-18 total",
         )

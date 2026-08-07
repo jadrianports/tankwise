@@ -165,6 +165,18 @@ BUILD_COMMIT = _env("RENDER_GIT_COMMIT")
 # no behavioural risk.
 FUEL_STOP_PENALTY_USD = Decimal(_env("FUEL_STOP_PENALTY_USD", "35"))
 
+# Flat per-purchase trust margin (dollars) the fixed-charge solver charges
+# an `eia_regional_estimate`-priced candidate on top of fuel cost and the
+# stop penalty above -- PROV-03, mirrors FUEL_STOP_PENALTY_USD's own shape
+# exactly (env-backed, `Decimal`-typed, no float coercion). Defaults to
+# "0" here deliberately: plan 21-08 pins the derivation formula and
+# adoption rule, plan 21-09 measures the ladder against the twelve pinned
+# corridors, and only then does a non-zero value get adopted -- a zero
+# default keeps this commit's behaviour provably identical to the
+# previous one on every dataset, not just the all-recorded one Phase 22
+# ships before any `eia_regional_estimate` row exists.
+TRUST_MARGIN_USD = Decimal(_env("TRUST_MARGIN_USD", "0"))
+
 # Fuel price dataset vintage. A constant, not a Station column
 # -- the source CSV has one vintage and no per-row dates, so a column
 # would store thousands of identical copies plus a migration and a

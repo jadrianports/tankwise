@@ -182,10 +182,19 @@ def _is_finish_coincident_reason_mismatch(
 
 
 class FrozenGreedyDifferentialTests(SimpleTestCase):
-    """D-07/D-09/D-16/D-36, SOLV-03 (amended 2026-07-31): at `penalty=0`,
-    the DP must be COST-equal to the frozen pre-Phase-18 greedy on EVERY
-    input -- this is the unconditional regression gate, and it is what
-    actually catches a genuine cost regression. Additionally, ONLY when
+    """D-07/D-09/D-16/D-36, SOLV-03 (amended 2026-07-31; restated
+    2026-08-07, phase 21, D-18): at `penalty=0` AND `trust_margin=0`, the
+    DP must be COST-equal to the frozen pre-Phase-18 greedy on EVERY input
+    -- this is the unconditional regression gate, and it is what actually
+    catches a genuine cost regression. `trust_margin=0` is asserted
+    explicitly (not merely inherited from `solve_fixed_charge`'s own
+    default) because the frozen greedy referee stays byte-unchanged and
+    carries no trust-margin concept at all (D-18) -- proving the DP
+    against it at a non-zero margin would not be proving anything; the
+    margin arm is proven only against the extended fixed-charge oracle
+    (`TrustMarginOracleDifferentialTests`,
+    `test_solver_fixed_charge_optimality.py`), never against a referee
+    that cannot express it. Additionally, ONLY when
     the true optimum is unique (gated on Phase 16's
     `OraclePlan.is_unique_optimum` signal, computed once per drawn case
     at `penalty=0` over the unpruned candidate list -- Phase 17 already
@@ -316,6 +325,11 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                 mpg=mpg,
                 starting_fuel=starting_fuel,
                 penalty=Decimal(0),
+                # D-18: explicit, not merely inherited from the default --
+                # this gate's own restated claim is "penalty=0 AND
+                # trust_margin=0", proven against a referee with no
+                # trust-margin concept at all.
+                trust_margin=Decimal(0),
             )
 
             # D-09 invariant: unconditional, always asserted regardless of
@@ -331,9 +345,11 @@ class FrozenGreedyDifferentialTests(SimpleTestCase):
                 )
 
             # Cost equality: the regression gate (SOLV-03, amended
-            # 2026-07-31). Asserted UNCONDITIONALLY on every input -- this
-            # is what actually catches a genuine cost regression, and it
-            # never depended on tie resolution in the first place.
+            # 2026-07-31; restated 2026-08-07 as "penalty=0 AND
+            # trust_margin=0", D-18). Asserted UNCONDITIONALLY on every
+            # input -- this is what actually catches a genuine cost
+            # regression, and it never depended on tie resolution in the
+            # first place.
             self.assertLessEqual(
                 abs(dp_plan.total_cost - greedy_plan.total_cost),
                 COST_TOLERANCE,

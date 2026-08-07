@@ -9,6 +9,38 @@ component its own namespace so a coordinate token, an address token, the
 vehicle token, and the EIA-vintage token can never collide (mitigates
 cross-domain cache-key collisions).
 
+It is versioned `route:v10:` (Phase 21 plan 21-06, PROV-03) because the
+DP's own selection objective changed: an `eia_regional_estimate`-priced
+candidate now carries a flat per-purchase trust margin
+(`config.settings.base.TRUST_MARGIN_USD`, threaded through
+`routing.services.solver.solve(trust_margin=...)`) inside the internal
+comparison the fixed-charge DP minimises. This is genuinely an INPUT that
+changes WHICH plan a solve computes -- unlike `solver_strategy`'s own
+no-bump precedent two entries below, whose reasoning is explicitly scoped
+to OUTPUTS (a pure, deterministic function of inputs the key already
+namespaces). `TRUST_MARGIN_USD` is exactly the opposite shape: two
+otherwise-identical requests (same stop chain, vehicle, EIA vintage,
+penalty) can select genuinely different stations depending on its value,
+so the `v9:` key shape -- which namespaces none of that -- would serve a
+plan computed under one margin to a request the CURRENT build's margin
+would answer differently. The new `t:` token (`_trust_margin_token`
+below, a sibling of `_penalty_token` -- caller-supplied, not self-derived
+like `_dispatch_policy_token`) closes that gap the identical way `p:`
+closed it for the penalty (the `v6` precedent below). An entry cached
+under `v9` carries no `t:` segment at all, exactly as the `v7` entry
+below says of its own dispatch-policy token missing from `v6`. Verified
+free before this bump (`grep -rn "route:v10:" .` across the repository,
+zero matches, per this project's standing rule). Under the same
+no-intermediate-deploy posture the `v9` entry below already names (Phases
+20, 21 and 22 reach production together at Phase 22's go-live),
+production never actually serves `v10:` yet either -- so, as with `v9`,
+this bump is commit-correctness rather than a live fix: each commit must
+be right in isolation in case it is cherry-picked, reverted, or ships
+alone. Phase 22's own planned cache bump therefore moves again, to the
+next free prefix after this one -- the third dated amendment to that
+criterion (see `.planning/ROADMAP.md` Phase 22 criterion 6 and its
+`.planning/STATE.md` twin).
+
 It is versioned `route:v9:` (Phase 20 plan 20-04) because the response
 shape changed twice: `fuel_stops[]` entries gained a top-level
 `price_source` key, and the payload gained a new top-level
@@ -318,7 +350,33 @@ def _dispatch_policy_token() -> str:
     return f"d:{predictor_name}:{DP_TRANSITION_BUDGET}:{DP_DEADLINE_SECONDS}"
 
 
-def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
+def _trust_margin_token(trust_margin) -> str:
+    """Namespaced `t:` token for the flat per-purchase `trust_margin`
+    (dollars, PROV-03) a cached payload was priced under -- a sibling of
+    `_penalty_token` above (caller-supplied, not self-derived like
+    `_dispatch_policy_token`), for the identical reason that token exists:
+    `CACHE_TTL_SECONDS` is 86400 and production Redis is Upstash, which
+    persists across deploys, so changing `TRUST_MARGIN_USD` and
+    redeploying would otherwise serve plans priced under the old margin
+    for up to 24 hours after deploy. Quantized to 2 decimal places,
+    deterministically, exactly as `_penalty_token` quantizes its own
+    value. Omitted (`None`, a legacy or test caller that never threads a
+    margin through) resolves to a fixed, stable literal rather than a
+    varying key shape -- the same treatment `_penalty_token`/`_eia_token`
+    give their own `None`."""
+    if trust_margin is None:
+        return "t:none"
+    trust_margin_value = (
+        trust_margin
+        if isinstance(trust_margin, Decimal)
+        else Decimal(str(trust_margin))
+    )
+    return f"t:{round(trust_margin_value, 2)}"
+
+
+def build_cache_key(
+    validated_data, *, eia_vintage=None, penalty=None, trust_margin=None
+) -> str:
     """Build the cache key for a validated
     `{"start": ..., "finish": ..., "vehicle": ..., "waypoints": ...}`
     payload (the `RouteRequestSerializer.validated_data` shape).
@@ -331,9 +389,10 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     the original two-endpoint shape. `vehicle` is optional here -- see
     `_vehicle_token` -- so callers that omit it (existing tests, a
     v1.0-shaped request that resolved to defaults) still get a stable
-    key. `eia_vintage` (see `_eia_token`) and `penalty` (see
-    `_penalty_token`) are likewise optional, so a caller that never
-    threads either through still gets a stable key.
+    key. `eia_vintage` (see `_eia_token`), `penalty` (see
+    `_penalty_token`), and `trust_margin` (see `_trust_margin_token`,
+    PROV-03) are likewise optional, so a caller that never threads any of
+    them through still gets a stable key.
 
     The ordered chain is `start -> *waypoints -> finish`, each stop's
     token built by the unchanged `_endpoint_token()` -- never sorted,
@@ -347,7 +406,12 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     18.1-05, both `DP_TRANSITION_BUDGET` and `DP_DEADLINE_SECONDS`), so a
     cached plan can never outlive the dispatch policy that produced it
     (plan 18-12, closing the coupling `18-VERIFICATION.md` found
-    unguarded; plan 18.1-05, extending it to the deadline)."""
+    unguarded; plan 18.1-05, extending it to the deadline). As of plan
+    21-06 (PROV-03) the key also carries a `t:` trust-margin token
+    (`_trust_margin_token`, the final segment) so a cached plan can never
+    outlive the `TRUST_MARGIN_USD` value it was selected under either --
+    genuinely an INPUT, unlike `solver_strategy` itself (see the module
+    docstring's `v10:` entry for the full input-vs-output argument)."""
     waypoints = validated_data.get("waypoints") or []
     stops = [validated_data["start"], *waypoints, validated_data["finish"]]
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
@@ -355,7 +419,8 @@ def build_cache_key(validated_data, *, eia_vintage=None, penalty=None) -> str:
     eia_token = _eia_token(eia_vintage)
     dispatch_token = _dispatch_policy_token()
     penalty_token = _penalty_token(penalty)
+    trust_margin_token = _trust_margin_token(trust_margin)
     return (
-        f"route:v9:{stops_token}|{vehicle_token}|{eia_token}|"
-        f"{dispatch_token}|{penalty_token}"
+        f"route:v10:{stops_token}|{vehicle_token}|{eia_token}|"
+        f"{dispatch_token}|{penalty_token}|{trust_margin_token}"
     )
