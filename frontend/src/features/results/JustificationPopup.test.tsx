@@ -110,6 +110,26 @@ test('renders the estimate-bypass sentence with the forgone saving, full text as
   expect(line.textContent).toBe(expected);
 });
 
+// Corridor el_paso_tx-portland_me, tag share 0.50, arm
+// penalty_aware_heuristic, stop 'QUIKTRIP #667' (opis_id=71647): the real
+// corridor-replay witness ROADMAP Phase 21 criterion 5 names, as opposed
+// to the hand-built witness the test above pins. Backend counterpart:
+// `RealCorridorEstimateBypassWitnessTests` in
+// `routing/tests/test_price_provenance.py`, which reproduces this exact
+// cell from committed inputs alone and asserts these same two numbers.
+test('renders the estimate-bypass sentence for the el_paso_tx-portland_me corridor-replay witness (QUIKTRIP #667), full text asserted', () => {
+  const stop = makeStop({
+    purchase_reason: 'bypass_cheaper_not_worth_stop',
+    bypassed_estimate_count: 1,
+    bypassed_estimate_saving_forgone: '1.19',
+  });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const expected =
+    'Passed over 1 cheaper station whose price is a regional estimate rather than a recorded one, giving up $1.19 in fuel savings.';
+  const line = screen.getByText((_, element) => element?.textContent === expected);
+  expect(line.textContent).toBe(expected);
+});
+
 test('renders the estimate-bypass sentence as a complete sentence with no dangling clause when the saving is null', () => {
   const stop = makeStop({
     purchase_reason: 'bypass_cheaper_not_worth_stop',

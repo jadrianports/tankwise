@@ -151,6 +151,27 @@ function bypassedCheaperText(stop: FuelStop): string | null {
 // computed from raw prices only (plan 21-07). Do not "fix" this by adding
 // the margin figure back in; its absence here is deliberate, not an
 // oversight.
+//
+// [AMENDED 2026-08-08, Phase 21 plan 21-11] The "found zero qualifying
+// instances" and "a documented FALLBACK witness, not a production
+// corridor" claims above are corrected, not retracted -- both were
+// artifacts of the solve() rebuild-loop bug described above (fixed in
+// commit d32c8c0), not a real absence. Plan 21-10 regenerated the
+// realism/attribution sweep pair at the post-fix HEAD and found a real
+// corridor-replay witness: corridor el_paso_tx-portland_me, tag share
+// 0.50, arm penalty_aware_heuristic, stop 'QUIKTRIP #667'
+// (opis_id=71647), bypassed_estimate_count=1,
+// bypassed_estimate_saving_forgone=$1.19 -- firing identically at every
+// MARGIN_LADDER rung, including the zero control, because this
+// disclosure is gated on the flat per-stop penalty, not on the trust
+// margin's own value, exactly as the fallback witness above already
+// demonstrated. Now pinned by two tests: the backend
+// `RealCorridorEstimateBypassWitnessTests`
+// (routing/tests/test_price_provenance.py) and the frontend corridor-
+// witness test directly below the shipped $12.50 fallback-witness test
+// in JustificationPopup.test.tsx. The shipped $12.50 fallback witness
+// above stays on the record and stays tested -- both are real
+// solver.solve() executions, and this correction does not retract it.
 function bypassedEstimateText(stop: FuelStop): string | null {
   const { bypassed_estimate_count, bypassed_estimate_saving_forgone } = stop.rationale;
   if (!bypassed_estimate_count || bypassed_estimate_count <= 0) return null;
