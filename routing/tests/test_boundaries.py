@@ -238,12 +238,35 @@ def _is_price_source_decision_position(node, parent_index):
     return False
 
 
+def _enclosing_function_name(node, parent_index):
+    """Walk `node`'s ancestor chain, via `parent_index`, up to the module
+    root, and return the `name` of the nearest enclosing
+    `ast.FunctionDef`/`ast.AsyncFunctionDef`. A reference with no
+    enclosing function at all -- sitting at plain module scope -- is
+    attributed to the sentinel `"<module>"` rather than silently
+    skipped, so a module-scope provenance decision (exactly the shape
+    this guard exists to catch) cannot evade attribution and therefore
+    cannot evade the allowlist below.
+    """
+    current = node
+    while id(current) in parent_index:
+        parent, _field_name = parent_index[id(current)]
+        if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return parent.name
+        current = parent
+    return "<module>"
+
+
 def _collect_price_source_decision_reads(path):
     """Find every reference to `price_source` (or a name mentioning it)
     in `path` that sits in a comparison, conditional, boolean, or
-    sort-key decision position. Returns `"{path}:{lineno}: ..."`
-    violation strings, the same shape
-    `_collect_solve_calls_missing_penalty` already uses.
+    sort-key decision position. Returns a list of
+    `(file_stem, enclosing_function_name, message)` tuples -- the first
+    two fields are the `(file stem, enclosing function name)` key
+    `PriceSourceUsagePurityTest`'s allowlist is keyed by; the third is a
+    human-readable `"{path}:{lineno}: ..."` string, the same shape
+    `_collect_solve_calls_missing_penalty` already uses for its own
+    violation messages.
     """
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     parent_index = _build_parent_index(tree)
@@ -254,45 +277,83 @@ def _collect_price_source_decision_reads(path):
         if identifier is None:
             continue
         if _is_price_source_decision_position(node, parent_index):
+            function_name = _enclosing_function_name(node, parent_index)
             violations.append(
-                f"{path}:{node.lineno}: price_source ({identifier}) read in "
-                f"a comparison/conditional/boolean/sort-key position"
+                (
+                    path.stem,
+                    function_name,
+                    f"{path}:{node.lineno}: price_source ({identifier}) read in "
+                    f"a comparison/conditional/boolean/sort-key position "
+                    f"(function={function_name!r})",
+                )
             )
     return violations
 
 
-class PriceSourceUsagePurityTest(SimpleTestCase):
-    """Statically enforces that `price_source` may appear in the pure
-    solver files (`SOLVER_FILES` above) only in assignment and
-    construction positions -- never as the operand of a comparison, the
-    test of a conditional, an operand of a boolean operator, or a sort
-    key. Phase 20 ships provenance data threaded through the solver but
-    functionally inert: this guard converts that inertness from an
-    observation about one measured run into a property of the source
-    itself, so a future edit that starts deciding on `price_source`
-    cannot land silently.
+# D-23: the Phase 21 (PROV-03) inversion target. Exactly one entry --
+# `solver.py` / `is_estimate_priced` -- the trust margin's single shared
+# decision-position provenance read (see that function's own docstring in
+# `routing/services/solver.py`). A future phase adding a second
+# decision-position provenance read anywhere in `SOLVER_FILES` must extend
+# this allowlist consciously, in the same commit as the read; a stale entry
+# (naming a function that no longer contains such a read) must also fail,
+# which is why the guard below uses exact set equality rather than a subset
+# check -- a subset check would let this allowlist silently outgrow the
+# code, the same slack that makes `prune(x) -> x` pass every soundness
+# property.
+_PRICE_SOURCE_DECISION_READ_ALLOWLIST = frozenset(
+    {
+        ("solver", "is_estimate_priced"),
+    }
+)
 
-    Phase 21 (PROV-03, the trust margin) is expected and sanctioned to
-    make exactly the kind of decision-position read this guard forbids,
-    once it prices provenance into the DP's internal objective. When
-    that lands, the correct action is to invert this guard -- narrow or
-    re-target it to the specific reads Phase 21 introduces -- and never
-    delete it outright, per this project's standing rule that guards get
-    inverted rather than removed. A green result here is therefore
-    evidence about Phase 20's scope, not a prohibition binding Phase 21's
-    planner: it says provenance is inert *today*, not that the DP may
-    never read it.
+
+class PriceSourceUsagePurityTest(SimpleTestCase):
+    """Statically enforces that `price_source` is read in a decision
+    position (a comparison, a conditional, a boolean operand, or a sort
+    key) inside the pure solver files (`SOLVER_FILES` above) at ONLY the
+    exact `(file stem, enclosing function name)` pairs pinned in
+    `_PRICE_SOURCE_DECISION_READ_ALLOWLIST` -- never zero, never more, and
+    never a different one.
+
+    History: Phase 20 shipped `price_source` threaded through the solver
+    but functionally inert, and this guard originally forbade EVERY
+    decision-position read outright (`assertEqual(violations, [])`) to
+    convert that inertness from an observation about one measured run
+    into a property of the source itself. Phase 21 (PROV-03, the trust
+    margin) deliberately makes exactly one such read -- pricing an
+    estimate-priced candidate's provenance into the DP's internal
+    objective -- so the guard is narrowed here to an allowlist of that one
+    read, per this project's standing rule that guards get inverted, never
+    deleted, when the behaviour they forbade becomes deliberately
+    sanctioned. `assertEqual` on sorted collections (not a subset check)
+    is what makes this an inversion rather than a widening: it fails in
+    BOTH directions -- an unexpected new decision-position read anywhere
+    in `SOLVER_FILES` (including a second one inside `solver.py` itself),
+    and a stale allowlist entry naming a function that no longer contains
+    such a read. A future phase introducing a genuinely new
+    decision-position provenance read must extend this allowlist
+    consciously, in the same commit as the read that requires it.
     """
 
-    def test_price_source_never_read_in_comparison_conditional_or_sort_key(self):
-        violations = []
+    def test_price_source_decision_reads_match_the_pinned_allowlist_exactly(self):
+        found_keys = set()
+        messages_by_key = {}
         for path in SOLVER_FILES:
-            violations.extend(_collect_price_source_decision_reads(path))
+            for file_stem, function_name, message in _collect_price_source_decision_reads(path):
+                key = (file_stem, function_name)
+                found_keys.add(key)
+                messages_by_key.setdefault(key, []).append(message)
 
         self.assertEqual(
-            violations,
-            [],
-            f"price_source read in a decision position inside the pure solver: {violations}",
+            sorted(found_keys),
+            sorted(_PRICE_SOURCE_DECISION_READ_ALLOWLIST),
+            "Decision-position price_source reads in SOLVER_FILES must match "
+            "the pinned allowlist exactly (D-23) -- an unexpected new read is "
+            "as much a failure here as a stale allowlist entry. "
+            f"found={sorted(found_keys)}; "
+            f"allowlist={sorted(_PRICE_SOURCE_DECISION_READ_ALLOWLIST)}; "
+            f"messages={messages_by_key}",
         )
 
 

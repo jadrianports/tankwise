@@ -207,6 +207,66 @@ def _validate(candidates, total_route_mi, tank_range_mi, mpg, starting_fuel):
             )
 
 
+# The wire value of Station.PriceSource.EIA_REGIONAL_ESTIMATE
+# (routing/models.py), duplicated here as a plain module-level `str` rather
+# than imported -- SOLVER_FILES (routing/tests/test_boundaries.py) forbids
+# both a `django` and a `routing.models` import, and `Candidate.price_source`
+# already crosses this same pure boundary as a bare string for the identical
+# reason (see its own docstring above). Phase 22 is the first phase that
+# actually writes any `eia_regional_estimate` row; until then this constant
+# names a value that exists everywhere in the type but nowhere yet in the
+# data (PROV-03).
+ESTIMATE_PRICE_SOURCE = "eia_regional_estimate"
+
+
+def is_estimate_priced(candidate) -> bool:
+    """Return `True` exactly when `candidate`'s provenance is
+    `ESTIMATE_PRICE_SOURCE`, and `False` for the recorded value, for an
+    unknown value, and for `None` -- `getattr(..., "price_source", None)`
+    rather than a bare attribute access, so this function is total: no
+    candidate shape can make it raise.
+
+    This is deliberately the phase's **single** decision-position
+    `price_source` read inside `SOLVER_FILES` -- `dp.py`, `heuristic.py`
+    and `prune.py` all call through this function (or `trust_margin_for`
+    below, which calls it) rather than comparing `candidate.price_source`
+    themselves. Concentrating the read here is what keeps
+    `PriceSourceUsagePurityTest`'s allowlist
+    (`routing/tests/test_boundaries.py`) a single entry:
+    `solver.py` / `is_estimate_priced`. A future phase adding a second
+    decision-position provenance read anywhere in `SOLVER_FILES` --
+    including a second one inside this file -- must extend that allowlist
+    consciously, in the same commit as the read.
+    """
+    candidate_price_source = getattr(candidate, "price_source", None)
+    return candidate_price_source == ESTIMATE_PRICE_SOURCE
+
+
+def trust_margin_for(candidate, trust_margin: Decimal) -> Decimal:
+    """Return the flat per-purchase trust-margin charge for one
+    `candidate`: `trust_margin` itself when `is_estimate_priced(candidate)`
+    is `True`, and `Decimal(0)` for every other candidate -- including a
+    real-priced candidate when `trust_margin` is itself `Decimal(0)`, so
+    callers never need to special-case that value. Total, like
+    `is_estimate_priced`: no candidate shape can make it raise.
+
+    The margin is a flat `$` charge per purchase, mirroring `penalty`
+    exactly, never a per-gallon adder (D-06). With a flat charge,
+    `total_cost` stays the DP's own accumulated `sum(cost_i)` and
+    structurally cannot contain the margin -- a per-gallon margin would
+    force a second price scale into the exact tick arithmetic where
+    `_exact_sub` (`dp.py`) already exists as a documented precision
+    landmine, and would make `total_cost` a *reconstruction* from raw
+    prices rather than a plain accumulation, precisely the leak surface
+    ROADMAP criterion 1 guards. The acknowledged cost, accepted knowingly:
+    a flat charge does not scale with exposure even though price
+    uncertainty genuinely does.
+    """
+    if is_estimate_priced(candidate):
+        return trust_margin
+    return Decimal(0)
+
+
 # Imported here -- after `Candidate`/`FuelStop`/`FuelPlan`/`PurchaseReason`
 # are already defined above -- rather than at module top, because
 # `routing.services.dp`, `routing.services.heuristic`, and
