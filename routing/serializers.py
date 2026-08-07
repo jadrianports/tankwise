@@ -77,7 +77,13 @@ def _rationale_repr(instance) -> dict:
     fixed-charge recurrence evaluated as successors from this stop and
     did not take because the flat per-stop penalty outweighed the saving,
     and the fuel-dollar saving those rejections gave up. Contract stays
-    additive-only -- structured facts, no prose."""
+    additive-only -- structured facts, no prose.
+
+    The trailing pair below is additive (Phase 21, PROV-03): the SAME
+    bypass event narrowed to only its `eia_regional_estimate`-priced
+    members, populated only when this stop itself is real-priced -- how
+    many cheaper regional-estimate stations were reachable and not
+    taken, and the forgone fuel-dollar saving, from raw prices only."""
     return {
         "purchase_reason": instance.purchase_reason,
         "reason_target_station_id": instance.reason_target_opis_id,
@@ -98,6 +104,12 @@ def _rationale_repr(instance) -> dict:
         "bypassed_saving_forgone": (
             _quantize_money(instance.bypassed_saving_forgone)
             if instance.bypassed_saving_forgone is not None
+            else None
+        ),
+        "bypassed_estimate_count": int(instance.bypassed_estimate_count),
+        "bypassed_estimate_saving_forgone": (
+            _quantize_money(instance.bypassed_estimate_saving_forgone)
+            if instance.bypassed_estimate_saving_forgone is not None
             else None
         ),
     }
@@ -509,10 +521,11 @@ class FuelStopSerializer(serializers.Serializer):
     `reason_target_station_id`/`reason_target_name`,
     `skipped_count`/`skipped_avg_price`, `price_percentile`,
     `corridor_avg_price`, `bypassed_cheaper_count`/
-    `bypassed_saving_forgone`) explaining why the stop happened and for
-    how much. Every value in it was computed by the solver at the branch
-    that produced the purchase -- this class re-derives nothing, it only
-    formats.
+    `bypassed_saving_forgone`, and (Phase 21, PROV-03) its
+    estimate-priced-only companion pair) explaining why the stop
+    happened and for how much. Every value in it was computed by the
+    solver at the branch that produced the purchase -- this class
+    re-derives nothing, it only formats.
 
     `price_source` is a top-level sibling of `price_per_gallon`/`cost`,
     not a member of `_rationale_repr()`'s dict: `_rationale_repr()`'s own

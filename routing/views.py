@@ -275,6 +275,8 @@ _FUEL_STOP_RATIONALE_SCHEMA = inline_serializer(
         "skipped_avg_price": serializers.CharField(allow_null=True),
         "corridor_avg_price": serializers.CharField(allow_null=True),
         "price_percentile": serializers.FloatField(allow_null=True),
+        "bypassed_estimate_count": serializers.IntegerField(),
+        "bypassed_estimate_saving_forgone": serializers.CharField(allow_null=True),
     },
 )
 
@@ -456,6 +458,8 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
                     "skipped_avg_price": None,
                     "corridor_avg_price": "2.98",
                     "price_percentile": 8.0,
+                    "bypassed_estimate_count": 0,
+                    "bypassed_estimate_saving_forgone": None,
                 },
                 "price_source": "opis_indexed",
             },
@@ -475,6 +479,8 @@ _ROUTE_RESPONSE_EXAMPLE = OpenApiExample(
                     "skipped_avg_price": "2.91",
                     "corridor_avg_price": "2.98",
                     "price_percentile": 5.0,
+                    "bypassed_estimate_count": 0,
+                    "bypassed_estimate_saving_forgone": None,
                 },
                 "price_source": "opis_indexed",
             },

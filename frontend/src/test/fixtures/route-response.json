@@ -40,7 +40,9 @@
         "corridor_avg_price": "3.95",
         "price_percentile": 30.0,
         "bypassed_cheaper_count": 0,
-        "bypassed_saving_forgone": null
+        "bypassed_saving_forgone": null,
+        "bypassed_estimate_count": 0,
+        "bypassed_estimate_saving_forgone": null
       }
     },
     {
@@ -64,7 +66,9 @@
         "corridor_avg_price": "3.95",
         "price_percentile": 10.0,
         "bypassed_cheaper_count": 0,
-        "bypassed_saving_forgone": null
+        "bypassed_saving_forgone": null,
+        "bypassed_estimate_count": 0,
+        "bypassed_estimate_saving_forgone": null
       }
     }
   ],

@@ -1,5 +1,17 @@
 """Cache-key normalizer for the /api/route response cache.
 
+Still `route:v10:` as of the `bypassed_estimate_count`/
+`bypassed_estimate_saving_forgone` rationale pair (Phase 21 plan 21-07,
+PROV-03) -- deliberately NOT bumped. Assessed against the `solver_strategy`
+no-bump entry below, whose reasoning is explicitly scoped to OUTPUTS (a
+pure, deterministic function of inputs the key already namespaces): the
+pair describes a plan already computed under the stop chain, vehicle, EIA
+vintage, penalty and (as of the `v10:` bump directly above) trust margin --
+every one of those already has its own key component -- it changes no
+input and selects no different station. It is an OUTPUT fact about a
+purchase decision already made, exactly like `solver_strategy` itself, so
+the same precedent applies and no new token or prefix is needed.
+
 Small, module-level pure helpers -- mirrors `routing/services/corridor.py`'s
 `_as_decimal`/helper style. Coordinates are rounded to 5 decimal places
 (~1 m) so trivial float differences still hit; addresses are casefolded

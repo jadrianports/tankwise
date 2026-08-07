@@ -466,6 +466,49 @@ class FuelStopRationaleTests(SimpleTestCase):
         self.assertEqual(rationale["skipped_avg_price"], "3.51")
         self.assertEqual(rationale["price_percentile"], 50.0)
 
+    def test_estimate_bypass_pair_populated_and_quantized(self):
+        """PROV-03 (D-19/D-20): the estimate-priced-only companion pair,
+        populated exactly like `bypassed_cheaper_count`/
+        `bypassed_saving_forgone` above."""
+        stop = FuelStop(
+            name="STOP1",
+            opis_id=42,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("100"),
+            gallons=Decimal("30"),
+            cost=Decimal("90.00"),
+            purchase_reason=PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP,
+            reason_target_opis_id=7,
+            reason_target_name="NEXT",
+            bypassed_cheaper_count=2,
+            bypassed_saving_forgone=Decimal("12.50"),
+            bypassed_estimate_count=1,
+            bypassed_estimate_saving_forgone=Decimal("6.125"),
+        )
+
+        data = FuelStopSerializer(stop, context={}).data
+        rationale = data["rationale"]
+
+        self.assertEqual(rationale["bypassed_estimate_count"], 1)
+        self.assertEqual(rationale["bypassed_estimate_saving_forgone"], "6.13")
+
+    def test_estimate_bypass_pair_defaults_to_zero_and_null(self):
+        stop = FuelStop(
+            name="STOP1",
+            opis_id=42,
+            price_per_gallon=Decimal("3.00"),
+            distance_from_start_mi=Decimal("100"),
+            gallons=Decimal("30"),
+            cost=Decimal("90.00"),
+            purchase_reason=PurchaseReason.FILL_TO_CONTINUE,
+        )
+
+        data = FuelStopSerializer(stop, context={}).data
+        rationale = data["rationale"]
+
+        self.assertEqual(rationale["bypassed_estimate_count"], 0)
+        self.assertIsNone(rationale["bypassed_estimate_saving_forgone"])
+
     def test_v1_fuel_stop_keys_unchanged_alongside_rationale(self):
         stop = make_fuel_stop("3.00", "100", "30", "90.00", name="STOP1", opis_id=42)
 
@@ -1081,6 +1124,24 @@ class ResponseContractTests(SimpleTestCase):
     }
     CURRENT_FUEL_STOP_KEYS = V1_FUEL_STOP_KEYS | {"rationale", "price_source"}
 
+    # The `rationale` sub-dict's own exact key set (D-20/PROV-03): the
+    # top-level/fuel-stop guards above cannot see a key silently
+    # disappearing or appearing from INSIDE `rationale` -- this is the
+    # exact-equality guard scoped to that nested object.
+    CURRENT_RATIONALE_KEYS = {
+        "purchase_reason",
+        "reason_target_station_id",
+        "reason_target_name",
+        "skipped_count",
+        "skipped_avg_price",
+        "corridor_avg_price",
+        "price_percentile",
+        "bypassed_cheaper_count",
+        "bypassed_saving_forgone",
+        "bypassed_estimate_count",
+        "bypassed_estimate_saving_forgone",
+    }
+
     def _v1_shaped_instance_and_context(self):
         raw_coords = [[-87.6298, 41.8781], [-90.1994, 38.6270]]
         route = Route(
@@ -1221,6 +1282,18 @@ class ResponseContractTests(SimpleTestCase):
         stop = data["fuel_stops"][0]
 
         self.assertEqual(set(stop.keys()), self.CURRENT_FUEL_STOP_KEYS)
+
+    def test_current_rationale_keys_are_exactly_the_live_contract(self):
+        """PROV-03 (D-20): exact set equality scoped to the `rationale`
+        sub-dict itself -- the top-level/fuel-stop guards above only see
+        `"rationale"` as one opaque key and cannot catch a key silently
+        added to or dropped from what is INSIDE it."""
+        instance, context = self._fully_populated_instance()
+
+        data = RouteResponseSerializer(instance, context=context).data
+        rationale = data["fuel_stops"][0]["rationale"]
+
+        self.assertEqual(set(rationale.keys()), self.CURRENT_RATIONALE_KEYS)
 
     def test_v1_shaped_context_still_returns_candidate_stations_key(self):
         """A {start, finish}-only request (no candidates/candidate_coords
