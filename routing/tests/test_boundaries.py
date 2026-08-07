@@ -416,9 +416,9 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # without re-running the walk -- 18.1-05 did the identical thing for the
 # `deadline=` kwarg and found 57 sites; this headline count is that same
 # discipline applied to `trust_margin=`.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 79
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 81
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 9
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 70
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 72
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):

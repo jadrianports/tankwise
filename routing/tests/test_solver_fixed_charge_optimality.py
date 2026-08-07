@@ -132,13 +132,18 @@ from decimal import Decimal
 from itertools import chain, combinations
 
 from django.test import SimpleTestCase
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from routing.services import Candidate
 from routing.services.dp import preflight_gap_check, solve_fixed_charge
 from routing.services.exceptions import InfeasibleRouteError
-from routing.services.solver import ESTIMATE_PRICE_SOURCE, is_estimate_priced, trust_margin_for
+from routing.services.solver import (
+    ESTIMATE_PRICE_SOURCE,
+    is_estimate_priced,
+    solve,
+    trust_margin_for,
+)
 from routing.tests import frozen_greedy
 from routing.tests.test_trust_margin_rule import MARGIN_LADDER
 
@@ -1819,6 +1824,328 @@ class TrustMarginPenaltyConsistencyTests(SimpleTestCase):
                     f"{penalty}, margin={margin}; plan={plan!r}; "
                     f"drawn_route={drawn_route!r}",
                 )
+
+
+class TrustMarginOracleDifferentialTests(SimpleTestCase):
+    """PROV-03/D-15/D-24, ROADMAP criterion 1 (twice-amended): the DP arm,
+    finally wired for the trust margin (plan 21-06 Task 1) against THIS
+    module's own independent subset-enumeration oracle -- mirroring
+    DpOracleDifferentialTests' shape exactly, extended one dimension:
+    every drawn route is checked at every `(penalty, trust_margin)` pair
+    in the full `PENALTY_LADDER x _MARGIN_SWEEP` cross product, the
+    IDENTICAL sweep `TrustMarginPenaltyConsistencyTests` already runs
+    against the oracle alone (Task 2's adopted rung shape).
+
+    Objective agreement is asserted unconditionally; station-set and
+    `total_cost` agreement are asserted only when the oracle's optimum is
+    strictly unique (`OraclePlan.is_unique_optimum`) -- plan 21-05's own
+    closing note recorded why this matters here specifically: condition
+    3's prune rule retains a strict superset on a mixed-provenance corpus
+    even at `trust_margin=0`, which is sound (never changes the optimal
+    objective) but can hand the deterministic D-12 tie-break a different
+    winner among several equal-objective plans. Unconditional objective
+    plus conditional station-set is Phase 17's own D-36 resolution,
+    applied here rather than invented.
+
+    **Criterion 1's re-scoping (D-24).** The criterion's literal wording
+    ("`price_per_gallon`, `total_cost` and `savings` are identical to
+    what the build returns with the margin set to zero") is unsatisfiable
+    exactly where the margin does its job: on a tagged sweep the margin
+    legitimately changes which station is bought, so `total_cost`
+    legitimately differs from the `trust_margin=0` run. The universal
+    anti-leak property is asserted instead, on EVERY sweep including ones
+    where the margin fires: every `FuelStop.price_per_gallon` equals its
+    source candidate's raw price, and `total_cost` equals
+    `sum(gallons * raw price)` to within `COST_TOLERANCE`. This is
+    STRICTLY STRONGER than the literal reading and true everywhere. The
+    `trust_margin=0` byte-identity claim is kept too, but re-scoped to an
+    ALL-`opis_indexed` (all-recorded) candidate set -- the only scope in
+    which byte identity to the margin-zero build is actually a true
+    claim -- in
+    `test_zero_margin_byte_identity_on_all_recorded_candidates` below.
+    See `.planning/ROADMAP.md` Phase 21 criterion 1's dated amendment.
+
+    **Anti-vacuity (D-24's own instruction).** A no-leak test that only
+    ever observes inert runs (margin never actually fired) proves
+    nothing -- `prune(x) -> x` in a different costume. `tearDownClass`
+    below fails the run if not a single example, across the whole
+    Hypothesis property, had a NONZERO margin (the only variable that
+    differs between it and the trust_margin=0 run over the SAME
+    candidates and penalty) produce a DIFFERENT DP stop set -- the
+    observable, causal definition of the margin having changed the
+    decision. `_MARGIN_SWAP_WITNESS_ROUTE`, pinned via `@example` below,
+    backstops this deterministically: a full swap away from every
+    estimate-priced candidate produces a winning set with a zero SUMMED
+    margin of its own (nothing estimate-priced survived to be charged),
+    which is exactly why "the winning set's own margin is nonzero" was
+    considered and rejected as this condition's definition -- it would
+    silently exclude the swap witness's own case, D-24's central named
+    behaviour. The observed count is recorded in 21-06-SUMMARY.md.
+    """
+
+    _margin_fired_and_differed_count = 0
+
+    # The anti-vacuity backstop: a hand-built witness, reusing
+    # TrustMarginAnchorTests' own swap-witness shape verbatim (two
+    # co-located stations, one cheap and estimate-priced, one slightly
+    # dearer and real-priced, on a route needing exactly one stop),
+    # pinned via @example below so the anti-vacuity condition fires
+    # deterministically regardless of what the random Hypothesis draws
+    # happen to produce. A margin rung comfortably exceeds the $0.40
+    # fuel-cost gap over the 4-gallon fill this witness purchases at
+    # EVERY penalty in PENALTY_LADDER (the penalty term is identical for
+    # either single-stop choice, so it cancels out of the swap decision),
+    # so this witness is guaranteed to both fire the margin and swap the
+    # DP's own chosen stop set relative to its trust_margin=0 run.
+    _MARGIN_SWAP_WITNESS_ROUTE = (
+        [
+            Candidate(
+                name="cheap-estimate",
+                opis_id=1,
+                price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal("50"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="dearer-real",
+                opis_id=2,
+                price_per_gallon=Decimal("3.10"),
+                distance_from_start_mi=Decimal("50"),
+                price_source=_RECORDED_PRICE_SOURCE,
+            ),
+        ],
+        Decimal(100),
+        Decimal(60),
+        Decimal(10),
+        Decimal(1),
+    )
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        if cls._margin_fired_and_differed_count <= 0:
+            raise AssertionError(
+                "anti-vacuity failure: zero examples were observed across "
+                "the whole Hypothesis run where the trust margin actually "
+                "fired (a nonzero applied margin on the DP's winning stop "
+                "set) AND changed the chosen stop set relative to the "
+                "trust_margin=0 run at the same penalty -- the no-leak "
+                "assertions in this class would be exercised only on "
+                "inert runs, proving nothing (D-24's own named failure "
+                "mode: prune(x) -> x in a different costume)."
+            )
+
+    @example(drawn_route=_MARGIN_SWAP_WITNESS_ROUTE)
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=200)
+    def test_dp_matches_oracle_across_penalty_and_margin_ladder(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        candidate_by_id = {c.opis_id: c for c in candidates}
+
+        try:
+            preflight_gap_check(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+            dp_feasible = True
+        except InfeasibleRouteError:
+            dp_feasible = False
+
+        zero_margin_stop_ids_by_penalty = {}
+
+        for penalty in PENALTY_LADDER:
+            for margin in _MARGIN_SWEEP:
+                oracle_plan = optimal_fixed_charge_plan(
+                    candidates,
+                    total_route_mi,
+                    penalty=penalty,
+                    tank_range_mi=tank_range_mi,
+                    mpg=mpg,
+                    starting_fuel=starting_fuel,
+                    trust_margin=margin,
+                )
+
+                context = (
+                    f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+                    f"tank_range_mi={tank_range_mi}, mpg={mpg}, "
+                    f"starting_fuel={starting_fuel}, penalty={penalty}, "
+                    f"margin={margin}"
+                )
+
+                self.assertEqual(
+                    oracle_plan is not None,
+                    dp_feasible,
+                    f"feasibility verdicts disagree: oracle_feasible="
+                    f"{oracle_plan is not None}, dp_feasible={dp_feasible}; "
+                    f"{context}",
+                )
+                if oracle_plan is None:
+                    continue
+
+                dp_plan = solve_fixed_charge(
+                    candidates,
+                    total_route_mi=total_route_mi,
+                    tank_range_mi=tank_range_mi,
+                    mpg=mpg,
+                    starting_fuel=starting_fuel,
+                    penalty=penalty,
+                    trust_margin=margin,
+                )
+
+                # Objective agreement: unconditional (the actual
+                # differential claim -- see DpOracleDifferentialTests for
+                # the identical shape, one dimension narrower).
+                self.assertLessEqual(
+                    abs(dp_plan.penalised_objective - oracle_plan.objective),
+                    COST_TOLERANCE,
+                    f"dp penalised_objective ({dp_plan.penalised_objective}) "
+                    f"differs from oracle objective ({oracle_plan.objective}) "
+                    f"beyond COST_TOLERANCE; {context}",
+                )
+
+                dp_stop_opis_ids = tuple(stop.opis_id for stop in dp_plan.stops)
+
+                if oracle_plan.is_unique_optimum:
+                    self.assertEqual(
+                        dp_stop_opis_ids,
+                        oracle_plan.stop_opis_ids,
+                        f"station set differs though the oracle optimum is "
+                        f"strictly unique; dp_stop_opis_ids="
+                        f"{dp_stop_opis_ids!r}; {context}",
+                    )
+                    self.assertLessEqual(
+                        abs(dp_plan.total_cost - oracle_plan.fuel_cost),
+                        COST_TOLERANCE,
+                        f"dp total_cost ({dp_plan.total_cost}) differs from "
+                        f"oracle fuel_cost ({oracle_plan.fuel_cost}) beyond "
+                        f"COST_TOLERANCE though the oracle optimum is "
+                        f"strictly unique; {context}",
+                    )
+
+                # D-24 no-leak assertions: asserted directly, on EVERY
+                # sweep including ones where the margin fires -- this is
+                # criterion 1's actual proof, not merely its inference.
+                for stop in dp_plan.stops:
+                    raw_price = candidate_by_id[stop.opis_id].price_per_gallon
+                    self.assertEqual(
+                        stop.price_per_gallon,
+                        raw_price,
+                        f"FuelStop.price_per_gallon ({stop.price_per_gallon}) "
+                        f"!= source candidate's raw price ({raw_price}) for "
+                        f"opis_id={stop.opis_id}; {context}",
+                    )
+                reconstructed_total = sum(
+                    (
+                        stop.gallons * candidate_by_id[stop.opis_id].price_per_gallon
+                        for stop in dp_plan.stops
+                    ),
+                    Decimal(0),
+                )
+                self.assertLessEqual(
+                    abs(dp_plan.total_cost - reconstructed_total),
+                    COST_TOLERANCE,
+                    f"total_cost ({dp_plan.total_cost}) != sum(gallons * "
+                    f"raw price) ({reconstructed_total}); {context}",
+                )
+
+                # Anti-vacuity bookkeeping (see tearDownClass above): the
+                # margin "actually fired" on this run when a NONZERO
+                # margin (the only variable that differs between this run
+                # and the trust_margin=0 run at the SAME penalty and
+                # candidates) produced a DIFFERENT DP stop set -- the
+                # observable, causal definition of "the margin changed the
+                # decision", not a proxy for it. (An earlier draft of this
+                # check instead required the WINNING set's own summed
+                # margin to be positive; that is a stricter, different
+                # claim -- a "full swap away from every estimate-priced
+                # candidate", like this class's own pinned witness below,
+                # legitimately produces a stop set with a zero summed
+                # margin despite the margin being exactly what caused the
+                # swap -- so it is not used here.)
+                if margin == Decimal(0):
+                    zero_margin_stop_ids_by_penalty[penalty] = dp_stop_opis_ids
+                else:
+                    zero_ids = zero_margin_stop_ids_by_penalty.get(penalty)
+                    if zero_ids is not None and dp_stop_opis_ids != zero_ids:
+                        type(self)._margin_fired_and_differed_count += 1
+
+    @given(single_leg_routes())
+    @settings(deadline=None, max_examples=100)
+    def test_zero_margin_byte_identity_on_all_recorded_candidates(self, drawn_route):
+        """D-24's inertness claim, correctly scoped: on an ALL-`opis_indexed`
+        (all-recorded) candidate set -- no `eia_regional_estimate` station
+        anywhere in the input -- the plan at ANY `MARGIN_LADDER` rung is
+        byte-identical to the SAME input's `trust_margin=0` plan: same
+        stop ids, same `total_cost`, same `solver_strategy`. This holds
+        because `trust_margin_for(...)` returns `Decimal(0)` for a
+        real-priced candidate at any margin value, per its own docstring.
+
+        Run through `solver.solve()` -- not `dp.solve_fixed_charge`
+        directly -- specifically so `solver_strategy` is observable at
+        all; only `solve()`'s own dispatch sets that field. This is
+        deliberately a STRONGER claim than criterion 1's literal wording
+        ever needed: it holds at every ladder rung, not merely at the
+        current `TRUST_MARGIN_USD` default (which happens to equal
+        `trust_margin=0` today, making this test's content genuinely
+        exceed what a same-value comparison alone would prove).
+        """
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+        all_recorded_candidates = [
+            replace(c, price_source=_RECORDED_PRICE_SOURCE) for c in candidates
+        ]
+
+        try:
+            zero_plan = solve(
+                all_recorded_candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=DEFAULT_PENALTY,
+                trust_margin=Decimal(0),
+                deadline=None,
+            )
+        except InfeasibleRouteError:
+            return
+
+        for margin in MARGIN_LADDER:
+            margin_plan = solve(
+                all_recorded_candidates,
+                total_route_mi,
+                tank_range_mi=tank_range_mi,
+                mpg=mpg,
+                starting_fuel=starting_fuel,
+                penalty=DEFAULT_PENALTY,
+                trust_margin=margin,
+                deadline=None,
+            )
+            context = (
+                f"candidates={all_recorded_candidates!r}, "
+                f"total_route_mi={total_route_mi}, "
+                f"tank_range_mi={tank_range_mi}, mpg={mpg}, "
+                f"starting_fuel={starting_fuel}, margin={margin}"
+            )
+            self.assertEqual(
+                tuple(s.opis_id for s in margin_plan.stops),
+                tuple(s.opis_id for s in zero_plan.stops),
+                f"stop ids differ at margin={margin} on an all-recorded "
+                f"candidate set; margin_plan={margin_plan!r}, "
+                f"zero_plan={zero_plan!r}; {context}",
+            )
+            self.assertEqual(
+                margin_plan.total_cost,
+                zero_plan.total_cost,
+                f"total_cost differs at margin={margin} on an all-recorded "
+                f"candidate set; {context}",
+            )
+            self.assertEqual(
+                margin_plan.strategy,
+                zero_plan.strategy,
+                f"solver_strategy differs at margin={margin} on an "
+                f"all-recorded candidate set; {context}",
+            )
 
 
 class PenaltyDisagreementFloorTests(SimpleTestCase):
