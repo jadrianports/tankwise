@@ -97,6 +97,73 @@ test('omits the bypassed-cheaper counter when bypassed_cheaper_count is zero', (
   expect(screen.queryByText(/passed up/i)).not.toBeInTheDocument();
 });
 
+test('renders the estimate-bypass sentence with the forgone saving, full text asserted', () => {
+  const stop = makeStop({
+    purchase_reason: 'bypass_cheaper_not_worth_stop',
+    bypassed_estimate_count: 1,
+    bypassed_estimate_saving_forgone: '12.50',
+  });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const expected =
+    'Passed over 1 cheaper station whose price is a regional estimate rather than a recorded one, giving up $12.50 in fuel savings.';
+  const line = screen.getByText((_, element) => element?.textContent === expected);
+  expect(line.textContent).toBe(expected);
+});
+
+test('renders the estimate-bypass sentence as a complete sentence with no dangling clause when the saving is null', () => {
+  const stop = makeStop({
+    purchase_reason: 'bypass_cheaper_not_worth_stop',
+    bypassed_estimate_count: 2,
+    bypassed_estimate_saving_forgone: null,
+  });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  const expected = 'Passed over 2 cheaper stations whose price is a regional estimate rather than a recorded one.';
+  const line = screen.getByText((_, element) => element?.textContent === expected);
+  expect(line.textContent).toBe(expected);
+  expect(line.textContent).not.toMatch(/\$/);
+});
+
+test('omits the estimate-bypass sentence when bypassed_estimate_count is zero', () => {
+  const stop = makeStop({ purchase_reason: 'reach_finish' });
+  render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />);
+  expect(screen.queryByText(/regional estimate rather than a recorded one/i)).not.toBeInTheDocument();
+  expect(screen.getByText(/bought just enough fuel here to reach the finish/i)).toBeInTheDocument();
+});
+
+test('omits the estimate-bypass sentence and does not throw when both keys are absent (legacy payload)', () => {
+  const fullStop = makeStop({ purchase_reason: 'reach_finish' });
+  const { bypassed_estimate_count: _unused1, bypassed_estimate_saving_forgone: _unused2, ...legacyRationale } =
+    fullStop.rationale;
+  const stop: FuelStop = {
+    ...fullStop,
+    rationale: legacyRationale as unknown as Rationale,
+  };
+  expect(() =>
+    render(<JustificationPopup stop={stop} number={1} open onClose={() => {}} />)
+  ).not.toThrow();
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+  expect(screen.queryByText(/regional estimate rather than a recorded one/i)).not.toBeInTheDocument();
+});
+
+test('the committed fixture renders the estimate-bypass sentence on the recorded-price stop and not on the estimate-priced stop', () => {
+  const recordedStop = fixture.fuel_stops.find((s) => s.price_source === 'opis_indexed');
+  if (!recordedStop) throw new Error('fixture has no opis_indexed fuel stop');
+  const estimateStop = fixture.fuel_stops.find((s) => s.price_source === 'eia_regional_estimate');
+  if (!estimateStop) throw new Error('fixture has no eia_regional_estimate fuel stop');
+
+  render(<JustificationPopup stop={recordedStop} number={1} open onClose={() => {}} />);
+  const count = recordedStop.rationale.bypassed_estimate_count;
+  const expected =
+    `Passed over ${count} cheaper station${count === 1 ? '' : 's'} whose price is a regional estimate rather ` +
+    `than a recorded one, giving up $${recordedStop.rationale.bypassed_estimate_saving_forgone} in fuel savings.`;
+  const line = screen.getByText((_, element) => element?.textContent === expected);
+  expect(line.textContent).toBe(expected);
+  cleanup();
+
+  render(<JustificationPopup stop={estimateStop} number={1} open onClose={() => {}} />);
+  expect(screen.queryByText(/regional estimate rather than a recorded one/i)).not.toBeInTheDocument();
+});
+
 test('rewords the skipped sentence to describe rejected cheaper candidates, not positional passes', () => {
   const stop = makeStop({
     purchase_reason: 'reach_finish',

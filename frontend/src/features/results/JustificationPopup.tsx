@@ -107,6 +107,61 @@ function bypassedCheaperText(stop: FuelStop): string | null {
   } here rather than pay for another stop${saving}.`;
 }
 
+// New (Phase 21, PROV-03, D-19/D-20/D-21): the bypass-direction sibling of
+// bypassedCheaperText above, narrowed to only the bypassed candidates that
+// were `eia_regional_estimate` priced. Fires only on a real-priced stop
+// that was kept while strictly cheaper regional-estimate-priced stations
+// were passed over -- the chosen-despite direction already has an answer
+// on screen (Phase 20's `· regional estimate` per-gallon qualifier), so
+// this is deliberately one-directional, never a mirror of it.
+//
+// Authored against a real observed instance, per the same discipline
+// bypass_cheaper_not_worth_stop's QUIKTRIP #667/CIRCLE K #4707605 comment
+// above uses -- but this one is a documented FALLBACK witness, not a
+// production corridor. Plan 21-08's realism sweep (the trust margin's own
+// two-sweep measurement, twelve pinned corridors, 288 measured cells)
+// found zero qualifying instances: no stop anywhere in the measured
+// corpus kept a real-priced station while passing over a cheaper
+// estimate-priced one. Recorded as a finding, not tuned toward finding
+// one. This plan's own fallback action first tried the trust margin's
+// two named anchor witnesses (`TrustMarginAnchorTests`,
+// test_solver_fixed_charge_optimality.py, plan 21-04) at every
+// MARGIN_LADDER rung, including the shipped `TRUST_MARGIN_USD` default --
+// both genuinely swap which station gets bought, but neither ever populates
+// this disclosure
+// pair, because the pair is only computed inside a full-tank fill that
+// flies PAST a reachable-but-not-worth-a-stop cheaper station, a
+// different decision shape than either witness models (a same-position
+// swap, and an optional-stop drop). Falling back one step further: the
+// wording below is authored against
+// `routing.tests.test_dp.BypassedEstimateDisclosureTests`'s own
+// three-station witness (plan 21-07's regression fixture for this exact
+// pair), run through the real `solver.solve()` -- a real-priced station
+// (opis_id=1, $3.50/gal, 250mi) is kept, buying 50.0 gallons and flying
+// past a cheaper regional-estimate station (opis_id=2, $3.00/gal, 500mi)
+// on its way to the next stop, giving up $12.50 in fuel savings; this
+// held identically at trust_margin=0 and at the shipped `TRUST_MARGIN_USD`
+// default, since this disclosure is gated on the flat per-stop penalty,
+// not on the trust margin's own value.
+//
+// The trust margin itself never appears in this sentence and never will:
+// it is a planning device inside the DP's selection objective, never
+// money the driver pays, so the only dollar figure this sentence can ever
+// render is bypassed_estimate_saving_forgone -- forgone FUEL savings,
+// computed from raw prices only (plan 21-07). Do not "fix" this by adding
+// the margin figure back in; its absence here is deliberate, not an
+// oversight.
+function bypassedEstimateText(stop: FuelStop): string | null {
+  const { bypassed_estimate_count, bypassed_estimate_saving_forgone } = stop.rationale;
+  if (!bypassed_estimate_count || bypassed_estimate_count <= 0) return null;
+  const saving = bypassed_estimate_saving_forgone
+    ? `, giving up $${bypassed_estimate_saving_forgone} in fuel savings`
+    : '';
+  return `Passed over ${bypassed_estimate_count} cheaper station${
+    bypassed_estimate_count === 1 ? '' : 's'
+  } whose price is a regional estimate rather than a recorded one${saving}.`;
+}
+
 // `price_percentile` arrives from the API as a percentage number already
 // (the serializer's `_percent_repr` renders the solver's 0-to-1 fraction as
 // `0.125 -> 12.5`), so it must NOT be scaled again here. It counts the
@@ -128,6 +183,7 @@ function percentileText(stop: FuelStop): string | null {
 function JustificationPopup({ stop, number, open, onClose }: JustificationPopupProps) {
   const skipped = skippedText(stop);
   const bypassedCheaper = bypassedCheaperText(stop);
+  const bypassedEstimate = bypassedEstimateText(stop);
   const percentile = percentileText(stop);
 
   return (
@@ -157,13 +213,22 @@ function JustificationPopup({ stop, number, open, onClose }: JustificationPopupP
           {justificationText(stop)}
         </Typography>
         {skipped && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: bypassedCheaper || percentile ? 0.5 : 0 }}>
+          <Typography
+            variant="body2"
+            color="text.secondary"
+            sx={{ mb: bypassedCheaper || bypassedEstimate || percentile ? 0.5 : 0 }}
+          >
             {skipped}
           </Typography>
         )}
         {bypassedCheaper && (
-          <Typography variant="body2" color="text.secondary" sx={{ mb: percentile ? 0.5 : 0 }}>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: bypassedEstimate || percentile ? 0.5 : 0 }}>
             {bypassedCheaper}
+          </Typography>
+        )}
+        {bypassedEstimate && (
+          <Typography variant="body2" color="text.secondary" sx={{ mb: percentile ? 0.5 : 0 }}>
+            {bypassedEstimate}
           </Typography>
         )}
         {percentile && (
