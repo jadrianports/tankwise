@@ -416,8 +416,15 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # without re-running the walk -- 18.1-05 did the identical thing for the
 # `deadline=` kwarg and found 57 sites; this headline count is that same
 # discipline applied to `trust_margin=`.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 81
-TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 9
+#
+# Updated in plan 21-08: `routing/management/commands/measure_trust_margin.py`
+# adds two new production call sites (the attribution and realism sweeps'
+# own `solver.solve(...)` calls, both explicit `trust_margin=`) -- a real,
+# legitimate classification drift this guard's own docstring exists to
+# catch, not something to route around. 9 -> 11 production, 72 test
+# unchanged, 81 -> 83 total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 83
+TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
 TRUST_MARGIN_CALL_SITE_TEST_COUNT = 72
 
 
