@@ -3,7 +3,7 @@ from decimal import Decimal
 from django.db import IntegrityError
 from django.test import TestCase
 
-from routing.models import GeocodeStatus, Station
+from routing.models import GeocodePrecision, GeocodeStatus, Station, StationSource
 
 
 def _make_station(opis_id, geocode_status, latitude=None, longitude=None):
@@ -57,3 +57,45 @@ class StationOpisIdUniqueTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             _make_station(opis_id=5, geocode_status=GeocodeStatus.PENDING)
+
+
+class StationSourceFieldTests(TestCase):
+    def test_station_source_values_are_exactly_opis_and_overture(self):
+        self.assertEqual(StationSource.values, ["opis", "overture"])
+
+    def test_geocode_precision_values_unchanged(self):
+        self.assertEqual(GeocodePrecision.values, ["rooftop", "city"])
+
+    def test_station_created_without_source_defaults_to_opis(self):
+        station = _make_station(opis_id=101, geocode_status=GeocodeStatus.PENDING)
+
+        self.assertEqual(station.source, StationSource.OPIS)
+
+    def test_gers_id_round_trips_a_36_character_uuid(self):
+        uuid_string = "08f2a1c4-9b3d-4e5f-8a6b-1c2d3e4f5a6b"
+        self.assertEqual(len(uuid_string), 36)
+
+        station = Station.objects.create(
+            opis_id=102,
+            name="Test Station",
+            address="I-00, EXIT 1 & US-1",
+            city="Anytown",
+            state="OK",
+            rack_id="100",
+            retail_price=Decimal("3.259"),
+            geocode_status=GeocodeStatus.PENDING,
+            observation_count=1,
+            price_min=Decimal("3.259"),
+            price_max=Decimal("3.259"),
+            source=StationSource.OVERTURE,
+            gers_id=uuid_string,
+        )
+        station.refresh_from_db()
+
+        self.assertEqual(station.gers_id, uuid_string)
+        self.assertEqual(station.source, StationSource.OVERTURE)
+
+    def test_gers_id_defaults_to_none_when_unset(self):
+        station = _make_station(opis_id=103, geocode_status=GeocodeStatus.PENDING)
+
+        self.assertIsNone(station.gers_id)
