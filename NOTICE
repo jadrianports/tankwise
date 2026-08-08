@@ -1,0 +1,124 @@
+TankWise -- Third-Party Data Notices
+=====================================
+
+This file records third-party data licences and attributions for data
+redistributed inside this repository. It is separate from LICENSE, which
+covers this repository's own source code.
+
+Overture Maps Foundation
+-------------------------
+
+This repository redistributes derived rows from the Overture Maps
+Foundation "Places" theme.
+
+  Release:  2026-07-22.0
+  Licence:  CDLA-Permissive-2.0 (Community Data License Agreement -
+            Permissive - Version 2.0)
+  Source:   Overture Maps Foundation, https://overturemaps.org
+
+The following committed files carry Overture-derived rows:
+
+  - data/overture_raw_extract.csv
+  - data/overture_stations.csv
+
+Attribution:
+
+  Data derived from the Overture Maps Foundation Places theme, used
+  under the Community Data License Agreement - Permissive - Version 2.0.
+
+Community Data License Agreement - Permissive - Version 2.0
+-------------------------------------------------------------
+
+This is the Community Data License Agreement - Permissive, Version 2.0
+(the "agreement"). Data Provider(s) and Data Recipient(s) agree as
+follows:
+
+1. Provision of the Data
+
+1.1. A Data Recipient may use, modify, and share the Data made available
+by Data Provider(s) under this Agreement if that Data Recipient follows
+the terms of this Agreement.
+
+1.2. This Agreement does not impose any restriction on a Data
+Recipient's use, modification, or sharing of any portions of the Data
+that are in the public domain or that may be used, modified, or shared
+under any other legal exception or limitation.
+
+2. Rights
+
+2.1. Grant of Copyright Rights. Subject to the terms and conditions of
+this Agreement, each Data Provider grants to each Data Recipient a
+worldwide, royalty-free, non-exclusive, irrevocable copyright licence to
+reproduce, prepare derivative works of, publicly display, publicly
+perform, sublicense, and distribute the Data.
+
+2.2. Grant of Patent Rights. Subject to the terms and conditions of this
+Agreement, each Data Provider grants each Data Recipient a
+worldwide, royalty-free, non-exclusive, irrevocable licence, under any
+patent claims the Data Provider can license, or has the right to
+sublicense, to make, have made, use, offer to sell, sell, import, and
+otherwise transfer the Data, where such licence applies only to those
+patent claims that are infringed by the Data Provider's contribution of
+its Data alone.
+
+3. Conditions
+
+3.1. Notice. Each Data Recipient must ensure that every recipient of the
+Data it makes available receives a copy of this Agreement.
+
+3.2. No Restrictions. A Data Recipient may not impose any additional or
+different terms or conditions on, or apply any technological measures to
+restrict the exercise of any rights granted under this Agreement to, any
+Data Recipient.
+
+4. No Warranty; Limitation of Liability
+
+4.1. The Data is provided on an "AS IS" basis, without representations or
+warranties of any kind, whether express, implied, statutory, or
+otherwise, including without limitation warranties of title,
+merchantability, fitness for a particular purpose, non-infringement, or
+the absence of latent or other defects, accuracy, or the presence or
+absence of errors, whether or not discoverable, all to the greatest
+extent permissible under applicable law.
+
+4.2. In no event will any Data Provider be liable to a Data Recipient on
+any legal theory (including, without limitation, negligence) or
+otherwise for any direct, special, indirect, incidental, consequential,
+punitive, exemplary, or other losses, costs, expenses, or damages
+arising out of this Agreement or use of the Data, even if the Data
+Provider has been advised of the possibility of such losses, costs,
+expenses, or damages.
+
+5. Termination
+
+5.1. This Agreement will continue to apply to a Data Recipient's use and
+sharing of the Data until terminated, provided that a Data Recipient's
+licences shall terminate automatically without notice if it fails to
+comply with any terms or conditions of this Agreement.
+
+6. Miscellaneous
+
+6.1. This Agreement is the entire agreement between the parties with
+respect to the Data licensed hereunder. If any provision of this
+Agreement is held to be unenforceable, this Agreement will remain in
+effect with the provision omitted, unless omission would frustrate the
+intent of the parties, in which case this Agreement will immediately
+terminate.
+
+6.2. Except as expressly stated herein, nothing in this Agreement grants
+any rights in or to any party's trademarks.
+
+(Full text: https://cdla.dev/permissive-2-0/)
+
+OpenStreetMap
+--------------
+
+No OpenStreetMap-derived rows are merged into this repository's
+persisted station dataset. Accordingly, no Open Database License (ODbL)
+share-alike obligation attaches to any data committed here.
+
+Repository source code
+------------------------
+
+This repository's own source code is licensed under the MIT License.
+See LICENSE at the repository root.

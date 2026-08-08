@@ -6,10 +6,14 @@ style since overture_scope.py is itself dependency-free.
 """
 import re
 import uuid
+from pathlib import Path
 
 from django.test import SimpleTestCase
 
 from routing.pipeline import overture_scope
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+NOTICE_PATH = REPO_ROOT / "NOTICE"
 
 
 class OvertureScopeConstantTests(SimpleTestCase):
@@ -190,3 +194,20 @@ class OvertureIdCollisionWitnessTests(SimpleTestCase):
             overture_scope.mint_opis_id(gers_b),
             overture_scope.COLLISION_WITNESS_MINTED_ID,
         )
+
+
+class NoticeFileBindingTests(SimpleTestCase):
+    """NOTICE must never drift from the pinned release/licence constants --
+    a future release bump that forgets to update NOTICE fails loudly here
+    rather than shipping a licence file describing the wrong release."""
+
+    def test_notice_exists(self):
+        self.assertTrue(NOTICE_PATH.is_file())
+
+    def test_notice_contains_the_pinned_release_verbatim(self):
+        text = NOTICE_PATH.read_text(encoding="utf-8")
+        self.assertIn(overture_scope.OVERTURE_RELEASE, text)
+
+    def test_notice_contains_the_pinned_licence_verbatim(self):
+        text = NOTICE_PATH.read_text(encoding="utf-8")
+        self.assertIn(overture_scope.OVERTURE_LICENCE, text)
