@@ -27,6 +27,7 @@ from decimal import Decimal
 
 from django.test import SimpleTestCase
 
+from routing.pipeline import overture_scope
 from routing.services import eia
 from routing.services.mapbox import _parse_directions_response
 
@@ -696,3 +697,122 @@ class WestCoastProbeFixtureTests(SimpleTestCase):
 
         self.assertEqual(len(CORRIDORS), 12)
         self.assertEqual(len(ADMISSION_MANIFEST), 26)
+
+
+# ---------------------------------------------------------------------------
+# D-37: which corridors/demo chips the gap-fill import may legitimately move
+# ---------------------------------------------------------------------------
+
+
+def _route_intersects_gap_fill(route):
+    """True when at least one vertex of `route.raw_coordinates` (the real
+    committed Mapbox polyline, `[lng, lat]` pairs) falls inside the union of
+    `overture_scope.GAP_FILL_BOXES`. Walks the whole vertex list -- a route
+    can pass through the gap-fill region without either endpoint being
+    inside it, so an endpoint-only check would under-count."""
+    for lng, lat in route.raw_coordinates:
+        if overture_scope.contains(lat, lng):
+            return True
+    return False
+
+
+def compute_gap_fill_intersecting_slugs():
+    """Walk every committed corridor and demo-chip route's real polyline and
+    return the frozenset of slugs with at least one vertex inside the
+    gap-fill multi-box (D-37). Re-derived from committed geometry every time
+    this runs -- never hand-maintained -- so a later geometry or bbox change
+    is caught by `GapFillIntersectionPreDeclarationTests` rather than
+    silently going stale."""
+    intersecting = set()
+    for corridor in CORRIDORS:
+        if _route_intersects_gap_fill(load_corridor_route(corridor.slug)):
+            intersecting.add(corridor.slug)
+    for chip in DEMO_CHIPS:
+        if _route_intersects_gap_fill(load_demo_chip_route(chip.slug)):
+            intersecting.add(chip.slug)
+    return frozenset(intersecting)
+
+
+# Pinned by running compute_gap_fill_intersecting_slugs() once, 2026-08-08,
+# against the twelve committed corridor fixtures and the two committed
+# demo-chip fixtures, before any dispatch measurement exists (D-37). The
+# computed set DIFFERS from RESEARCH.md's endpoint-based starting
+# hypothesis (dallas_tx-seattle_wa, san_diego_ca-jacksonville_fl,
+# sacramento_ca-salt_lake_city_ut, both demo chips "likely"; toronto_oh-
+# hillsboro_or "borderline") -- both are recorded side by side in this
+# plan's SUMMARY and deliberately not reconciled; the geometry-derived
+# answer below is the one that ships, per this project's own
+# record-side-by-side convention.
+#
+#   - dallas_tx-seattle_wa does NOT intersect: its Seattle endpoint sits at
+#     lat 47.6062, north of GAP_FILL_BOXES' first box's ymax=44.0 (that box
+#     is deliberately scoped to "the Grapevine north through southern
+#     Oregon" -- it stops at the OR/WA state line by design, see
+#     overture_scope.py's own comment). The hypothesis reasoned from the
+#     endpoint alone and was wrong.
+#   - toronto_oh-hillsboro_or does NOT intersect: Hillsboro, OR sits at
+#     lng -122.94/lat 45.53, outside both boxes on both axes (lat 45.53 >
+#     44.0 ymax; lng -122.94 < -124.0 xmin is false so lng is in-range, but
+#     lat alone excludes it). The "borderline" hypothesis resolves to a
+#     clean miss on real geometry, not a near-hit.
+#   - san_diego_ca-jacksonville_fl, sacramento_ca-salt_lake_city_ut, and
+#     both demo chips (demo_la_ca-new_york_ny,
+#     demo_la_ca-denver_co-chicago_il) all intersect, confirming that half
+#     of the hypothesis.
+#
+# D-37's prediction: every corridor/demo-chip slug NOT in this set must
+# show byte-zero change on every deterministic field in plan 22-14's diff.
+# Movement there is a defect to root-cause before the phase closes, not a
+# number to re-pin -- PITFALLS 4's own named warning sign.
+GAP_FILL_INTERSECTING_SLUGS = frozenset(
+    {
+        "san_diego_ca-jacksonville_fl",
+        "sacramento_ca-salt_lake_city_ut",
+        "demo_la_ca-new_york_ny",
+        "demo_la_ca-denver_co-chicago_il",
+    }
+)
+
+
+class GapFillIntersectionPreDeclarationTests(SimpleTestCase):
+    """D-37: which of the twelve pinned corridors and two demo chips may
+    legitimately move under the Overture gap-fill import is pre-declared
+    here, before any dispatch measurement exists (this class lands in wave
+    3, three waves before plan 22-14's diff). The central assertion is an
+    equality between the pinned literal above and a live re-derivation from
+    committed geometry -- if a geometry fixture or `overture_scope.
+    GAP_FILL_BOXES` ever changes, this test fails and a human re-derives
+    the set rather than the prediction silently going stale.
+
+    The prediction this class encodes (D-37): corridors and demo chips that
+    do NOT geographically intersect the gap-fill multi-box must show
+    byte-zero change on every deterministic field in plan 22-14's
+    before/after diff. Movement on a non-intersecting corridor is a defect
+    to root-cause before the phase closes, not a number to re-pin --
+    PITFALLS.md Pitfall 4's own named warning sign is exactly this: a stop
+    count or total cost changing on a pinned corridor that does not
+    geographically intersect the gap-fill region at all. This is stated
+    before any measurement exists, per this project's pin-then-measure
+    discipline.
+    """
+
+    def test_computed_intersection_equals_pinned_literal(self):
+        self.assertEqual(
+            compute_gap_fill_intersecting_slugs(), GAP_FILL_INTERSECTING_SLUGS
+        )
+
+    def test_every_corridor_and_demo_chip_slug_is_classified_exactly_once(self):
+        all_slugs = {c.slug for c in CORRIDORS} | {chip.slug for chip in DEMO_CHIPS}
+        self.assertEqual(len(all_slugs), 14)
+        non_intersecting = all_slugs - GAP_FILL_INTERSECTING_SLUGS
+        # Every one of the 14 slugs falls into exactly one of the two
+        # buckets -- the pinned set is a subset of all_slugs, and its
+        # complement (within all_slugs) accounts for the rest. None is
+        # omitted from either side.
+        self.assertTrue(GAP_FILL_INTERSECTING_SLUGS.issubset(all_slugs))
+        self.assertEqual(
+            GAP_FILL_INTERSECTING_SLUGS | non_intersecting, all_slugs
+        )
+        self.assertEqual(
+            len(GAP_FILL_INTERSECTING_SLUGS) + len(non_intersecting), 14
+        )
