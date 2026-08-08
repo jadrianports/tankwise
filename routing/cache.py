@@ -201,6 +201,8 @@ A->C->B must never share a cache entry (Pitfall 13). A 2-endpoint
 request produces the same token chain shape as before, just under the
 new prefix.
 """
+import hashlib
+import threading
 from decimal import Decimal
 
 COORD_PRECISION = 5
@@ -384,6 +386,91 @@ def _trust_margin_token(trust_margin) -> str:
         else Decimal(str(trust_margin))
     )
     return f"t:{round(trust_margin_value, 2)}"
+
+
+_DATASET_VINTAGE_TOKEN = None
+_DATASET_VINTAGE_TOKEN_LOCK = threading.Lock()
+
+
+def _dataset_vintage_token() -> str:
+    """Namespaced `s:` token: a content hash of exactly the committed CSVs
+    `seed_stations` replays into the `Station` table. Takes no arguments --
+    unlike `_eia_token`/`_penalty_token`/`_trust_margin_token`, dataset
+    vintage is a build-time fact, not a per-request input, so there is no
+    caller-supplied "omitted" case to resolve to a fixed literal. Same
+    shape as `_dispatch_policy_token()` above for the identical reason:
+    the SAME dataset always yields the SAME token regardless of what a
+    caller passes.
+
+    Hashes `routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS`
+    -- imported locally, not at module scope, for the same reason
+    `_vehicle_token`/`_dispatch_policy_token` defer their own imports:
+    keeps this module's import order irrelevant relative to
+    `routing.services`. Deriving from that shared list rather than
+    restating it here means a third CSV added in a future phase cannot
+    desync this token from what `seed_stations` actually replays (D-27) --
+    the identical "derive from the source of truth" argument
+    `_dispatch_policy_token`'s docstring already makes for the dispatch
+    constants.
+
+    Not a database query: a per-request DB round trip to derive a cache
+    key is the exact anti-pattern this project has engineered around
+    everywhere else (`corridor.py`'s entire `_get_index()` lazy-singleton
+    design exists to avoid one), and this module has no DB access at all
+    today.
+
+    Not a git SHA or a deploy timestamp: this repository deploys far more
+    often than Overture releases land, so a build-derived token would
+    invalidate the entire route cache on every copy fix that touches no
+    station data -- the exact over-invalidation failure mode the
+    direction-2 proof in `test_cache.py` guards against.
+
+    The committed raw extract (`data/overture_raw_extract.csv`) is
+    deliberately excluded from the hash list (D-28): it is a build input
+    to the import pipeline, not a seed source, and including it would
+    invalidate every cached plan on an extract refresh that produced a
+    byte-identical station CSV.
+
+    Lazily computed once per process and memoized behind a module-level
+    global guarded by a lock -- mirrors `corridor._get_index()`'s
+    double-checked-locking lazy-singleton shape exactly, for the same
+    reason: the committed CSVs cannot change within one process's life
+    (they are baked into the deployed image), so re-hashing them per
+    request would be pure waste. `reset_dataset_vintage_token()` below is
+    the sole invalidation hook, mirroring `corridor.reset_index()`.
+
+    Inert as of this commit: `build_cache_key` does not yet emit this
+    token, and `route:v10:` does not carry an `s:` segment. The wiring and
+    the prefix bump to `route:v11:` land together in the SAME commit as
+    the first station-set change that actually reaches production (D-47
+    ordering 2, D-31) -- the standing same-commit rule this module's
+    version log records for every prior bump."""
+    global _DATASET_VINTAGE_TOKEN
+    if _DATASET_VINTAGE_TOKEN is not None:
+        return _DATASET_VINTAGE_TOKEN
+    with _DATASET_VINTAGE_TOKEN_LOCK:
+        if _DATASET_VINTAGE_TOKEN is None:
+            from routing.services.station_csv_paths import (
+                CANONICAL_STATION_CSV_PATHS,
+            )
+
+            digest = hashlib.sha256()
+            for path in CANONICAL_STATION_CSV_PATHS:
+                digest.update(str(path.name).encode("utf-8"))
+                digest.update(path.read_bytes())
+            _DATASET_VINTAGE_TOKEN = f"s:{digest.hexdigest()[:12]}"
+        return _DATASET_VINTAGE_TOKEN
+
+
+def reset_dataset_vintage_token():
+    """The sole invalidation hook: clears the process-level memo so the
+    next `_dataset_vintage_token()` call re-hashes the current canonical
+    CSVs. Mirrors `corridor.reset_index()`. Called from nowhere in
+    production code in this plan -- plan 22-12 decides whether
+    `seed_stations` should invoke it, and the answer will be yes for the
+    same reason `seed_stations` already calls `corridor.reset_index()`."""
+    global _DATASET_VINTAGE_TOKEN
+    _DATASET_VINTAGE_TOKEN = None
 
 
 def build_cache_key(
