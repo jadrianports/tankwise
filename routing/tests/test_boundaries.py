@@ -667,3 +667,133 @@ class SeedStationsCallSiteGateTest(SimpleTestCase):
             "production + test seed_stations call-site counts do not sum "
             "to the pinned D-29 total",
         )
+
+
+# D-23: `source` and `gers_id` are licence and audit metadata with no
+# solver meaning at all -- unlike `price_source`, which legitimately
+# crosses into the pure boundary as a plain string with exactly one
+# allowlisted decision-position read (the trust-margin term computed by
+# `solver.is_estimate_priced`), these two fields have no reason to be read
+# inside SOLVER_FILES in ANY position, not merely outside decision
+# position. The cost of a stricter, zero-tolerance guard here is justified
+# by `opis_id`'s own history: a field whose contract quietly expanded into
+# a load-bearing tie-break sort key without anyone revisiting it. This
+# walker is deliberately a SEPARATE, parallel machine from the
+# `price_source` walker above, not a widening of it -- narrowing an
+# existing decision-position-only walker to also catch plain-position
+# reads would blur what each guard is actually enforcing.
+_SOLVER_FORBIDDEN_FIELD_NAMES = frozenset({"source", "gers_id"})
+
+
+def _is_subscript_key_constant(node, parent_index):
+    """True when `node` is an `ast.Constant` string sitting in subscript
+    key position -- the `slice` field of an `ast.Subscript`
+    (`row["source"]` or `row['gers_id']`)."""
+    parent_info = parent_index.get(id(node))
+    if parent_info is None:
+        return False
+    parent, field_name = parent_info
+    return isinstance(parent, ast.Subscript) and field_name == "slice"
+
+
+def _is_getattr_key_constant(node, parent_index):
+    """True when `node` is an `ast.Constant` string sitting as the second
+    positional argument to a `getattr(...)` call (`getattr(x, "source")`)."""
+    parent_info = parent_index.get(id(node))
+    if parent_info is None:
+        return False
+    parent, field_name = parent_info
+    if not (isinstance(parent, ast.Call) and field_name == "args"):
+        return False
+    func = parent.func
+    if not (isinstance(func, ast.Name) and func.id == "getattr"):
+        return False
+    return len(parent.args) >= 2 and parent.args[1] is node
+
+
+def _collect_forbidden_field_references(path):
+    """Find every reference to a forbidden solver-purity field name
+    (`_SOLVER_FORBIDDEN_FIELD_NAMES`) in `path`, in ATTRIBUTE ACCESS or
+    SUBSCRIPT/GETATTR KEY position only -- never a bare `ast.Name`, and
+    never a docstring or comment (a docstring is one large `ast.Constant`
+    string, not one equal to exactly `"source"` or `"gers_id"`, so it never
+    matches the equality check below).
+
+    Deliberately narrow: the bare word `source` is common in this codebase
+    (`inspect.getsource`, local variables, prose in docstrings such as
+    "Infeasibility has exactly one source..."), and `price_source` itself
+    contains `source` as a substring but is a completely different,
+    legitimate field. Attribute access is matched by exact `attr`
+    equality (so `.price_source` never matches `.source`), and
+    subscript/`getattr` key matching requires an exact string-constant
+    equality (so a `price_source` key string never matches either).
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    parent_index = _build_parent_index(tree)
+
+    violations = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and node.attr in _SOLVER_FORBIDDEN_FIELD_NAMES:
+            violations.append(
+                f"{path}:{node.lineno}: attribute access .{node.attr} "
+                f"(function={_enclosing_function_name(node, parent_index)!r})"
+            )
+            continue
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node.value in _SOLVER_FORBIDDEN_FIELD_NAMES
+            and (
+                _is_subscript_key_constant(node, parent_index)
+                or _is_getattr_key_constant(node, parent_index)
+            )
+        ):
+            violations.append(
+                f"{path}:{node.lineno}: key reference {node.value!r} "
+                f"(function={_enclosing_function_name(node, parent_index)!r})"
+            )
+    return violations
+
+
+# Empty and asserted empty (D-23) -- a future entry is a deliberate,
+# visible edit to this constant AND to the test below, rather than a quiet
+# widening. Unlike `_PRICE_SOURCE_DECISION_READ_ALLOWLIST`, no entry is
+# ever expected here.
+_SOURCE_GERS_ID_READ_ALLOWLIST = frozenset()
+
+
+class SourceGersIdPurityTest(SimpleTestCase):
+    """Statically enforces that `source` and `gers_id` -- Phase 22's two
+    new station-provenance metadata fields -- are never referenced, in any
+    syntactic position, inside any of the six `SOLVER_FILES`. Stricter
+    than `PriceSourceUsagePurityTest` above: that guard only forbids
+    DECISION-position reads of `price_source` (a field that legitimately
+    has one allowlisted such read); this guard forbids ANY attribute or
+    subscript/`getattr`-key reference to `source`/`gers_id` at all, because
+    these two fields carry no solver meaning whatsoever -- they are
+    licence and audit metadata, not pricing or routing inputs.
+
+    `_PRICE_SOURCE_DECISION_READ_ALLOWLIST`, `PriceSourceUsagePurityTest`,
+    `SOLVER_FILES`, and `SOLVER_FORBIDDEN_PREFIXES` are all untouched by
+    this class -- it is a new, parallel walker, not an extension of the
+    existing `price_source` machinery.
+    """
+
+    def test_source_and_gers_id_never_referenced_in_solver_files(self):
+        violations = []
+        for path in SOLVER_FILES:
+            violations.extend(_collect_forbidden_field_references(path))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"source/gers_id referenced inside SOLVER_FILES: {violations}",
+        )
+
+    def test_allowlist_is_empty(self):
+        self.assertEqual(
+            len(_SOURCE_GERS_ID_READ_ALLOWLIST),
+            0,
+            "D-23's allowlist must stay empty -- a future widening must "
+            "edit this assertion consciously, not pass it silently.",
+        )
