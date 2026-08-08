@@ -1,4 +1,5 @@
-"""Opt-in routable-coverage gate over the seeded Station table.
+"""Opt-in routable-coverage gate, plus four UNCONDITIONAL dataset
+invariants, over the seeded Station table.
 
 Read-only reporting command: no writes, no network calls. Reports the
 routable share of IN-SCOPE stations (pending + ok + failed -- the
@@ -15,11 +16,22 @@ geocoder's actual performance.
 The real pipeline run achieved ~94.9% routable coverage (6,290/6,626
 in-scope); 0.90 is a sensible regression-catching bar. The flag has no
 default -- omitting it reports only; a caller opts in with its bar.
+
+D-42 (plan 22-13): four dataset invariants over `source`/`gers_id`/`opis_id`/
+`retail_price` run below, alongside the pre-existing `price_source` gate,
+ALWAYS -- never gated behind `--min-coverage`, for the same reason that gate
+already runs unconditionally: this command sits in the Docker build path,
+where a data defect needs to fail the build regardless of whether a coverage
+bar was even asked for. This is also the only check in this phase runnable
+against a real database, including production after plan 22-16's deploy.
 """
 
 from django.core.management.base import BaseCommand, CommandError
+from django.db.models import Max, Q
 
-from routing.models import GeocodeStatus, PriceSource, Station
+from routing.models import GeocodeStatus, PriceSource, Station, StationSource
+from routing.pipeline.overture_scope import OVERTURE_ID_RANGE
+from routing.services import regions
 
 
 class Command(BaseCommand):
@@ -100,6 +112,141 @@ class Command(BaseCommand):
             raise CommandError(
                 f"{unrecognized_price_source_count} station row(s) hold a "
                 f"price_source value outside {PriceSource.values}"
+            )
+
+        # D-42 invariant 1 -- known source values. Single query, same shape
+        # as the price_source gate above: a data defect at any coverage
+        # level, so it runs unconditionally (not gated behind
+        # --min-coverage) since this command runs in the Docker build path
+        # where the gate needs to fire, and is the only check in this phase
+        # runnable against a real database including production.
+        opis_source_count = Station.objects.filter(source=StationSource.OPIS).count()
+        overture_source_count = Station.objects.filter(
+            source=StationSource.OVERTURE
+        ).count()
+        unrecognized_source_count = Station.objects.exclude(
+            source__in=StationSource.values
+        ).count()
+
+        self.stdout.write(
+            f"Source breakdown: opis={opis_source_count} "
+            f"overture={overture_source_count} "
+            f"unrecognized={unrecognized_source_count}"
+        )
+
+        if unrecognized_source_count:
+            raise CommandError(
+                f"{unrecognized_source_count} station row(s) hold a source "
+                f"value outside {StationSource.values}"
+            )
+
+        # D-42 invariant 2 -- Overture rows are well-formed: every
+        # Overture-sourced row carries a non-blank gers_id AND an opis_id
+        # inside the reserved Overture span. Runs unconditionally, same
+        # reasoning as invariant 1.
+        overture_missing_gers_id_count = Station.objects.filter(
+            source=StationSource.OVERTURE
+        ).filter(Q(gers_id__isnull=True) | Q(gers_id__exact="")).count()
+        overture_id_out_of_range_count = (
+            Station.objects.filter(source=StationSource.OVERTURE)
+            .exclude(
+                opis_id__gte=OVERTURE_ID_RANGE[0], opis_id__lt=OVERTURE_ID_RANGE[1]
+            )
+            .count()
+        )
+
+        self.stdout.write(
+            f"Overture row check: total={overture_source_count} "
+            f"missing_gers_id={overture_missing_gers_id_count} "
+            f"id_out_of_range={overture_id_out_of_range_count}"
+        )
+
+        if overture_missing_gers_id_count:
+            raise CommandError(
+                f"{overture_missing_gers_id_count} Overture-sourced station "
+                "row(s) have a blank gers_id"
+            )
+        if overture_id_out_of_range_count:
+            raise CommandError(
+                f"{overture_id_out_of_range_count} Overture-sourced station "
+                f"row(s) have an opis_id outside the reserved span "
+                f"{OVERTURE_ID_RANGE}"
+            )
+
+        # D-42 invariant 3 -- OPIS ids stay outside the reserved span (the
+        # disjointness assertion checked from the other direction).
+        # max_opis_id is reported alongside the count so the four-orders-
+        # of-magnitude headroom (today's real max OPIS id, 73,131, against
+        # OVERTURE_ID_RANGE's floor of 1,000,000,000) is visible in the
+        # command's own output, not only in a docstring. Runs
+        # unconditionally, same reasoning as invariants 1 and 2.
+        opis_id_in_reserved_span_count = Station.objects.filter(
+            source=StationSource.OPIS,
+            opis_id__gte=OVERTURE_ID_RANGE[0],
+            opis_id__lt=OVERTURE_ID_RANGE[1],
+        ).count()
+        max_opis_id = Station.objects.filter(
+            source=StationSource.OPIS
+        ).aggregate(Max("opis_id"))["opis_id__max"]
+
+        self.stdout.write(
+            f"OPIS id-range check: in_reserved_span="
+            f"{opis_id_in_reserved_span_count} max_opis_id={max_opis_id}"
+        )
+
+        if opis_id_in_reserved_span_count:
+            raise CommandError(
+                f"{opis_id_in_reserved_span_count} OPIS-sourced station "
+                f"row(s) have an opis_id inside the reserved Overture span "
+                f"{OVERTURE_ID_RANGE}"
+            )
+
+        # D-42 invariant 4 -- the price basis has not drifted (D-11). Not a
+        # simple .filter().count(): each estimate-priced row's retail_price
+        # must equal its OWN region's baseline, a per-row computed
+        # comparison, so this iterates with .values_list() (never full
+        # model instances, to keep this cheap over thousands of rows in
+        # the Docker build path) and compares in Python, the same pattern
+        # this command already uses for its coverage math above.
+        #
+        # Exact equality, not a tolerance: the committed CSV claims its
+        # estimate rows are priced at their region's EIA baseline, and the
+        # request-time identity that makes the shown price the current
+        # regional average depends on that equality holding exactly. A
+        # baseline rebase must fail loudly here rather than letting the
+        # committed data silently stop meaning what it claims. Runs
+        # unconditionally, same reasoning as invariants 1-3.
+        estimate_rows = Station.objects.filter(
+            price_source=PriceSource.EIA_REGIONAL_ESTIMATE
+        ).values_list("opis_id", "name", "state", "retail_price")
+
+        estimate_checked_count = 0
+        estimate_mismatched = []
+        for opis_id, name, state, retail_price in estimate_rows:
+            estimate_checked_count += 1
+            region = regions.region_for_state(state)
+            baseline = regions.BASELINE_VALUES.get(region) if region else None
+            if baseline is None or retail_price != baseline:
+                estimate_mismatched.append(
+                    (opis_id, name, state, retail_price, baseline)
+                )
+
+        self.stdout.write(
+            f"Price-basis check (D-11): checked={estimate_checked_count} "
+            f"mismatched={len(estimate_mismatched)}"
+        )
+
+        if estimate_mismatched:
+            offenders = ", ".join(
+                f"{opis_id} ({name}, {state}): {retail_price} != {baseline}"
+                for opis_id, name, state, retail_price, baseline in (
+                    estimate_mismatched[:5]
+                )
+            )
+            raise CommandError(
+                f"{len(estimate_mismatched)} estimate-priced station row(s) "
+                f"have a retail_price that does not exactly equal their "
+                f"region's EIA baseline: {offenders}"
             )
 
         if min_coverage is None:
