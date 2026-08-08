@@ -141,9 +141,21 @@ def load_existing_rows(reader):
     CSV sharing its column names) into `ExistingStationRow`. Reads only the
     seven fields the two-tier rule needs off the existing dataset -- name,
     city, state, coordinates, precision and the id used purely for
-    reporting which existing row a match landed on."""
+    reporting which existing row a match landed on.
+
+    Rows with no coordinates -- 448 of the committed 6,738: geocode-failed
+    or out-of-scope rows, `geocode_precision` blank on every one of them
+    (`data/geocode-report.md`'s own Failed/Out-of-scope counts) -- are
+    skipped rather than raising. Neither index this module builds ever
+    selects a row whose `geocode_precision` is not exactly `"rooftop"` or
+    `"city"`, so these rows could never participate in a match regardless;
+    skipping them here just avoids parsing a coordinate that was never
+    going to be read.
+    """
     rows = []
     for raw in reader:
+        if not raw["latitude"].strip() or not raw["longitude"].strip():
+            continue
         rows.append(
             ExistingStationRow(
                 opis_id=int(raw["opis_id"]),

@@ -1,0 +1,3 @@
+opis_id,name,address,city,state,rack_id,retail_price,observation_count,price_min,price_max,latitude,longitude,geocode_precision,geocode_status,price_source,source,gers_id
+1,PETRO STOPPING CENTER #12,1200 Petro Way,Dallas,TX,100,3.50000000,1,3.50000000,3.50000000,32.77670000,-96.79700000,rooftop,ok,opis_indexed,opis,
+2,PILOT TRAVEL CENTER,500 Pilot Rd,Redding,CA,200,3.60000000,1,3.60000000,3.60000000,40.90000000,-122.90000000,city,ok,opis_indexed,opis,

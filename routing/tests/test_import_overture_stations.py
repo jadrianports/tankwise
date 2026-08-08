@@ -3,15 +3,19 @@ its thin command (`import_overture_stations`).
 
 `ImportOvertureStationsCommandTests` and `ApplyHygieneUnitTests` cover
 hygiene, brand, price, identity, precision and provenance behaviour against
-the hand-authored fixture extract. `OvertureIdCollisionRaiseTests` proves
-the collision guard's raise branch is actually reachable via the pinned
-witness pair -- a natural collision is unlikely at fixture (or even real
-import) scale, so only the witness pair exercises that path.
-`OvertureTransformDeterminismTests` proves whole-file and identifier
-determinism, disjointness against the real committed OPIS dataset, and
-dry-run behaviour. D-22's third check (a pinned route solving to a
-byte-identical plan across two independent imports) needs the real dataset
-and the corridor/DP machinery and belongs to plan 22-12, not here.
+the hand-authored fixture extract, with dedup a deliberate no-op (empty
+existing dataset) so none of that behaviour is disturbed by plan 22-11's
+new stage. `OvertureDedupeReportTests` covers the dedup stage itself, end
+to end through the command, against a small existing-dataset fixture
+carrying one tight-tier and one city-tier match by design.
+`OvertureIdCollisionRaiseTests` proves the collision guard's raise branch is
+actually reachable via the pinned witness pair -- a natural collision is
+unlikely at fixture (or even real import) scale, so only the witness pair
+exercises that path. `OvertureTransformDeterminismTests` proves whole-file
+and identifier determinism, disjointness against the real committed OPIS
+dataset, and dry-run behaviour. D-22's third check (a pinned route solving
+to a byte-identical plan across two independent imports) needs the real
+dataset and the corridor/DP machinery and belongs to plan 22-12, not here.
 """
 import csv
 import io
@@ -23,19 +27,20 @@ from django.conf import settings
 from django.core.management import call_command
 from django.test import SimpleTestCase
 
-from routing.pipeline import overture, overture_scope
+from routing.pipeline import overture, overture_dedupe, overture_scope
 from routing.services import regions
 
-FIXTURE_PATH = (
-    Path(__file__).resolve().parent / "fixtures" / "overture" / "raw_extract_sample.csv"
-)
+FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "overture"
+FIXTURE_PATH = FIXTURE_DIR / "raw_extract_sample.csv"
+EMPTY_EXISTING_PATH = FIXTURE_DIR / "existing_stations_empty.csv"
+SAMPLE_EXISTING_PATH = FIXTURE_DIR / "existing_stations_sample.csv"
 STATIONS_GEOCODED_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
 
-def _read_fixture_rows():
+def _read_fixture_rows(existing_rows=()):
     with open(FIXTURE_PATH, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        return overture.transform(reader)
+        return overture.transform(reader, list(existing_rows))
 
 
 class ParseExtractRowsHeaderTests(SimpleTestCase):
@@ -86,7 +91,7 @@ class ImportOvertureStationsCommandTests(SimpleTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.station_rows, cls.report = _read_fixture_rows()
+        cls.station_rows, cls.report, cls.decisions = _read_fixture_rows()
         cls.by_gers_id = {row.gers_id: row for row in cls.station_rows}
 
     def test_mojibake_row_dropped_and_counted(self):
@@ -199,40 +204,53 @@ class OvertureIdCollisionRaiseTests(SimpleTestCase):
 class OvertureTransformDeterminismTests(SimpleTestCase):
     """Whole-file and identifier determinism, disjointness against the real
     committed OPIS dataset, and dry-run behaviour -- everything provable
-    without the real Overture extract or the corridor/DP machinery."""
+    without the real Overture extract or the corridor/DP machinery. Dedup
+    runs against the empty existing-dataset fixture throughout, so it is a
+    deliberate no-op here and every assertion below is unaffected by
+    plan 22-11's new stage."""
 
     def test_whole_file_determinism_station_csv_and_report(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            out_a, report_a = tmp_path / "a.csv", tmp_path / "a-report.md"
-            out_b, report_b = tmp_path / "b.csv", tmp_path / "b-report.md"
+            out_a, report_a, decisions_a = (
+                tmp_path / "a.csv", tmp_path / "a-report.md", tmp_path / "a-decisions.csv"
+            )
+            out_b, report_b, decisions_b = (
+                tmp_path / "b.csv", tmp_path / "b-report.md", tmp_path / "b-decisions.csv"
+            )
 
             call_command(
                 "import_overture_stations",
                 input_path=str(FIXTURE_PATH),
+                existing_path=str(EMPTY_EXISTING_PATH),
                 output_path=str(out_a),
                 report_path=str(report_a),
+                decisions_path=str(decisions_a),
             )
             call_command(
                 "import_overture_stations",
                 input_path=str(FIXTURE_PATH),
+                existing_path=str(EMPTY_EXISTING_PATH),
                 output_path=str(out_b),
                 report_path=str(report_b),
+                decisions_path=str(decisions_b),
             )
 
-            # Byte-identity asserted on raw file bytes, not parsed content.
+            # Byte-identity asserted on raw file bytes, not parsed content --
+            # now across all three artifacts, the per-decision CSV included.
             self.assertEqual(out_a.read_bytes(), out_b.read_bytes())
             self.assertEqual(report_a.read_bytes(), report_b.read_bytes())
+            self.assertEqual(decisions_a.read_bytes(), decisions_b.read_bytes())
 
     def test_identifier_determinism_across_two_independent_runs(self):
-        rows_a, _ = _read_fixture_rows()
-        rows_b, _ = _read_fixture_rows()
+        rows_a, _, _ = _read_fixture_rows()
+        rows_b, _, _ = _read_fixture_rows()
         ids_a = {row.gers_id: row.opis_id for row in rows_a}
         ids_b = {row.gers_id: row.opis_id for row in rows_b}
         self.assertEqual(ids_a, ids_b)
 
     def test_minted_ids_disjoint_from_real_committed_opis_ids(self):
-        station_rows, _ = _read_fixture_rows()
+        station_rows, _, _ = _read_fixture_rows()
         with open(STATIONS_GEOCODED_PATH, newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             real_opis_ids = {int(row["opis_id"]) for row in reader}
@@ -246,30 +264,40 @@ class OvertureTransformDeterminismTests(SimpleTestCase):
             tmp_path = Path(tmp)
             out_path = tmp_path / "stations.csv"
             report_path = tmp_path / "report.md"
+            decisions_path = tmp_path / "decisions.csv"
 
             call_command(
                 "import_overture_stations",
                 input_path=str(FIXTURE_PATH),
+                existing_path=str(EMPTY_EXISTING_PATH),
                 output_path=str(out_path),
                 report_path=str(report_path),
+                decisions_path=str(decisions_path),
                 dry_run=True,
             )
 
             self.assertFalse(out_path.exists())
             self.assertTrue(report_path.exists())
             self.assertIn("Kept:", report_path.read_text(encoding="utf-8"))
+            # Both committed artifacts land on every run, dry or not --
+            # that is what makes --dry-run useful for reviewing a dedup
+            # pass before anything is committed.
+            self.assertTrue(decisions_path.exists())
 
     def test_without_dry_run_writes_station_csv_with_export_header(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_path = tmp_path / "stations.csv"
             report_path = tmp_path / "report.md"
+            decisions_path = tmp_path / "decisions.csv"
 
             call_command(
                 "import_overture_stations",
                 input_path=str(FIXTURE_PATH),
+                existing_path=str(EMPTY_EXISTING_PATH),
                 output_path=str(out_path),
                 report_path=str(report_path),
+                decisions_path=str(decisions_path),
             )
 
             self.assertTrue(out_path.exists())
@@ -277,3 +305,110 @@ class OvertureTransformDeterminismTests(SimpleTestCase):
                 reader = csv.reader(f)
                 header = next(reader)
                 self.assertEqual(header, overture.EXPORT_HEADER)
+
+
+class OvertureDedupeReportTests(SimpleTestCase):
+    """Covers the dedup stage end to end through the command, against
+    `existing_stations_sample.csv` -- a small existing-dataset fixture
+    carrying one deliberate tight-tier match (gers_id ...101, coincident
+    with an existing rooftop row) and one deliberate city-tier match
+    (gers_id ...102, brand+city+state matching an existing city-centroid
+    row hundreds of miles from its own coordinates)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.tmp = tempfile.TemporaryDirectory()
+        tmp_path = Path(cls.tmp.name)
+        cls.report_path = tmp_path / "report.md"
+        cls.decisions_path = tmp_path / "decisions.csv"
+
+        call_command(
+            "import_overture_stations",
+            input_path=str(FIXTURE_PATH),
+            existing_path=str(SAMPLE_EXISTING_PATH),
+            output_path=str(tmp_path / "stations.csv"),
+            report_path=str(cls.report_path),
+            decisions_path=str(cls.decisions_path),
+            dry_run=True,
+        )
+
+        cls.report_text = cls.report_path.read_text(encoding="utf-8")
+        with open(cls.decisions_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            cls.decision_rows = list(reader)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+        super().tearDownClass()
+
+    def test_deliberate_tight_and_city_matches_land_as_dropped(self):
+        by_gers_id = {row["gers_id"]: row for row in self.decision_rows}
+        self.assertEqual(
+            by_gers_id["11111111-1111-4111-8111-111111111101"]["decision"], "dropped"
+        )
+        self.assertEqual(
+            by_gers_id["11111111-1111-4111-8111-111111111101"]["tier"], "tight"
+        )
+        self.assertEqual(
+            by_gers_id["11111111-1111-4111-8111-111111111102"]["decision"], "dropped"
+        )
+        self.assertEqual(
+            by_gers_id["11111111-1111-4111-8111-111111111102"]["tier"], "city"
+        )
+
+    def test_per_decision_row_count_equals_kept_plus_dropped(self):
+        _, report, decisions = _read_fixture_rows(
+            overture_dedupe.load_existing_rows(
+                csv.DictReader(open(SAMPLE_EXISTING_PATH, newline="", encoding="utf-8"))
+            )
+        )
+        self.assertEqual(len(self.decision_rows), len(decisions))
+        kept = sum(1 for row in self.decision_rows if row["decision"] == "kept")
+        dropped = sum(1 for row in self.decision_rows if row["decision"] == "dropped")
+        self.assertEqual(kept + dropped, len(self.decision_rows))
+        self.assertEqual(kept, report.no_match_count)
+
+    def test_markdown_contains_all_six_required_section_headers(self):
+        for header in (
+            "## Source",
+            "## Hygiene exclusions",
+            "## Dedup",
+            "## Spot-checked clusters",
+            "## Result",
+            "## Forward risk",
+        ):
+            self.assertIn(header, self.report_text)
+
+    def test_markdown_states_unknown_status_retained_count_as_an_integer(self):
+        lines = [
+            line for line in self.report_text.splitlines() if "unknown" in line.lower()
+        ]
+        self.assertEqual(len(lines), 1)
+        trailing = lines[0].rsplit(":", 1)[1].strip()
+        self.assertTrue(trailing.isdigit())
+        # The fixture carries exactly one row with a blank operating_status.
+        self.assertEqual(trailing, "1")
+
+    def test_markdown_per_tier_counts_equal_counts_derived_from_decisions(self):
+        tight_from_decisions = sum(
+            1
+            for row in self.decision_rows
+            if row["decision"] == "dropped" and row["tier"] == "tight"
+        )
+        city_from_decisions = sum(
+            1
+            for row in self.decision_rows
+            if row["decision"] == "dropped" and row["tier"] == "city"
+        )
+        no_match_from_decisions = sum(
+            1 for row in self.decision_rows if row["decision"] == "kept"
+        )
+
+        self.assertIn(f"Tight-tier matches (rooftop-precision existing rows): {tight_from_decisions}", self.report_text)
+        self.assertIn(f"City-tier matches (city-centroid existing rows, brand+city+state): {city_from_decisions}", self.report_text)
+        self.assertIn(f"No match (kept as new): {no_match_from_decisions}", self.report_text)
+        # And the deliberate fixture design: exactly one of each tier.
+        self.assertEqual(tight_from_decisions, 1)
+        self.assertEqual(city_from_decisions, 1)

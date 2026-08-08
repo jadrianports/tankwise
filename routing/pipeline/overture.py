@@ -17,14 +17,13 @@ identity decision of its own.
 
 Pipeline stages, in the order `transform()` runs them:
     parse_extract_rows -> apply_hygiene -> assign_brand -> assign_price ->
-    (plan 22-11 inserts `overture_dedupe.deduplicate()` here) ->
-    mint_identities -> to_station_rows
+    overture_dedupe.deduplicate() -> mint_identities -> to_station_rows
 """
 import logging
 from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 
-from routing.pipeline import overture_scope
+from routing.pipeline import overture_dedupe, overture_scope
 from routing.services import regions
 
 logger = logging.getLogger(__name__)
@@ -172,7 +171,14 @@ class OvertureStation:
 class OvertureImportReport:
     """Everything the committed report needs to render: release, both bbox
     rectangles, the filter parameters, the input row count, each hygiene
-    bucket's count, the kept count, and the per-region priced-row counts."""
+    bucket's count, the kept count, the per-region priced-row counts, and
+    (plan 22-11) the dedup outcome -- per-tier match/no-match counts, the
+    tight-tier threshold used, the three sensitivity counts, and the
+    selected spot-check clusters.
+
+    The dedup fields default so this stays an additive, backward-compatible
+    extension of plan 22-10's shape -- the same discipline `price_source`
+    and `source`/`gers_id` already followed on `Station`."""
 
     release: str
     boxes: tuple
@@ -182,6 +188,13 @@ class OvertureImportReport:
     bucket_counts: dict
     kept_count: int
     priced_row_counts_by_region: dict = field(default_factory=dict)
+    unknown_status_retained_count: int = 0
+    tight_tier_match_count: int = 0
+    city_tier_match_count: int = 0
+    no_match_count: int = 0
+    tight_tier_threshold_mi: float = 0.0
+    sensitivity_counts: dict = field(default_factory=dict)
+    spot_check_clusters: list = field(default_factory=list)
 
 
 def parse_extract_rows(reader):
@@ -407,17 +420,38 @@ def to_station_rows(rows):
     ]
 
 
-def transform(reader):
-    """The single entry point: `csv.DictReader` in, `(station_rows,
-    OvertureImportReport)` out. Runs parse -> hygiene -> brand -> price ->
+def transform(reader, existing_rows):
+    """The single entry point: `csv.DictReader` in plus the existing
+    dataset's rows (`overture_dedupe.load_existing_rows` output, or `[]` to
+    run with dedup a no-op), `(station_rows, OvertureImportReport,
+    decisions)` out. Runs parse -> hygiene -> brand -> price -> dedup ->
     mint -> row assembly, sorting the minted rows by `opis_id` ascending
     before assembly so output row order is a deterministic function of the
-    input, never of dict or set iteration. Returns a report object; does
-    not print anything -- that is the command's job."""
+    input, never of dict or set iteration. `decisions` is
+    `overture_dedupe.deduplicate()`'s per-candidate decision list, one
+    entry per post-hygiene, post-price row, for the caller to render into
+    the committed per-decision CSV. Returns a report object; does not print
+    anything -- that is the command's job.
+
+    `existing_rows` takes the dataset as a parameter, not a path, so this
+    stays a pure function testable with no database and no real CSV on
+    disk -- the caller (`import_overture_stations`) is the one that reads
+    `data/stations_geocoded.csv` and parses it.
+    """
     parsed_rows, malformed_parse_count = parse_extract_rows(reader)
     hygiene_kept, bucket_counts = apply_hygiene(parsed_rows)
     bucket_counts = dict(bucket_counts)
     bucket_counts["malformed_row"] = malformed_parse_count
+
+    # Rows with a NULL/blank operating_status pass apply_hygiene (they are
+    # unknown, not closed) -- counted here, from the post-hygiene set, so
+    # the committed report can state explicitly how many were retained on
+    # that basis rather than leaving it an inference from the bucket
+    # counts (see is_closed_status' own docstring for why this line
+    # matters: the failure mode here is silent).
+    unknown_status_retained_count = sum(
+        1 for row in hygiene_kept if not (row.operating_status or "").strip()
+    )
 
     branded = [assign_brand(row) for row in hygiene_kept]
 
@@ -429,13 +463,18 @@ def transform(reader):
             continue
         priced.append(priced_row)
 
-    # Plan 22-11 inserts routing.pipeline.overture_dedupe.deduplicate()
-    # here, right before minting/row assembly, once the caller has loaded
-    # and passed in the existing dataset (data/stations_geocoded.csv) --
-    # see 22-11-PLAN.md. `priced` is exactly the list that future call
-    # would consume and return a filtered version of; this plan leaves
-    # every row here to keep transform() correct with no dedup stage yet.
-    minted = mint_identities(priced)
+    deduped, decisions = overture_dedupe.deduplicate(priced, existing_rows)
+    tight_tier_match_count = sum(
+        1 for d in decisions if d.decision == "dropped" and d.tier == "tight"
+    )
+    city_tier_match_count = sum(
+        1 for d in decisions if d.decision == "dropped" and d.tier == "city"
+    )
+    no_match_count = sum(1 for d in decisions if d.decision == "kept")
+    sensitivity = overture_dedupe.sensitivity_counts(priced, existing_rows)
+    spot_check_clusters = overture_dedupe.select_spot_check_clusters(decisions)
+
+    minted = mint_identities(deduped)
     minted_sorted = sorted(minted, key=lambda r: r.opis_id)
     station_rows = to_station_rows(minted_sorted)
 
@@ -454,5 +493,12 @@ def transform(reader):
         bucket_counts=bucket_counts,
         kept_count=len(station_rows),
         priced_row_counts_by_region=priced_row_counts_by_region,
+        unknown_status_retained_count=unknown_status_retained_count,
+        tight_tier_match_count=tight_tier_match_count,
+        city_tier_match_count=city_tier_match_count,
+        no_match_count=no_match_count,
+        tight_tier_threshold_mi=overture_scope.TIGHT_TIER_THRESHOLD_MI,
+        sensitivity_counts=sensitivity,
+        spot_check_clusters=spot_check_clusters,
     )
-    return station_rows, report
+    return station_rows, report, decisions
