@@ -546,6 +546,23 @@ failure: the exact DP is not tractable, under this estimator, for
 in the product-facing record (18-14), not in a threshold chosen to imply
 otherwise.
 
+**AMENDED 2026-08-09 (Phase 22 plan 22-15).** The paragraph above correctly
+described 2026-08-04's state: at that time, `sacramento_ca-salt_lake_city_ut`
+(estimate 120) genuinely retained `exact_dp` under the shipped 50,000
+budget. That is no longer true. Phase 22's Overture gap-fill import
+(plan 22-12) widened this corridor's candidate density enough that its
+transition-count estimate rose from ~120 to over 10 million (measured
+against the API-default vehicle, plan 22-14's `22-DISPATCH-DIFF.md`),
+crossing the 50,000 budget and demoting it to `penalty_aware_heuristic`.
+`DISPATCH_RETENTION_FLOOR`'s own achievable-cell guarantee — described
+below as "exactly TWO" cells with genuine deployed `exact_dp` evidence —
+now holds for **zero** of its two required cells at the shipped budget,
+down from one (`dallas_tx-seattle_wa`@1050mi was already not admitted at
+50,000 as of Phase 18.1; its "exact_dp, live" citation above describes
+only the pre-hotfix 134,000 budget). The prose below is left exactly as
+written, describing what was true when it was pinned — this note
+corrects the present-tense reading, not the historical record.
+
 ## EIA x penalty coupling
 
 **The mechanism (D-23).** `routing/services/corridor.py`'s `factor_for`
@@ -990,6 +1007,20 @@ DP_TRANSITION_BUDGET = 50_000
 # inversion 18-10 proved on workstation timings, reproduced here with
 # DEPLOYED-hardware figures on both sides of the comparison. NOT TRACTABLE
 # applies. DP_TRANSITION_BUDGET is not moved.
+# ---------------------------------------------------------------------------
+# AMENDED 2026-08-09 (Phase 22 plan 22-15): the block above correctly
+# described 2026-08-04's state. It is no longer current. Phase 22's Overture
+# gap-fill import (plan 22-12) widened sacramento_ca-salt_lake_city_ut's
+# candidate density enough that its transition-count estimate rose from
+# ~120 to over 10 million (plan 22-14's 22-DISPATCH-DIFF.md), crossing the
+# 50,000 budget and demoting it to penalty_aware_heuristic. The two-cell
+# DISPATCH_RETENTION_FLOOR set this constant enforces therefore now holds
+# for ZERO of its two required cells at the shipped budget -- down from one
+# (dallas_tx-seattle_wa@1050mi was already not admitted at 50,000 as of
+# Phase 18.1; the block above's "exact_dp, live" citation for it describes
+# only the pre-hotfix 134,000 budget). The block above is left exactly as
+# written, describing what was true when it was pinned; this note corrects
+# the present-tense reading, not the historical record.
 # ---------------------------------------------------------------------------
 DISPATCH_RETENTION_FLOOR = 2
 
