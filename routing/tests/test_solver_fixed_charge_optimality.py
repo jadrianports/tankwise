@@ -243,6 +243,65 @@ CORPUS_PARAMS = CorpusParams(
     penalty=Decimal("35"),
 )
 
+
+@dataclass(frozen=True)
+class IdenticalPriceClusterParams:
+    """D-12's pinned shape for the gap-fill import's characteristic data
+    degeneracy: D-09 gives every same-region Overture row the identical
+    `retail_price`, so a dense cluster of identically-priced candidates is
+    the literal shape the import creates, in a corridor stretch no pinned
+    corridor currently reaches -- not a synthetic edge case invented for
+    this test.
+
+    Originally considered "2 clusters of 3-5 stations each per route", but
+    two clusters whose sizes each independently range 3-5 cannot both fit
+    under `MAX_STATIONS=6` except at the single degenerate combination
+    3+3=6 -- which would leave the drawn shape almost fixed rather than
+    genuinely varied. Raising `MAX_STATIONS` to make room is out of scope
+    (it bounds the oracle's own subset enumeration and is not this plan's
+    knob to move), so the action's own pre-authorized fallback is adopted
+    instead: exactly ONE identically-priced cluster (`cluster_size`
+    stations, one shared price, one shared provenance tag -- D-09 assigns
+    one provenance to a whole region's rows, never a per-station mix
+    within one regional cluster) plus `singleton_count` independently-
+    priced, independently-sourced stations. `cluster_size + singleton_count`
+    is tied to `MAX_STATIONS` (never hand-typed as a second number that
+    could silently drift from it), so every generated route still exhausts
+    the oracle's own ceiling rather than under-using it, and the pairing
+    self-adjusts if `MAX_STATIONS` is ever stepped down per its own
+    pre-authorized 6 -> 5 -> 4 comment above.
+
+    price_min/price_max transcribe CORPUS_PARAMS' own price band verbatim
+    -- the cluster is a differently-STRUCTURED population (many stations
+    sharing one price rather than each drawn independently), not a
+    differently-priced one.
+    """
+
+    seed: int
+    cluster_size: int
+    singleton_count: int
+    price_min: Decimal
+    price_max: Decimal
+    cluster_span_mi: int
+    total_route_min_mi: int
+    total_route_max_mi: int
+
+
+# The D-12 single shared instance, pinned before any measurement per this
+# plan's own must_haves. cluster_size=4 is inside the CONTEXT-sanctioned
+# 3-5 band; singleton_count is derived from MAX_STATIONS so the pair
+# always sums to exactly MAX_STATIONS (see the dataclass's own docstring).
+IDENTICAL_PRICE_CLUSTER_PARAMS = IdenticalPriceClusterParams(
+    seed=20260808,
+    cluster_size=4,
+    singleton_count=MAX_STATIONS - 4,
+    price_min=CORPUS_PARAMS.min_price,
+    price_max=CORPUS_PARAMS.max_price,
+    cluster_span_mi=20,
+    total_route_min_mi=200,
+    total_route_max_mi=800,
+)
+
 # In-suite guard corpus size -- a CONTEXT-sanctioned discretionary knob,
 # chosen to keep PenaltyDisagreementFloorTests inside the D-12 runtime
 # ceiling. It is a prefix of any larger corpus built from CORPUS_PARAMS
@@ -864,6 +923,65 @@ def flattened_multi_leg_routes(draw):
     mpg = Decimal(draw(st.integers(min_value=1, max_value=50)))
     starting_fuel = draw(st.decimals(min_value=Decimal("0.00"), max_value=Decimal("1.00"), places=2))
     return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel, leg_boundaries_mi
+
+
+@st.composite
+def identical_price_cluster_routes(draw):
+    """Draw a route to IDENTICAL_PRICE_CLUSTER_PARAMS' pinned shape: one
+    identically-priced cluster of cluster_size stations (one shared price,
+    one shared provenance tag) plus singleton_count independently-priced,
+    independently-sourced stations -- exactly the dense-price-cluster
+    degeneracy D-09 guarantees the gap-fill import creates. Built through
+    _candidates_from_tuples, the same path single_leg_routes() and
+    flattened_multi_leg_routes() use, so the resulting Candidate objects
+    are indistinguishable from real corridor candidates.
+
+    The cluster's provenance and price are each drawn ONCE per example,
+    never per station -- D-09 assigns one provenance and one price to a
+    whole region's worth of rows, never a per-station mix within the same
+    regional cluster. The singleton stations are drawn independently of
+    the cluster and of each other, mirroring single_leg_routes()' own
+    per-station draw, so the module's existing mixed-provenance adversarial
+    exploration is preserved for them.
+    """
+    params = IDENTICAL_PRICE_CLUSTER_PARAMS
+    total_route_mi = Decimal(
+        draw(st.integers(min_value=params.total_route_min_mi, max_value=params.total_route_max_mi))
+    )
+
+    cluster_price = draw(st.decimals(min_value=params.price_min, max_value=params.price_max, places=2))
+    cluster_source = draw(st.sampled_from((_RECORDED_PRICE_SOURCE, ESTIMATE_PRICE_SOURCE)))
+    cluster_start = draw(
+        st.integers(min_value=1, max_value=max(1, int(total_route_mi) - params.cluster_span_mi - 1))
+    )
+    cluster_offsets = draw(
+        st.lists(
+            st.integers(min_value=0, max_value=params.cluster_span_mi),
+            min_size=params.cluster_size,
+            max_size=params.cluster_size,
+            unique=True,
+        )
+    )
+    cluster_positions = sorted({cluster_start + offset for offset in cluster_offsets})
+    station_tuples = [(cluster_price, position, cluster_source) for position in cluster_positions]
+
+    used_positions = set(cluster_positions)
+    for _ in range(params.singleton_count):
+        position = draw(
+            st.integers(min_value=1, max_value=int(total_route_mi)).filter(
+                lambda p: p not in used_positions
+            )
+        )
+        used_positions.add(position)
+        price = draw(st.decimals(min_value=params.price_min, max_value=params.price_max, places=2))
+        source = draw(st.sampled_from((_RECORDED_PRICE_SOURCE, ESTIMATE_PRICE_SOURCE)))
+        station_tuples.append((price, position, source))
+
+    tank_range_mi = Decimal(draw(st.integers(min_value=20, max_value=800)))
+    mpg = Decimal(draw(st.integers(min_value=1, max_value=50)))
+    starting_fuel = draw(st.decimals(min_value=Decimal("0.00"), max_value=Decimal("1.00"), places=2))
+    candidates = _candidates_from_tuples(station_tuples, total_route_mi)
+    return candidates, total_route_mi, tank_range_mi, mpg, starting_fuel
 
 
 class FixedChargeOracleAnchorTests(SimpleTestCase):
@@ -2146,6 +2264,189 @@ class TrustMarginOracleDifferentialTests(SimpleTestCase):
                 f"solver_strategy differs at margin={margin} on an "
                 f"all-recorded candidate set; {context}",
             )
+
+
+class IdenticalPriceClusterOracleTests(SimpleTestCase):
+    """D-12/PIPE-02 (plan 22-04): the DP and this module's own independent
+    oracle must agree on the exact price-degeneracy the Overture gap-fill
+    import is about to create (D-09: every same-region row shares one
+    `retail_price`), across the full `PENALTY_LADDER x _MARGIN_SWEEP`
+    cross product -- mirrors TrustMarginOracleDifferentialTests' shape
+    exactly, drawing from identical_price_cluster_routes() instead of
+    single_leg_routes().
+
+    Objective agreement is asserted unconditionally, exactly like
+    TrustMarginOracleDifferentialTests. Station-set agreement is asserted
+    only when the oracle's optimum is strictly unique
+    (`OraclePlan.is_unique_optimum`) -- inside a genuine price cluster,
+    NON-uniqueness is the expected case (several equal-priced station sets
+    tie for the winning objective), so this class tracks how many examples
+    fell into each branch and fails outright, in tearDownClass, if not one
+    single generated example actually contained a cluster of at least 3
+    identically-priced reachable candidates -- the anti-vacuity guard this
+    plan's own must_haves require, in the same spirit as
+    TrustMarginOracleDifferentialTests' own margin-fired-and-differed
+    counter: a strategy that degenerated into single-price routes would
+    otherwise let this whole class pass while testing nothing.
+    """
+
+    _cluster_case_count = 0
+    _unique_optimum_count = 0
+    _non_unique_optimum_count = 0
+
+    # The pinned D-19 tie-break witness this plan's own action text calls
+    # for: a real-priced and an estimate-priced station carrying the SAME
+    # raw price, alongside a genuine identically-priced cluster -- pinned
+    # via @example (mirroring _MARGIN_SWAP_WITNESS_ROUTE's own pattern
+    # above) so this exact shape fires deterministically regardless of
+    # what the random Hypothesis draws happen to produce.
+    _TIED_PRICE_MIXED_PROVENANCE_WITNESS = (
+        [
+            Candidate(
+                name="Cluster0",
+                opis_id=10,
+                price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal("100"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="Cluster1",
+                opis_id=11,
+                price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal("105"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="Cluster2",
+                opis_id=12,
+                price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal("110"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="Cluster3",
+                opis_id=13,
+                price_per_gallon=Decimal("3.50"),
+                distance_from_start_mi=Decimal("115"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="TiedReal",
+                opis_id=14,
+                price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal("300"),
+                price_source=_RECORDED_PRICE_SOURCE,
+            ),
+            Candidate(
+                name="TiedEstimate",
+                opis_id=15,
+                price_per_gallon=Decimal("3.00"),
+                distance_from_start_mi=Decimal("305"),
+                price_source=ESTIMATE_PRICE_SOURCE,
+            ),
+        ],
+        Decimal(500),
+        Decimal(300),
+        Decimal(10),
+        Decimal("1.00"),
+    )
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        if cls._cluster_case_count <= 0:
+            raise AssertionError(
+                "anti-vacuity failure: zero generated examples contained a "
+                "cluster of at least 3 identically-priced reachable "
+                "candidates -- identical_price_cluster_routes() may have "
+                "degenerated into single-price routes, which would let "
+                "this whole class pass while testing nothing. "
+                f"unique_optimum_count={cls._unique_optimum_count}, "
+                f"non_unique_optimum_count={cls._non_unique_optimum_count}"
+            )
+
+    @example(drawn_route=_TIED_PRICE_MIXED_PROVENANCE_WITNESS)
+    @given(identical_price_cluster_routes())
+    @settings(deadline=None, max_examples=200)
+    def test_dp_matches_oracle_on_identical_price_clusters(self, drawn_route):
+        candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
+
+        price_counts = {}
+        for candidate in candidates:
+            price_counts[candidate.price_per_gallon] = price_counts.get(candidate.price_per_gallon, 0) + 1
+        if price_counts and max(price_counts.values()) >= 3:
+            type(self)._cluster_case_count += 1
+
+        try:
+            preflight_gap_check(
+                candidates,
+                total_route_mi=total_route_mi,
+                tank_range_mi=tank_range_mi,
+                starting_fuel=starting_fuel,
+            )
+            dp_feasible = True
+        except InfeasibleRouteError:
+            dp_feasible = False
+
+        for penalty in PENALTY_LADDER:
+            for margin in _MARGIN_SWEEP:
+                oracle_plan = optimal_fixed_charge_plan(
+                    candidates,
+                    total_route_mi,
+                    penalty=penalty,
+                    tank_range_mi=tank_range_mi,
+                    mpg=mpg,
+                    starting_fuel=starting_fuel,
+                    trust_margin=margin,
+                )
+
+                context = (
+                    f"candidates={candidates!r}, total_route_mi={total_route_mi}, "
+                    f"tank_range_mi={tank_range_mi}, mpg={mpg}, "
+                    f"starting_fuel={starting_fuel}, penalty={penalty}, "
+                    f"margin={margin}"
+                )
+
+                self.assertEqual(
+                    oracle_plan is not None,
+                    dp_feasible,
+                    f"feasibility verdicts disagree: oracle_feasible="
+                    f"{oracle_plan is not None}, dp_feasible={dp_feasible}; "
+                    f"{context}",
+                )
+                if oracle_plan is None:
+                    continue
+
+                dp_plan = solve_fixed_charge(
+                    candidates,
+                    total_route_mi=total_route_mi,
+                    tank_range_mi=tank_range_mi,
+                    mpg=mpg,
+                    starting_fuel=starting_fuel,
+                    penalty=penalty,
+                    trust_margin=margin,
+                )
+
+                self.assertLessEqual(
+                    abs(dp_plan.penalised_objective - oracle_plan.objective),
+                    COST_TOLERANCE,
+                    f"dp penalised_objective ({dp_plan.penalised_objective}) "
+                    f"differs from oracle objective ({oracle_plan.objective}) "
+                    f"beyond COST_TOLERANCE; {context}",
+                )
+
+                if oracle_plan.is_unique_optimum:
+                    type(self)._unique_optimum_count += 1
+                    dp_stop_opis_ids = tuple(stop.opis_id for stop in dp_plan.stops)
+                    self.assertEqual(
+                        dp_stop_opis_ids,
+                        oracle_plan.stop_opis_ids,
+                        f"station set differs though the oracle optimum is "
+                        f"strictly unique; dp_stop_opis_ids="
+                        f"{dp_stop_opis_ids!r}; {context}",
+                    )
+                else:
+                    type(self)._non_unique_optimum_count += 1
 
 
 class PenaltyDisagreementFloorTests(SimpleTestCase):
