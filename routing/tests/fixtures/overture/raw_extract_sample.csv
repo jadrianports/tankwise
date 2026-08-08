@@ -1,0 +1,11 @@
+gers_id,name,brand_name,address_freeform,address_locality,address_region,address_postcode,category,confidence,operating_status,longitude,latitude
+11111111-1111-4111-8111-111111111101,Petro Stopping Center #12,Petro,1200 Petro Way,Dallas,TX,75201,truck_gas_station,0.95,open,-96.797,32.7767
+11111111-1111-4111-8111-111111111102,Pilot Travel Center 0621,Pilot,500 Pilot Rd,Redding,CA,96001,gas_station,0.93,open,-122.3917,40.5865
+11111111-1111-4111-8111-111111111103,Yakima Fuel Stop,,800 Fuel Ave,Yakima,WA,98901,gas_station,0.85,open,-120.5059,46.6021
+11111111-1111-4111-8111-111111111104,Pilot � Dunnigan CA,Pilot,100 Dunnigan Rd,Dunnigan,CA,95937,gas_station,0.90,open,-121.9691,38.8794
+11111111-1111-4111-8111-111111111105,EVgo Supercharger Station,EVgo,300 Charge Blvd,Sacramento,CA,95814,gas_station,0.92,open,-121.4944,38.5816
+11111111-1111-4111-8111-111111111106,Old Fuel Stop,,900 Border Rd,El Paso,TX,79901,gas_station,0.88,permanently_closed,-106.485,31.7619
+11111111-1111-4111-8111-111111111107,Reno Truck Fuel,,700 Truck Ln,Reno,NV,89501,gas_station,0.91,,-119.8138,39.5296
+11111111-1111-4111-8111-111111111108,Low Confidence Fuel,,400 Vague St,Amarillo,TX,79101,gas_station,0.3,open,-101.8313,35.2220
+11111111-1111-4111-8111-111111111109,No State Fuel Stop,,1 Unknown Rd,Somewhere,,,gas_station,0.9,open,-100.0,35.0
+11111111-1111-4111-8111-111111111110,Bad Confidence Row,,2 Bad Row Rd,Nowhere,TX,,gas_station,not-a-number,open,-97.0,33.0
