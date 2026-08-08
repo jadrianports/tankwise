@@ -80,6 +80,46 @@ jobs:
           DB_SSLMODE: disable
         run: python manage.py test
 
+  # Its own job, never folded into backend-sqlite or backend-postgres above:
+  # those two jobs' installed dependency set is itself part of the evidence
+  # that the production image does not need the offline Overture
+  # Parquet/geo toolchain, which is never installed in either of them. This
+  # job runs the real fetch_overture_extract query against a tiny committed
+  # Parquet fixture so the query logic is exercised for real, not mocked.
+  duckdb-fixture:
+    name: Overture fetch query (DuckDB fixture)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      # Django itself (requirements.txt) is needed here too -- only to load
+      # settings and import fetch_overture_extract.py through manage.py
+      # shell, the exact production import path. This is still the only
+      # job that installs the Overture toolchain; neither backend job
+      # above ever does.
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-offline.txt
+
+      - name: Run the real extract query against the committed fixture
+        run: |
+          python manage.py shell -c "
+          import duckdb
+          from routing.management.commands.fetch_overture_extract import _extract_sql
+
+          con = duckdb.connect()
+          con.execute('INSTALL spatial; LOAD spatial;')
+          sql = _extract_sql('routing/tests/fixtures/overture/places_sample.parquet')
+          rows = con.execute(sql).fetchall()
+          expected = 7
+          assert len(rows) == expected, f'expected {expected} rows, got {len(rows)}'
+          print(f'OK: {len(rows)} rows returned by the real extract query')
+          "
+
   frontend:
     name: Frontend tests, typecheck, lint, build
     runs-on: ubuntu-latest
