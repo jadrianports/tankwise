@@ -269,8 +269,26 @@ class GeocodeStationsCommandTests(TestCase):
                 "geocode_precision",
                 "geocode_status",
                 "price_source",
+                "source",
+                "gers_id",
             ],
         )
+        self.assertEqual(len(header), 17)
+        self.assertEqual(header[-3:], ["price_source", "source", "gers_id"])
+
+    def test_export_csv_rows_carry_opis_source_and_blank_gers_id(self):
+        with mock.patch(
+            "routing.pipeline.census_client.submit_chunk", side_effect=_no_match_stub
+        ):
+            self._call()
+
+        with open(self.export_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual(row["source"], "opis")
+            self.assertEqual(row["gers_id"], "")
 
     def test_report_file_written_with_all_four_buckets(self):
         with mock.patch(

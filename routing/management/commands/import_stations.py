@@ -13,7 +13,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from routing.models import GeocodeStatus, PriceSource, Station
+from routing.models import GeocodeStatus, PriceSource, Station, StationSource
 from routing.pipeline.dedupe import collapse_duplicates
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,12 @@ class Command(BaseCommand):
                     # This command is the one that read the OPIS source
                     # file, so it is the one that stamps provenance --
                     # unconditionally, no branch, no ID-range inference.
+                    # source mirrors price_source's stamp here: a Station
+                    # that already exists was already stamped opis at its
+                    # own creation, so there is no second place source
+                    # needs to be (re-)set.
                     defaults["price_source"] = PriceSource.OPIS_INDEXED
+                    defaults["source"] = StationSource.OPIS
                     Station.objects.update_or_create(
                         opis_id=group.opis_id, defaults=defaults
                     )

@@ -55,6 +55,8 @@ EXPORT_HEADER = [
     "geocode_precision",
     "geocode_status",
     "price_source",
+    "source",
+    "gers_id",
 ]
 
 GEOCODE_UPDATE_FIELDS = ["latitude", "longitude", "geocode_status", "geocode_precision"]
@@ -344,6 +346,8 @@ class Command(BaseCommand):
                         station.geocode_precision or "",
                         station.geocode_status,
                         station.price_source,
+                        station.source,
+                        station.gers_id or "",
                     ]
                 )
         self.stdout.write(self.style.SUCCESS(f"Exported derived dataset to {export_path}"))

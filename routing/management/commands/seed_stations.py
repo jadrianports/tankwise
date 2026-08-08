@@ -3,7 +3,8 @@
 This is the Docker-facing seed path: it performs NO geocoding and NO
 network call -- it is a straight idempotent upsert of already-persisted
 values (opis_id, coordinates, precision, status) from
-`data/stations_geocoded.csv` (the `geocode_stations` export).
+`data/stations_geocoded.csv` (the `geocode_stations` export) and, once
+plan 22-05 wires it in, `data/overture_stations.csv` as well.
 
 Semantics: idempotent upsert on opis_id, every run -- NOT
 skip-if-already-populated, NOT truncate-and-reload. A first run against an
@@ -32,8 +33,12 @@ DEFAULT_CSV_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 # Fields copied straight from the derived CSV onto Station, mapped 1:1 by
 # column name -- these mirror EXPORT_HEADER in geocode_stations.py minus
 # opis_id (the upsert key) and the coordinate/precision columns (handled
-# separately below since blank cells must coerce to None).
-STRAIGHT_FIELDS = ["name", "address", "city", "state", "rack_id", "price_source"]
+# separately below since blank cells must coerce to None). gers_id is
+# NOT here even though it is a straight string column: it is
+# blank-tolerant (see _row_to_defaults), and a required-column CommandError
+# on a blank-tolerant field would be wrong, so it lives in UPDATE_FIELDS'
+# hand-set tail below instead, alongside geocode_precision.
+STRAIGHT_FIELDS = ["name", "address", "city", "state", "rack_id", "price_source", "source"]
 DECIMAL_FIELDS = ["retail_price", "price_min", "price_max"]
 
 # Every key _row_to_defaults returns, derived from the two field lists above
@@ -46,6 +51,7 @@ UPDATE_FIELDS = STRAIGHT_FIELDS + DECIMAL_FIELDS + [
     "longitude",
     "geocode_precision",
     "geocode_status",
+    "gers_id",
 ]
 
 
@@ -73,13 +79,18 @@ def _row_to_defaults(row):
     defaults["longitude"] = _parse_optional_decimal(row["longitude"])
     defaults["geocode_precision"] = row["geocode_precision"] or None
     defaults["geocode_status"] = row["geocode_status"]
+    # gers_id is optional and blank for OPIS rows -- a missing/absent
+    # column would already have been caught by required_fields below if it
+    # were required, so this only needs to coerce a blank cell to None.
+    defaults["gers_id"] = (row.get("gers_id") or "").strip() or None
     return defaults
 
 
 class Command(BaseCommand):
     help = (
         "Seed the Station table from the committed derived CSV "
-        "(data/stations_geocoded.csv) via idempotent upsert on opis_id. "
+        "(data/stations_geocoded.csv, and, once plan 22-05 wires it in, "
+        "data/overture_stations.csv) via idempotent upsert on opis_id. "
         "Performs NO geocoding and NO network call -- the Docker replay path."
     )
 

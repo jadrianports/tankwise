@@ -5,11 +5,12 @@ from decimal import Decimal
 from pathlib import Path
 
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from routing.models import GeocodeStatus, Station
+from routing.models import GeocodeStatus, Station, StationSource
 
 FIXTURE_HEADER = [
     "opis_id",
@@ -27,6 +28,8 @@ FIXTURE_HEADER = [
     "geocode_precision",
     "geocode_status",
     "price_source",
+    "source",
+    "gers_id",
 ]
 
 # One ok+city row, one ok+rooftop row, one failed row (blank coords), one
@@ -49,6 +52,8 @@ FIXTURE_ROWS = [
         "geocode_precision": "city",
         "geocode_status": "ok",
         "price_source": "opis_indexed",
+        "source": "opis",
+        "gers_id": "",
     },
     {
         "opis_id": "1002",
@@ -66,6 +71,8 @@ FIXTURE_ROWS = [
         "geocode_precision": "rooftop",
         "geocode_status": "ok",
         "price_source": "opis_indexed",
+        "source": "opis",
+        "gers_id": "",
     },
     {
         "opis_id": "1003",
@@ -83,6 +90,8 @@ FIXTURE_ROWS = [
         "geocode_precision": "",
         "geocode_status": "failed",
         "price_source": "opis_indexed",
+        "source": "opis",
+        "gers_id": "",
     },
     {
         "opis_id": "1004",
@@ -100,6 +109,8 @@ FIXTURE_ROWS = [
         "geocode_precision": "",
         "geocode_status": "out_of_scope",
         "price_source": "opis_indexed",
+        "source": "opis",
+        "gers_id": "",
     },
 ]
 
@@ -166,6 +177,14 @@ class SeedStationsTests(TestCase):
         self.assertIsNone(out_of_scope.latitude)
         self.assertIsNone(out_of_scope.longitude)
 
+    def test_source_and_gers_id_land_on_the_model(self):
+        call_command("seed_stations", self.csv_path, stdout=io.StringIO())
+
+        for opis_id in (1001, 1002, 1003, 1004):
+            station = Station.objects.get(opis_id=opis_id)
+            self.assertEqual(station.source, StationSource.OPIS)
+            self.assertIsNone(station.gers_id)
+
     def test_drifted_row_reconverges_to_csv_on_reseed(self):
         call_command("seed_stations", self.csv_path, stdout=io.StringIO())
 
@@ -210,3 +229,76 @@ class SeedStationsTests(TestCase):
             Path(large_csv_path).unlink(missing_ok=True)
 
         self.assertLessEqual(large_count, small_count + 2)
+
+
+class SeedStationsSourceGersIdColumnTests(TestCase):
+    """source is required (STRAIGHT_FIELDS); gers_id is optional and
+    blank-tolerant -- that asymmetry is deliberate (see seed_stations.py)."""
+
+    def tearDown(self):
+        Path(self.csv_path).unlink(missing_ok=True)
+
+    def test_csv_missing_source_column_raises_command_error(self):
+        header_without_source = [c for c in FIXTURE_HEADER if c != "source"]
+        rows_without_source = []
+        for row in FIXTURE_ROWS:
+            trimmed = dict(row)
+            del trimmed["source"]
+            rows_without_source.append(trimmed)
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", newline="", suffix=".csv", delete=False, encoding="utf-8"
+        )
+        writer = csv.DictWriter(tmp, fieldnames=header_without_source)
+        writer.writeheader()
+        for row in rows_without_source:
+            writer.writerow(row)
+        tmp.close()
+        self.csv_path = tmp.name
+
+        with self.assertRaises(CommandError) as ctx:
+            call_command("seed_stations", self.csv_path, stdout=io.StringIO())
+
+        self.assertIn("source", str(ctx.exception))
+        self.assertEqual(Station.objects.count(), 0)
+
+    def test_csv_missing_gers_id_column_does_not_raise(self):
+        # gers_id is optional -- a CSV that never had the column at all
+        # (e.g. the pre-Phase-22 file shape) must still seed cleanly.
+        header_without_gers_id = [c for c in FIXTURE_HEADER if c != "gers_id"]
+        rows_without_gers_id = []
+        for row in FIXTURE_ROWS:
+            trimmed = dict(row)
+            del trimmed["gers_id"]
+            rows_without_gers_id.append(trimmed)
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", newline="", suffix=".csv", delete=False, encoding="utf-8"
+        )
+        writer = csv.DictWriter(tmp, fieldnames=header_without_gers_id)
+        writer.writeheader()
+        for row in rows_without_gers_id:
+            writer.writerow(row)
+        tmp.close()
+        self.csv_path = tmp.name
+
+        out = io.StringIO()
+        call_command("seed_stations", self.csv_path, stdout=out)
+
+        self.assertEqual(Station.objects.count(), len(FIXTURE_ROWS))
+        self.assertIsNone(Station.objects.get(opis_id=1001).gers_id)
+
+    def test_populated_gers_id_round_trips_onto_the_model(self):
+        uuid_string = "08f2a1c4-9b3d-4e5f-8a6b-1c2d3e4f5a6b"
+        overture_row = dict(FIXTURE_ROWS[0])
+        overture_row["opis_id"] = "2001"
+        overture_row["source"] = "overture"
+        overture_row["gers_id"] = uuid_string
+
+        self.csv_path = _write_fixture_csv([overture_row])
+
+        call_command("seed_stations", self.csv_path, stdout=io.StringIO())
+
+        station = Station.objects.get(opis_id=2001)
+        self.assertEqual(station.source, StationSource.OVERTURE)
+        self.assertEqual(station.gers_id, uuid_string)

@@ -1,3 +1,4 @@
+import inspect
 from decimal import Decimal
 from pathlib import Path
 
@@ -6,7 +7,8 @@ from django.core.management import call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase
 
-from routing.models import GeocodeStatus, Station
+from routing.management.commands import import_stations
+from routing.models import GeocodeStatus, Station, StationSource
 
 CSV_PATH = str(Path(settings.BASE_DIR) / "fuel-prices-for-be-assessment.csv")
 
@@ -50,6 +52,22 @@ class ImportStationsRealCsvTests(TestCase):
         station = Station.objects.get(opis_id=20)
         self.assertEqual(station.retail_price, Decimal("3.899"))
         self.assertEqual(station.observation_count, 2)
+
+    def test_every_imported_row_declares_opis_source(self):
+        self.assertEqual(
+            Station.objects.exclude(source=StationSource.OPIS).count(), 0
+        )
+        self.assertEqual(Station.objects.filter(gers_id__isnull=False).count(), 0)
+
+
+class ImportStationsSourceStampPurityTests(TestCase):
+    """D-21: the command reading a source is what declares provenance --
+    a single unconditional stamp, no branch, no ID-range inference."""
+
+    def test_single_unconditional_stationsource_reference(self):
+        source_text = inspect.getsource(import_stations)
+
+        self.assertEqual(source_text.count("StationSource"), 2)
 
 
 class ImportStationsIdempotencyTests(TestCase):
