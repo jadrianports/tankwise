@@ -494,7 +494,20 @@ class RealFileIdentifierProofTests(TestCase):
         extract, at real scale. Plan 22-10's OvertureTransformDeterminismTests
         already proves this at fixture scale (two runs match each other);
         this additionally proves the COMMITTED file is what the committed
-        extract itself produces, so a hand edit to either one fails here."""
+        extract itself produces, so a hand edit to either one fails here.
+
+        Line endings are normalized on both sides before comparing, and
+        that is deliberate. `csv.writer` emits CRLF on every platform,
+        but the committed blob is LF-only, so what lands in the working
+        tree depends on the checkout: `core.autocrlf=true` on Windows
+        restores CRLF, while a Linux CI runner leaves LF. Comparing raw
+        bytes therefore tested the checkout's line-ending policy rather
+        than the transform, passing on a developer machine and failing on
+        CI for a reason that has nothing to do with the data. Normalizing
+        keeps the guarantee this test exists for -- a hand edit to either
+        the committed CSV or the committed extract still fails it,
+        because every field, row and row ORDER is still compared exactly.
+        """
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             out_path = tmp_path / "overture_stations.csv"
@@ -506,9 +519,9 @@ class RealFileIdentifierProofTests(TestCase):
                 report_path=str(tmp_path / "report.md"),
                 decisions_path=str(tmp_path / "decisions.csv"),
             )
-            self.assertEqual(
-                out_path.read_bytes(), OVERTURE_STATIONS_PATH.read_bytes()
-            )
+            generated = out_path.read_bytes().replace(b"\r\n", b"\n")
+            committed = OVERTURE_STATIONS_PATH.read_bytes().replace(b"\r\n", b"\n")
+            self.assertEqual(generated, committed)
 
     def test_check2_ids_disjoint_against_the_real_committed_files(self):
         """Criterion 3 check 2 -- disjointness, asserted on the real files,
