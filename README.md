@@ -9,7 +9,7 @@
 [![Node 24](https://img.shields.io/badge/node-24-339933.svg)](https://nodejs.org/)
 [![React 19](https://img.shields.io/badge/react-19-61dafb.svg)](https://react.dev/)
 
-TankWise is a route and cost-optimal fuel-stop planner built for truckers and small-fleet dispatchers: give it a start and finish location anywhere in the continental US and it returns the driving route, a fuel-stop plan that minimizes fuel cost plus a flat per-stop charge (so a stop only earns its place when it's worth it), and the total fuel cost for the trip — chosen from 6,290 routable truck-stop stations (8,151 raw price rows, 6,738 successfully geocoded). A React, MUI, and Mapbox GL JS single-page app renders the route, the stops, and the savings story on an interactive map, and the whole stack (API, cache, SPA) starts with one `docker compose up`. Station prices are indexed weekly to EIA regional diesel averages, with a week-over-week trend chip and an honest fallback when the EIA feed is unavailable.
+TankWise is a route and cost-optimal fuel-stop planner built for truckers and small-fleet dispatchers: give it a start and finish location anywhere in the continental US and it returns the driving route, a fuel-stop plan that minimizes fuel cost plus a flat per-stop charge (so a stop only earns its place when it's worth it), and the total fuel cost for the trip — chosen from 6,290 routable truck-stop stations (8,151 raw price rows, 6,738 successfully geocoded). *(Updated 2026-08-09: a second, separately-sourced set of 10,051 Overture Maps stations now sits alongside that OPIS set — 16,341 routable stations combined. See "Data sources & attribution" under Design decisions below.)* A React, MUI, and Mapbox GL JS single-page app renders the route, the stops, and the savings story on an interactive map, and the whole stack (API, cache, SPA) starts with one `docker compose up`. Station prices are indexed weekly to EIA regional diesel averages, with a week-over-week trend chip and an honest fallback when the EIA feed is unavailable.
 
 > It began as a take-home assessment for a full-stack engineering role and has since been grown into a rebranded, launch-ready portfolio product.
 
@@ -29,7 +29,7 @@ Open `.env` and set two [Mapbox](https://www.mapbox.com/) tokens: a secret token
 docker compose up --build
 ```
 
-Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all 6,738 geocoded stations (6,290 of them routable), which takes a few seconds; `web` itself waits for `redis` to report healthy before it starts, so you won't hit a broken cache the moment it comes up. If port 80 is already taken on your machine, change the host side of `web.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead.
+Now open **http://localhost**. On first boot the `web` container runs migrations and seeds all 6,738 geocoded stations (6,290 of them routable), which takes a few seconds; `web` itself waits for `redis` to report healthy before it starts, so you won't hit a broken cache the moment it comes up. If port 80 is already taken on your machine, change the host side of `web.ports` in `docker-compose.yml` (say `"8080:80"`) and use that port instead. *(Updated 2026-08-09: the seed step now runs on every boot, not only the first, and seeds both committed CSVs — 16,341 routable stations combined, 6,290 OPIS plus 10,051 Overture. See "Data sources & attribution" under Design decisions below.)*
 
 Even without Mapbox tokens the stack boots and the map page loads. A route request just returns a clear 502 `upstream_error` until both `MAPBOX_TOKEN` and `MAPBOX_PUBLIC_TOKEN` are set.
 
@@ -82,7 +82,7 @@ flowchart LR
     Corridor["STRtree corridor prefilter<br/>+ perpendicular<br/>geometry test"]
     Solver["Fixed-charge solve<br/>(exact DP or heuristic fallback)"]
     Cache[("Redis<br/>response cache")]
-    DB[("Postgres (prod)<br/>SQLite (local dev)<br/>6,738 stations")]
+    DB[("Postgres (prod)<br/>SQLite (local dev)<br/>6,738 OPIS + 10,051 Overture stations")]
 
     Browser -- "address autocomplete" --> Search
     Browser -- "GET /, static assets" --> Gunicorn
@@ -95,7 +95,7 @@ flowchart LR
     Solver -- "fuel plan + total cost" --> Gunicorn
 ```
 
-**Offline seed pipeline.** The station dataset ships without coordinates, so it gets geocoded once, offline, and the result is committed to the repo. No station geocoding ever happens at request time.
+**Offline seed pipeline.** The station dataset ships without coordinates, so it gets geocoded once, offline, and the result is committed to the repo. No station geocoding ever happens at request time. *(Updated 2026-08-09: a second, Overture-sourced committed CSV now feeds the same seed step — see the added branch below — and the seed itself now runs on every boot, not only when the table is empty (plan 22-09), so it stays applied whenever the committed CSVs change.)*
 
 ```mermaid
 flowchart LR
@@ -103,10 +103,14 @@ flowchart LR
     Import["import_stations<br/>(management command)"]
     Census["geocode_stations<br/>US Census Bulk Geocoder<br/>(one-time, offline)"]
     Committed["data/stations_geocoded.csv<br/>committed to git,<br/>6,738 geocoded rows<br/>(6,290 routable)"]
-    Seed["entrypoint.sh:<br/>seed_stations<br/>(only if table empty)"]
+    OvertureExtract["Overture Maps Places theme<br/>fetch_overture_extract<br/>(one-time, offline)"]
+    OvertureCommitted["data/overture_stations.csv<br/>committed to git,<br/>10,051 rooftop-accurate rows<br/>(all routable)"]
+    Seed["entrypoint.sh:<br/>seed_stations<br/>(every boot)"]
     Volume[("Named Docker volume<br/>db.sqlite3")]
 
-    RawCSV --> Import --> Census --> Committed --> Seed --> Volume
+    RawCSV --> Import --> Census --> Committed --> Seed
+    OvertureExtract --> OvertureCommitted --> Seed
+    Seed --> Volume
 ```
 
 ## Environment variables
@@ -208,6 +212,8 @@ curl -s -X POST http://localhost/api/route \
 
 The `infeasible_route` and `route_not_found` examples are both live, reproducible requests. See the demo walkthrough below. A 429 also carries a `Retry-After` header (seconds until the next allowed request, set by DRF itself); `retry_after_s` in the body mirrors the same value.
 
+*(Updated 2026-08-09: the `infeasible_route` example above (San Francisco → Seattle) no longer reproduces — the West Coast gap-fill import (see "Data sources & attribution" under Design decisions below) moved that route to a valid 2-stop plan at the API's default vehicle. The JSON above stays as an illustration of the error shape and its `detail` fields; `route_not_found`'s Catalina Island example is the only one of the two still live as of this update. No confirmed-infeasible `infeasible_route` example is currently on record.)*
+
 ### `GET /api/health`
 
 A dependency-free liveness probe. It touches no database, cache, or Mapbox, so it stays fast and always answers even on a freshly-booted, unseeded instance. Docker Compose's own healthcheck polls it to report the `web` container's health status, and on a live deploy it's what an external keep-warm cron hits to prevent the free-tier instance from spinning down (see "Free-tier deployment" above).
@@ -263,7 +269,8 @@ Four explicit assumptions are baked into the model:
 ## Design decisions
 
 - **Just one Mapbox Directions call.** A single call (`geometries=geojson`, full route overview) returns both the geometry and the total distance, which is everything downstream needs. Address inputs add up to two Mapbox Geocoding calls, still inside the "2-3 acceptable" budget. The client-side `map_url` fetch never counts against that budget, because the server never makes it.
-- **Offline US Census geocoding for the station dataset.** Mapbox's free geocoding tier doesn't allow permanently storing its results under the terms of service, so using it to backfill a persisted `lat`/`lng` column would be a violation. The US Census Bulk Geocoder has no such restriction and takes the whole dataset in one batch file, so the one-time `geocode_stations` backfill uses it and resolves 6,738 of the CSV's 8,151 rows to coordinates, of which 6,290 are routable stations the solver can actually use (526 rooftop-geocoded, 5,764 city-centroid).
+- **Offline US Census geocoding for the station dataset.** Mapbox's free geocoding tier doesn't allow permanently storing its results under the terms of service, so using it to backfill a persisted `lat`/`lng` column would be a violation. The US Census Bulk Geocoder has no such restriction and takes the whole dataset in one batch file, so the one-time `geocode_stations` backfill uses it and resolves 6,738 of the CSV's 8,151 rows to coordinates, of which 6,290 are routable stations the solver can actually use (526 rooftop-geocoded, 5,764 city-centroid). *(Updated 2026-08-09: a second, separately-sourced set of stations now sits alongside this OPIS-geocoded set — see "Data sources & attribution" below for the combined total and its provenance.)*
+- **Data sources & attribution.** 6,290 stations come from the original OPIS truck-stop price snapshot described above (8,151 raw rows, 6,738 geocoded). A further 10,051 come from a targeted Overture Maps Places import (release `2026-07-22.0`) closing the West Coast coverage gap — see "Thin West Coast station coverage" in Notes below. Overture ships real POI coordinates, so these rows need no geocoding step and land rooftop-accurate; each carries a regionally-estimated rather than a recorded price (`price_source=eia_regional_estimate`). Combined: 16,341 routable stations, 61.5% estimate-priced. The Overture data is redistributed under the CDLA-Permissive-2.0 licence — see [`NOTICE`](NOTICE) for the full attribution and licence text.
 - **A fixed-charge dynamic program, exact within the region it's dispatched to.** The solver minimizes fuel cost plus a flat $35 per-stop charge, so a stop only earns its place when the fuel it saves outweighs the charge. A pre-flight estimate of the search size decides, per request, which of two arms runs: within budget, an exact dynamic program (`routing/services/dp.py`) solves that joint objective optimally over a domination-pruned candidate set that's proven to never remove a station an optimal plan could need (`routing/services/prune.py`); outside budget, a penalty-aware heuristic fallback (`routing/services/heuristic.py`) approximates the same objective instead, with no optimality proof. The number of stops still tracks the price landscape along a corridor, not trip length alone — every leg still stays at or under 500 miles, and total trip length is otherwise unbounded. See [`docs/ALGORITHM.md`](docs/ALGORITHM.md) for the recurrence, the prune's soundness argument, the dispatch policy, and its known limitations.
 - **A lazily-built STRtree prefilter plus a corridor-distance test, no PostGIS.** A process-level shapely `STRtree` built once from the routable station set replaces the original per-request DB bbox query, so the request path issues zero database queries after the first use. The route geometry is buffered by the wider of the corridor's two axis pads (never the narrower one, so the buffer only ever over-includes) and queried against the tree; survivors then get the same precise perpendicular-distance test as before, projected to a local equirectangular plane first (a degree of longitude isn't the same distance as a degree of latitude). That precise test is what's accurate over the endpoint-distance shortcut, which includes or drops stations wrongly depending on the route's shape; the STRtree swap on top of it is a pure performance change with an identical result set — see "Corridor benchmark" below for measured numbers. Still no PostGIS/GDAL system dependency for a dataset this small.
 - **Redis, because it actually matters here.** The Docker stack runs multiple gunicorn workers (`WEB_CONCURRENCY`, 2 by default). Django's process-local `LocMemCache` would give each worker its own copy, so a repeat request could quietly miss depending on which worker handled it, which would make a cache-hit demo dishonest. Redis is shared across the workers, so a repeat is genuinely served from cache no matter who answers it. A cold request runs the full pipeline (~0.3-1s, mostly the Mapbox round trip); a cache hit comes back in about 10ms.
@@ -274,6 +281,8 @@ Four explicit assumptions are baked into the model:
 `python manage.py benchmark_corridor` re-runs the corridor filter's legacy DB-bbox path against the current STRtree path over synthetic, offline routes (no network call, no Mapbox), and reports each variant's median wall-clock time plus the two speedups attributed separately: the mean-latitude hoisting fix (computing the route's mean latitude once per corridor pass instead of once per candidate station), and the STRtree spatial index (which also removes the per-request DB query entirely). Anyone with the repo cloned and the dev database seeded can reproduce these numbers locally with `python manage.py benchmark_corridor --routes 3 --points 2000 --repeats 5`.
 
 These are locally reproducible numbers from a single development machine, not a controlled or isolated benchmark environment — treat them as directionally honest, not lab-grade precise. Measured on Windows 11, Python 3.12.10, against the seeded dev SQLite database (6,290 routable stations), single process, no other load. The STRtree figure is warm (excludes the one-time tree-build cost, since production only pays that once per process). Median of 5 repeats per variant per route, 2,000-point synthetic geometries:
+
+*(Note, 2026-08-09: this benchmark was measured before the Phase 22 Overture gap-fill import landed. Reproducing `benchmark_corridor` today, against the fully-seeded dev database, reports 16,341 routable stations instead of 6,290. The relative STRtree-vs-bbox speedup shape is not expected to change materially, since it stems from route/candidate geometry, not row count.)*
 
 | Route | Legacy bbox | + hoisted mean_lat | + STRtree (warm) | Hoist speedup | STRtree speedup |
 |-------|-------------|---------------------|-------------------|----------------|-------------------|
@@ -298,14 +307,14 @@ A scripted path through the four presets built into the map page's sidebar. Each
 2. **Denver → Kansas City** (happy path, single stop). Click the preset. The route polyline, one numbered fuel-stop marker, and the summary card (total cost, gallons, miles, stop count) all render together. Clicking the itinerary row pans to that marker and opens its popup.
 3. **Dallas → Los Angeles** (happy path, multiple stops). A longer trip with 5 fuel stops across a different price landscape, showing that the same interaction scales to a full itinerary.
 4. **Click the same preset again.** The response comes back almost instantly from the shared Redis cache instead of re-calling Mapbox and re-running the pipeline. You can watch the faster response time in the browser's network tab.
-5. **San Francisco → Seattle** (422 `infeasible_route`). Shows the tailored error copy and the structured gap detail: which two stations, how big the gap is, and the max range.
+5. **San Francisco → Seattle** (422 `infeasible_route`). Shows the tailored error copy and the structured gap detail: which two stations, how big the gap is, and the max range. *(Updated 2026-08-09: this route is no longer infeasible — the West Coast gap-fill import moved it to a valid 2-stop plan at the API's default vehicle. Skip this step for now; no other confirmed-infeasible example is on record. See "Data sources & attribution" under Design decisions above.)*
 6. **Catalina Island → Los Angeles** (422 `route_not_found`). An island with no connecting road, so Mapbox itself reports no drivable route.
 7. **A quick code tour:** `routing/services/solver.py` (the dispatch entry point that estimates search size and picks an arm), `routing/services/dp.py` (the exact fixed-charge dynamic program), `routing/services/heuristic.py` (the penalty-aware fallback), `routing/services/prune.py` (the domination prune that shrinks the DP's input), `routing/services/corridor.py` (the bbox and perpendicular filter), `routing/views.py` (the orchestrator that ties it together), and `routing/cache.py` (the cache-key normalizer behind step 4).
 
 ## Notes
 
 - **Run the two address-geocoding calls concurrently.** When both `start` and `finish` are addresses, they're geocoded one after the other right now. Doing them at the same time would save roughly 150ms on address-only requests. I left it sequential to keep the request path a single, easy-to-follow synchronous chain within the assessment's timeline.
-- **Thin West Coast station coverage.** A route like Seattle → San Diego is obviously drivable but currently reports `infeasible_route`, because the CSV has sparse station coverage along parts of the West Coast. Worth checking whether that's a real gap in the source data or a corridor-width tuning issue.
+- **Thin West Coast station coverage.** A route like Seattle → San Diego is obviously drivable but currently reports `infeasible_route`, because the CSV has sparse station coverage along parts of the West Coast. Worth checking whether that's a real gap in the source data or a corridor-width tuning issue. *(Updated 2026-08-09: closed by a targeted Overture Maps gap-fill import — see "Data sources & attribution" under Design decisions above. Seattle → San Diego, San Francisco → Seattle, Portland → Sacramento, and Los Angeles → Eugene — the four pinned West Coast probes — are now routable at both the API's default vehicle and the map UI's hero preset; none of the four remains infeasible. This is a feasibility claim only, never a cost one: the added stations share one regionally-estimated price across each of eight EIA regions, so they carry no price differentiation against each other and no savings figure would be supportable. This confirms these four specific pinned probes are now routable; it does not claim every West Coast route is.)*
 - Longer term (not attempted here): a Mapbox permanent-geocoding fallback for the handful of station addresses the Census geocoder can't resolve, alternative route options (fastest vs. cheapest), a per-request vehicle profile (range, mpg, tank size), and a live cloud deployment.
 
 ## License

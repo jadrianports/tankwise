@@ -36,6 +36,14 @@ diesel price snapshot, geocoded offline in three stages:
 `Station.objects.routable()` is the single queryset both the corridor index and
 this document draw the 6,290 figure from.
 
+*(Updated 2026-08-09, Phase 22: a second, separately-sourced set of 10,051 rows
+now sits alongside this OPIS set — a targeted Overture Maps Places import
+(release `2026-07-22.0`) closing the West Coast coverage gap. Overture rows
+ship real POI coordinates (no geocoding step) and carry a regionally-estimated
+rather than a recorded price. `Station.objects.routable()` now returns both
+sets: 16,341 routable stations combined, 61.5% estimate-priced. See "Known
+limitations" below and `NOTICE` at the repository root for the licence.)*
+
 ## Request Pipeline
 
 ```mermaid
@@ -149,6 +157,12 @@ the seeded dev SQLite database (6,290 routable stations), single process, no
 other load. The STRtree figure is warm (excludes the one-time tree-build cost,
 since production only pays that once per process). Median of 5 repeats per
 variant per route, 2,000-point synthetic geometries:
+
+*(Note, 2026-08-09: this benchmark was measured before the Phase 22 Overture
+gap-fill import landed. Reproducing it today, against the fully-seeded dev
+database, reports 16,341 routable stations instead of 6,290. The relative
+STRtree-vs-bbox speedup shape is not expected to change materially, since it
+stems from route/candidate geometry, not row count.)*
 
 | Route | Legacy bbox | + hoisted mean_lat | + STRtree (warm) | Hoist speedup | STRtree speedup |
 |-------|-------------|---------------------|-------------------|----------------|-------------------|
@@ -382,7 +396,10 @@ client can see what else was on the table, not just what won.
 
 ## Complexity
 
-Let `n` = 6,290 (routable stations), `P` = route geometry points (Mapbox
+Let `n` = 6,290 (routable stations) *(updated 2026-08-09: `n` is now 16,341
+after the Phase 22 Overture gap-fill import — 6,290 OPIS + 10,051 Overture
+rows; the complexity class itself is unaffected, since these are asymptotic
+structural bounds, not literal timings)*, `P` = route geometry points (Mapbox
 returns a few hundred to a couple thousand for a cross-country trip; the
 benchmark above uses 2,000 as a stress case), `k` = candidate stations
 surviving the corridor buffer for one route (typically a small fraction of
@@ -675,3 +692,37 @@ margin can shift what `prune.py` keeps is correct, and Question 2's claim
 that `estimate_transition_count` is untouched is superseded — both amended
 in place on the research document itself, per this project's standing
 amend-in-place convention.
+
+**10. The Overture gap-fill widened candidate density, and the dispatch
+heuristic share rose accordingly (added 2026-08-09, Phase 22).** Landing
+10,051 Overture-sourced stations grew `estimate_transition_count` on the
+corridors the gap-fill boxes geographically intersect — predicted before the
+measurement by limitation 3's own super-linear growth argument, then
+confirmed by a full 26-cell `measure_dispatch_grid` re-run against the
+landed dataset. **The heuristic share rose from 11 of 26 measured cells
+(42.3%) to 14 of 26 (53.8%)** — a MAJORITY of measured cells now dispatch to
+the arm with no optimality proof. Three cells flipped `exact_dp` →
+`penalty_aware_heuristic`: `demo_la_ca-denver_co-chicago_il`@1050mi,
+`sacramento_ca-salt_lake_city_ut`@500mi, and
+`san_diego_ca-jacksonville_fl`@1050mi; the other twenty measured cells
+stayed byte-identical on every deterministic field, confirmed against a
+pre-declared prediction naming exactly which slugs should move (Phase 22
+plan 22-14's `22-DISPATCH-DIFF.md`). `demo_la_ca-new_york_ny`@1050mi's own
+transition-count estimate — already over budget before this phase — grew
+294x, from 222,214 to 65,261,638. Separately, `dp.DISPATCH_RETENTION_FLOOR`'s
+own anti-vacuity condition (two cells with genuine deployed-hardware
+evidence of `exact_dp` running comfortably inside the request timeout) now
+achieves **0 of its 2 required cells at the shipped 50,000 budget, down from
+1 of 2** — `sacramento_ca-salt_lake_city_ut`'s estimate (~120 at the API
+default vehicle) crossed the budget in the same re-pin, so neither retention
+cell dispatches to the exact arm any more; see `routing/services/dp.py`'s
+own corrected comment for the detail. No cost or savings claim is made
+about any of these three flipped cells — this milestone's success bar is
+feasibility plus honest provenance, explicitly not cheaper plans, and the
+flipped cells' costs came from the arm with no optimality proof in any
+case. Separately, the always-seed boot change (plan 22-09, limitation-
+adjacent rather than dispatch-related) measured a real added cost:
+**2.115s steady-state median** (range 1.915s–2.805s) to reseed the full
+dataset on every container boot, materially higher than the milestone's
+own "milliseconds" prediction — still well inside Render's 15-minute
+health-check cancel window, but a real, recorded cost, not an estimate.

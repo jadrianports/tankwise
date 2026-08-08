@@ -26,7 +26,10 @@ brand-new service's *first* deploy:
   it cancels the deploy. The batched first-boot station seed (Task 15-01)
   completes in well under a minute, so there's wide safety margin here even
   against a slow Neon cold start — this is a generous budget, not a ticking
-  clock.
+  clock. *(Updated 2026-08-09: the seed now runs on every boot, not only the
+  first (plan 22-09) — measured steady-state median 2.115s, range
+  1.915s–2.805s, against the combined post-import dataset. Still a small
+  fraction of the 15-minute window.)*
 - **A deploy that looks idle right after you push isn't stuck — it's waiting
   on CI.** `render.yaml` sets `autoDeployTrigger: checksPass`, so a push to
   `main` only starts a Render deploy once every GitHub Actions check on that
@@ -189,15 +192,21 @@ what each stage looks like and what to do if it fails there.
          host, wrong password) or the pooled/direct mixup from Section 1.
          Fix the value in the Render dashboard's Environment tab and trigger
          a manual redeploy — no code change needed.
-2. [ ] **Station-count probe, then a conditional seed.** The log shows
-       `Station table empty -- seeding from committed CSV...` only on a
-       genuinely first boot (an empty table). This step is the batched
+2. [ ] **Station seed.** The log shows the seed step running on every boot —
+       not only a genuinely first boot. This step is the batched
        `bulk_create`/`bulk_update` upsert from plan 15-01 — a handful of
        queries, not one per CSV row — so it should finish in well under a
        minute even against Neon's cold-start latency.
        - *If it fails here:* a Neon connectivity issue that migrate itself
          didn't catch, or (much less likely, since this path is
-         idempotent-by-`opis_id`) a data problem in the committed CSV.
+         idempotent-by-`opis_id`) a data problem in a committed CSV.
+       - *(Updated 2026-08-09: this step previously ran only on a genuinely
+         first boot, behind an empty-table guard that printed
+         `Station table empty -- seeding from committed CSV...`. Plan 22-09
+         removed that guard — the seed is now unconditional, on every boot,
+         so a committed dataset change is always applied without a manual
+         step. Measured steady-state cost: 2.115s median, range
+         1.915s–2.805s, against the combined OPIS + Overture dataset.)*
 3. [ ] **`exec gunicorn` binds the port.** The log shows gunicorn starting
        its configured worker count. This is the point where `/api/ready`
        first becomes reachable at all — nothing before this line can be
