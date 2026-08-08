@@ -62,13 +62,13 @@ import time
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 
 from routing.services import corridor, dp
 from routing.services.exceptions import InfeasibleRouteError
 from routing.services.prune import prune_dominated_candidates
 from routing.services.solver import solve
+from routing.services.station_csv_paths import reseed_all
 from routing.tests.test_corridor_fixtures import (
     CORRIDORS,
     DEMO_CHIP_VEHICLE,
@@ -227,7 +227,12 @@ class Command(BaseCommand):
             "(manage.py seed_stations, idempotent replay, no network "
             "call)..."
         )
-        call_command("seed_stations", stdout=io.StringIO())
+        # reseed_all(), not a bare call_command("seed_stations", ...): a
+        # measurement that seeds only a subset of the canonical CSV list
+        # reports the wrong world -- the same failure class
+        # SeedStationsCallSiteGateTest (routing/tests/test_boundaries.py)
+        # exists to catch statically.
+        reseed_all(stdout=io.StringIO())
         corridor.reset_index()
         self.stdout.write("")
 

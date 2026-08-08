@@ -531,3 +531,139 @@ class SolveTrustMarginKwargGateTest(SimpleTestCase):
             "production + test solve() call-site counts do not sum to the "
             "pinned D-18 total",
         )
+
+
+def _is_call_command_call(node):
+    """True when `node` is an `ast.Call` whose `func` resolves to
+    `call_command` -- a bare `ast.Name` (`call_command(...)`) or an
+    `ast.Attribute` (`management.call_command(...)`)."""
+    func = node.func
+    return (isinstance(func, ast.Name) and func.id == "call_command") or (
+        isinstance(func, ast.Attribute) and func.attr == "call_command"
+    )
+
+
+def _is_seed_stations_call(node):
+    """True when `node` is a `call_command(...)` call whose first
+    positional argument is the string literal `"seed_stations"`."""
+    if not _is_call_command_call(node) or not node.args:
+        return False
+    first_arg = node.args[0]
+    return (
+        isinstance(first_arg, ast.Constant)
+        and isinstance(first_arg.value, str)
+        and first_arg.value == "seed_stations"
+    )
+
+
+def _collect_seed_stations_calls_with_literal_path(path):
+    """Find every `call_command("seed_stations", ...)` call site in `path`
+    whose SUBSEQUENT positional arguments -- everything after the command
+    name itself -- include a hand-written string-literal or f-string path,
+    rather than either no path at all (inheriting `seed_stations`' own
+    canonical default) or an unpacked/starred name expression (the shape
+    `reseed_all`'s own call takes: `*[str(p) for p in
+    CANONICAL_STATION_CSV_PATHS]`). A command that reseeds only one
+    hand-picked file would report a pre-import result as post-import, with
+    no error and no log line -- this is the third application of the same
+    AST call-site gate pattern this codebase already uses twice
+    (`SolvePenaltyKwargGateTest`, `SolveTrustMarginKwargGateTest`), applied
+    here to a different failure mode (D-29).
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_seed_stations_call(node):
+            continue
+        for extra_arg in node.args[1:]:
+            is_literal_path = isinstance(extra_arg, ast.Constant) and isinstance(
+                extra_arg.value, str
+            )
+            is_fstring_path = isinstance(extra_arg, ast.JoinedStr)
+            if is_literal_path or is_fstring_path:
+                violations.append(
+                    f"{path}:{node.lineno}: call_command('seed_stations', ...) "
+                    "passes a hand-written positional path literal instead of "
+                    "routing through reseed_all() or the canonical default"
+                )
+                break
+    return violations
+
+
+# D-29 call-site classification, walked once by
+# `test_call_site_count_matches_pinned_total` below and cross-checked to
+# sum correctly -- the same non-vacuity discipline
+# `SolveTrustMarginKwargGateTest` already applies to its own pinned counts.
+# `station_csv_paths.py`'s own `reseed_all()` is production call site #1
+# (its `call_command("seed_stations", *[...])` call is itself scanned and
+# found compliant, not exempted).
+SEED_STATIONS_CALL_SITE_PRODUCTION_COUNT = 8
+SEED_STATIONS_CALL_SITE_TEST_COUNT = 33
+SEED_STATIONS_CALL_SITE_TOTAL_COUNT = 41
+
+
+class SeedStationsCallSiteGateTest(SimpleTestCase):
+    """Statically enforces that no production `call_command("seed_stations",
+    ...)` call site anywhere under `routing/` (excluding `routing/tests/`)
+    passes a hand-written positional path literal (D-29). Every reseed must
+    route through `routing.services.station_csv_paths.reseed_all()` (which
+    unpacks `CANONICAL_STATION_CSV_PATHS` via `*[...]`, never a literal) or
+    rely on `seed_stations`' own canonical default (no extra positional
+    arguments at all) -- a command that reseeds only a subset of the
+    canonical CSV list would report a pre-import result as post-import,
+    with no error and no log line, the same vacuity class as a check aimed
+    at a file that does not exist.
+
+    Third application of the AST call-site gate pattern
+    (`SolvePenaltyKwargGateTest`, `SolveTrustMarginKwargGateTest`), scoped
+    identically: every `.py` file under `routing/` excluding
+    `routing/tests/`.
+    """
+
+    def test_no_seed_stations_call_site_passes_a_literal_path(self):
+        violations = []
+        for path in ROUTING_DIR.rglob("*.py"):
+            if "tests" in path.relative_to(ROUTING_DIR).parts:
+                continue
+            violations.extend(_collect_seed_stations_calls_with_literal_path(path))
+
+        self.assertEqual(
+            violations,
+            [],
+            f"seed_stations call site(s) with a hand-written path literal: {violations}",
+        )
+
+    def test_call_site_count_matches_pinned_total(self):
+        production_count = 0
+        test_count = 0
+        for path in ROUTING_DIR.rglob("*.py"):
+            is_test_path = "tests" in path.relative_to(ROUTING_DIR).parts
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call) or not _is_seed_stations_call(node):
+                    continue
+                if is_test_path:
+                    test_count += 1
+                else:
+                    production_count += 1
+
+        self.assertEqual(
+            production_count,
+            SEED_STATIONS_CALL_SITE_PRODUCTION_COUNT,
+            "production seed_stations call-site count drifted from the "
+            f"pinned D-29 classification: found {production_count}, "
+            f"pinned {SEED_STATIONS_CALL_SITE_PRODUCTION_COUNT}",
+        )
+        self.assertEqual(
+            test_count,
+            SEED_STATIONS_CALL_SITE_TEST_COUNT,
+            "test seed_stations call-site count drifted from the pinned "
+            f"D-29 classification: found {test_count}, "
+            f"pinned {SEED_STATIONS_CALL_SITE_TEST_COUNT}",
+        )
+        self.assertEqual(
+            production_count + test_count,
+            SEED_STATIONS_CALL_SITE_TOTAL_COUNT,
+            "production + test seed_stations call-site counts do not sum "
+            "to the pinned D-29 total",
+        )

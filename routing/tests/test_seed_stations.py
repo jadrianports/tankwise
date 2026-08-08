@@ -11,6 +11,7 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from routing.models import GeocodeStatus, Station, StationSource
+from routing.services.station_csv_paths import CANONICAL_STATION_CSV_PATHS
 
 FIXTURE_HEADER = [
     "opis_id",
@@ -302,3 +303,101 @@ class SeedStationsSourceGersIdColumnTests(TestCase):
         station = Station.objects.get(opis_id=2001)
         self.assertEqual(station.source, StationSource.OVERTURE)
         self.assertEqual(station.gers_id, uuid_string)
+
+
+class SeedStationsMultiPathTests(TestCase):
+    """`seed_stations` accepts N paths (`nargs="*"`), replays every file
+    inside one transaction against one shared `existing_by_opis_id`
+    snapshot, and resolves a shared opis_id to the LATER file's values
+    (D-26)."""
+
+    def setUp(self):
+        self.csv_path_a = _write_fixture_csv(FIXTURE_ROWS[:2])
+        self.csv_path_b = _write_fixture_csv(FIXTURE_ROWS[2:])
+
+    def tearDown(self):
+        Path(self.csv_path_a).unlink(missing_ok=True)
+        Path(self.csv_path_b).unlink(missing_ok=True)
+
+    def test_two_files_seed_the_union_of_rows(self):
+        out = io.StringIO()
+        call_command("seed_stations", self.csv_path_a, self.csv_path_b, stdout=out)
+
+        self.assertEqual(Station.objects.count(), len(FIXTURE_ROWS))
+        self.assertIn("2 file(s)", out.getvalue())
+        self.assertIn("4 created", out.getvalue())
+
+    def test_shared_opis_id_resolves_to_the_later_files_values(self):
+        row_first_file = dict(FIXTURE_ROWS[0])
+        row_second_file = dict(FIXTURE_ROWS[0])
+        row_second_file["name"] = "Later File Name"
+        row_second_file["retail_price"] = "9.99000000"
+
+        path_first = _write_fixture_csv([row_first_file])
+        path_second = _write_fixture_csv([row_second_file])
+        try:
+            call_command("seed_stations", path_first, path_second, stdout=io.StringIO())
+
+            station = Station.objects.get(opis_id=int(row_first_file["opis_id"]))
+            self.assertEqual(station.name, "Later File Name")
+            self.assertEqual(station.retail_price, Decimal("9.99000000"))
+        finally:
+            Path(path_first).unlink(missing_ok=True)
+            Path(path_second).unlink(missing_ok=True)
+
+    def test_no_argument_invocation_seeds_every_canonical_path(self):
+        out = io.StringIO()
+        call_command("seed_stations", stdout=out)
+
+        for expected_path in (str(p) for p in CANONICAL_STATION_CSV_PATHS):
+            self.assertIn(expected_path, out.getvalue())
+        # data/stations_geocoded.csv carries thousands of rows -- this only
+        # proves the canonical (not a fixture) file was actually replayed.
+        self.assertGreater(Station.objects.count(), 1000)
+
+    def test_second_file_missing_source_raises_command_error_naming_that_file(self):
+        header_without_source = [c for c in FIXTURE_HEADER if c != "source"]
+        rows_without_source = []
+        for row in FIXTURE_ROWS[2:]:
+            trimmed = dict(row)
+            del trimmed["source"]
+            rows_without_source.append(trimmed)
+
+        tmp = tempfile.NamedTemporaryFile(
+            mode="w", newline="", suffix=".csv", delete=False, encoding="utf-8"
+        )
+        writer = csv.DictWriter(tmp, fieldnames=header_without_source)
+        writer.writeheader()
+        for row in rows_without_source:
+            writer.writerow(row)
+        tmp.close()
+        bad_path = tmp.name
+        try:
+            with self.assertRaises(CommandError) as ctx:
+                call_command(
+                    "seed_stations", self.csv_path_a, bad_path, stdout=io.StringIO()
+                )
+            message = str(ctx.exception)
+            self.assertIn(Path(bad_path).name, message)
+            self.assertIn("source", message)
+            self.assertEqual(Station.objects.count(), 0)
+        finally:
+            Path(bad_path).unlink(missing_ok=True)
+
+    def test_query_count_does_not_grow_linearly_with_file_count(self):
+        with CaptureQueriesContext(connection) as ctx_one:
+            call_command("seed_stations", self.csv_path_a, stdout=io.StringIO())
+        one_file_count = len(ctx_one)
+
+        Station.objects.all().delete()
+
+        with CaptureQueriesContext(connection) as ctx_two:
+            call_command(
+                "seed_stations", self.csv_path_a, self.csv_path_b, stdout=io.StringIO()
+            )
+        two_file_count = len(ctx_two)
+
+        # One shared snapshot query plus two batched write calls for the
+        # whole run -- not per file -- so two files should not roughly
+        # double the query count.
+        self.assertLessEqual(two_file_count, one_file_count + 2)
