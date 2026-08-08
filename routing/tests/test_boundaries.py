@@ -437,9 +437,15 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # regression test pinning ROADMAP criterion 5's real
 # el_paso_tx-portland_me/QUIKTRIP #667 witness) -- 11 production
 # unchanged, 73 -> 74 test, 84 -> 85 total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 87
+#
+# Updated again in plan 22-13: `routing/tests/test_west_coast_feasibility.py`
+# gained one new TEST `solve()` call site (`WestCoastFeasibilityRegressionTests
+# ._solve_probe`, the single shared helper every West Coast feasibility test
+# in that module calls) -- 11 production unchanged, 76 -> 77 test, 87 -> 88
+# total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 88
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 76
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 77
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):
