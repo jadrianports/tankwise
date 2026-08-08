@@ -118,9 +118,9 @@ class MixedRequestStabilityTests(SimpleTestCase):
 
 
 class KeyFormatTests(SimpleTestCase):
-    """Every produced key starts with route:v10: (PROV-03, plan 21-06) and
-    contains exactly five | separators
-    (stops-chain|vehicle|eia|dispatch|penalty|trust_margin)."""
+    """Every produced key starts with route:v11: (OVRT-03/PIPE-01, plan
+    22-12) and contains exactly six | separators
+    (stops-chain|vehicle|eia|dispatch|penalty|trust_margin|dataset)."""
 
     def test_key_starts_with_prefix_and_has_two_separators(self):
         key = build_cache_key(
@@ -130,8 +130,8 @@ class KeyFormatTests(SimpleTestCase):
             }
         )
 
-        self.assertTrue(key.startswith("route:v10:"))
-        self.assertEqual(key.count("|"), 5)
+        self.assertTrue(key.startswith("route:v11:"))
+        self.assertEqual(key.count("|"), 6)
 
 
 class VehicleCacheKeyTests(SimpleTestCase):
@@ -174,7 +174,7 @@ class VehicleCacheKeyTests(SimpleTestCase):
             self._payload(vehicle(mpg="6")),
             self._payload(vehicle(tank_range_mi="1800")),
         ):
-            self.assertTrue(build_cache_key(payload).startswith("route:v10:"))
+            self.assertTrue(build_cache_key(payload).startswith("route:v11:"))
 
     def test_no_generated_key_contains_v1_substring(self):
         profiles = [
@@ -252,10 +252,13 @@ class TrustMarginCacheKeyTests(SimpleTestCase):
 
         self.assertEqual(key_a, key_b)
 
-    def test_trust_margin_token_is_the_final_segment(self):
+    def test_trust_margin_token_is_the_second_to_last_segment(self):
+        # No longer the final segment as of plan 22-12 -- the `s:`
+        # dataset-vintage token now follows it (see
+        # DatasetVintageCacheKeyPlacementTests below).
         key = build_cache_key(self._payload(), trust_margin=Decimal("5.47"))
-        self.assertTrue(key.split("|")[-1].startswith("t:"))
-        self.assertIn("5.47", key.split("|")[-1])
+        self.assertTrue(key.split("|")[-2].startswith("t:"))
+        self.assertIn("5.47", key.split("|")[-2])
 
 
 class EiaVintageCacheKeyTests(SimpleTestCase):
@@ -366,13 +369,13 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
 
     def test_new_prefix_appears_in_a_built_key(self):
         key = build_cache_key(self._payload())
-        self.assertTrue(key.startswith("route:v10:"))
+        self.assertTrue(key.startswith("route:v11:"))
 
     def test_dispatch_policy_token_is_present_and_correctly_placed(self):
         key = build_cache_key(self._payload(), eia_vintage="2026-07-20", penalty=Decimal("35"))
-        segments = key[len("route:v10:") :].split("|")
-        # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token | trust_margin_token
-        self.assertEqual(len(segments), 6)
+        segments = key[len("route:v11:") :].split("|")
+        # stops_token | vehicle_token | eia_token | dispatch_token | penalty_token | trust_margin_token | dataset_token
+        self.assertEqual(len(segments), 7)
         dispatch_segment = segments[3]
         self.assertTrue(
             dispatch_segment.startswith("d:"),
@@ -558,3 +561,53 @@ class DatasetVintageTokenTests(SimpleTestCase):
 
         self.assertNotIn("overture_raw_extract.csv", names)
         self.assertNotIn("gazetteer_places_trimmed.csv", names)
+
+
+class DatasetVintageCacheKeyPlacementTests(SimpleTestCase):
+    """`build_cache_key`'s own integration with the `s:` token (plan
+    22-12): DatasetVintageTokenTests above proves `_dataset_vintage_token`
+    in isolation; this class proves `build_cache_key` actually calls it and
+    places it correctly -- a token that exists but is never wired in would
+    pass every assertion above and still leave `route:v11:` no different
+    from `route:v10:` in practice."""
+
+    def setUp(self):
+        reset_dataset_vintage_token()
+        self.addCleanup(reset_dataset_vintage_token)
+
+    def _payload(self):
+        return {
+            "start": coord("41.8781", "-87.6298"),
+            "finish": coord("38.6270", "-90.1994"),
+        }
+
+    def test_final_segment_starts_with_s(self):
+        key = build_cache_key(self._payload())
+        self.assertTrue(key.startswith("route:v11:"))
+        self.assertTrue(key.split("|")[-1].startswith("s:"))
+
+    def test_key_changes_when_canonical_list_contents_change(self):
+        """The mechanism test: a token that exists but is pinned to a
+        literal (or never re-derived) would pass the placement assertion
+        above and still leave a dataset change silently unreflected in the
+        cache key -- exactly the failure mode this token exists to close."""
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            csv_path = Path(tmp_dir) / "stations_geocoded.csv"
+            csv_path.write_bytes(b"a,b\n1,2\n")
+
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (csv_path,),
+            ):
+                reset_dataset_vintage_token()
+                key_before = build_cache_key(self._payload())
+
+                csv_path.write_bytes(csv_path.read_bytes() + b"3,4\n")
+                reset_dataset_vintage_token()
+                key_after = build_cache_key(self._payload())
+
+        self.assertNotEqual(key_before, key_after)

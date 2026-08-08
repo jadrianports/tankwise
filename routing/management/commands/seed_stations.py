@@ -3,9 +3,9 @@
 This is the Docker-facing seed path: it performs NO geocoding and NO
 network call -- it is a straight idempotent upsert of already-persisted
 values (opis_id, coordinates, precision, status) from one or more derived
-CSVs, most commonly `data/stations_geocoded.csv` (the `geocode_stations`
-export) and, once the Overture import lands, `data/overture_stations.csv`
-too.
+CSVs -- `data/stations_geocoded.csv` (the `geocode_stations` export) and,
+as of plan 22-12, `data/overture_stations.csv` (the Overture gap-fill
+import) too.
 
 Semantics: idempotent upsert on opis_id, every run -- NOT
 skip-if-already-populated, NOT truncate-and-reload. A first run against an
@@ -28,9 +28,17 @@ from decimal import Decimal, InvalidOperation
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
+from routing.cache import reset_dataset_vintage_token
 from routing.models import Station
 from routing.services.corridor import reset_index
 from routing.services.station_csv_paths import CANONICAL_STATION_CSV_PATHS
+
+# Checked before adding the import above: routing.cache is imported
+# nowhere in this command's own import chain (only routing/tests/test_cache.py
+# and routing/views.py import it), so a module-scope import here creates no
+# cycle -- unlike _vehicle_token/_dispatch_policy_token's own local imports,
+# which defer specifically to keep routing.cache's import order irrelevant
+# relative to routing.serializers/routing.services.dp.
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +253,12 @@ class Command(BaseCommand):
         # process must not serve a stale tree. Called exactly once, after
         # every file has been processed -- not once per file.
         reset_index()
+        # Same reasoning, one layer over in routing/cache.py: the dataset-
+        # vintage token (`_DATASET_VINTAGE_TOKEN`) is a process-level memo
+        # of the canonical CSVs' content; a reseed inside a long-lived
+        # process must not leave that memo describing the dataset the
+        # process started with rather than the one it just replayed.
+        reset_dataset_vintage_token()
 
         if total_skipped:
             self.stdout.write(self.style.WARNING(f"Skipped {total_skipped} malformed row(s)"))

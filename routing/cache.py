@@ -1,5 +1,37 @@
 """Cache-key normalizer for the /api/route response cache.
 
+It is versioned `route:v11:` (Phase 22 plan 22-12, OVRT-03/PIPE-01) because
+the committed station dataset gained a second CSV, `data/overture_stations.csv`
+(10,051 West Coast gap-fill rows), and the key now carries a further `s:`
+token (`_dataset_vintage_token`, appended as the final segment) derived
+from the content of every committed CSV that feeds the station table. An
+entry cached under `v10` would be structurally wrong for the new consumer
+in exactly this codebase's standing sense: it was computed against a
+station set that did not contain those rows, and on the routes this
+dataset change exists to fix (West Coast corridors previously thin or
+infeasible) it encodes a candidate set the current build would not
+produce. This is genuinely an INPUT change -- unlike the `solver_strategy`
+no-bump precedent below, whose reasoning is explicitly scoped to OUTPUTS
+(a pure, deterministic function of inputs the key already namespaces).
+Verified free before this bump: `grep -rn "route:v11:" --include=*.py .`
+returned exactly one hit, `routing/cache.py`'s own `_dataset_vintage_token`
+docstring, which was already forward-referencing this exact bump as prose
+(plan 22-08) -- not a competing consumer or an emitted literal, so `v11:`
+was genuinely free. This bump lands in the SAME commit as
+`data/overture_stations.csv` and the `CANONICAL_STATION_CSV_PATHS` edit
+that makes `seed_stations` replay it, per the standing INTG-03 same-commit
+rule every prior bump in this log records (and which this log also
+records being missed once). The token is DERIVED from the canonical CSV
+list rather than bumped by hand for the identical reason
+`_dispatch_policy_token` is derived from its own constants: it changes
+automatically the next time the station data changes, so a future
+dataset refresh needs no matching edit here -- the same "encodes the
+constants, not the finding" property. Forward note: the committed raw
+extract (`data/overture_raw_extract.csv`) is deliberately excluded from
+the token's hash list (D-28), because it is a build input rather than a
+seed source, and including it would invalidate every cached plan on an
+extract refresh producing a byte-identical station CSV.
+
 Still `route:v10:` as of the `bypassed_estimate_count`/
 `bypassed_estimate_saving_forgone` rationale pair (Phase 21 plan 21-07,
 PROV-03) -- deliberately NOT bumped. Assessed against the `solver_strategy`
@@ -439,12 +471,12 @@ def _dataset_vintage_token() -> str:
     request would be pure waste. `reset_dataset_vintage_token()` below is
     the sole invalidation hook, mirroring `corridor.reset_index()`.
 
-    Inert as of this commit: `build_cache_key` does not yet emit this
-    token, and `route:v10:` does not carry an `s:` segment. The wiring and
-    the prefix bump to `route:v11:` land together in the SAME commit as
-    the first station-set change that actually reaches production (D-47
-    ordering 2, D-31) -- the standing same-commit rule this module's
-    version log records for every prior bump."""
+    Wired into `build_cache_key` as of plan 22-12: `route:v11:` carries
+    this token as its final segment. The wiring, the prefix bump and
+    `data/overture_stations.csv` (the first station-set change that
+    actually reaches production, D-47 ordering 2, D-31) all landed
+    together in that one commit -- the standing same-commit rule this
+    module's version log records for every prior bump."""
     global _DATASET_VINTAGE_TOKEN
     if _DATASET_VINTAGE_TOKEN is not None:
         return _DATASET_VINTAGE_TOKEN
@@ -507,10 +539,15 @@ def build_cache_key(
     (plan 18-12, closing the coupling `18-VERIFICATION.md` found
     unguarded; plan 18.1-05, extending it to the deadline). As of plan
     21-06 (PROV-03) the key also carries a `t:` trust-margin token
-    (`_trust_margin_token`, the final segment) so a cached plan can never
-    outlive the `TRUST_MARGIN_USD` value it was selected under either --
-    genuinely an INPUT, unlike `solver_strategy` itself (see the module
-    docstring's `v10:` entry for the full input-vs-output argument)."""
+    (`_trust_margin_token`) so a cached plan can never outlive the
+    `TRUST_MARGIN_USD` value it was selected under either -- genuinely an
+    INPUT, unlike `solver_strategy` itself (see the module docstring's
+    `v10:` entry for the full input-vs-output argument). As of plan 22-12
+    the key carries a further, now-final `s:` dataset-vintage token
+    (`_dataset_vintage_token`, DERIVED from the committed station CSVs
+    exactly as `_dispatch_policy_token` derives from the dispatch
+    constants) so a cached plan can never outlive the station set it was
+    selected from either -- see the module docstring's `v11:` entry."""
     waypoints = validated_data.get("waypoints") or []
     stops = [validated_data["start"], *waypoints, validated_data["finish"]]
     stops_token = "->".join(_endpoint_token(stop) for stop in stops)
@@ -519,7 +556,9 @@ def build_cache_key(
     dispatch_token = _dispatch_policy_token()
     penalty_token = _penalty_token(penalty)
     trust_margin_token = _trust_margin_token(trust_margin)
+    dataset_token = _dataset_vintage_token()
     return (
-        f"route:v10:{stops_token}|{vehicle_token}|{eia_token}|"
-        f"{dispatch_token}|{penalty_token}|{trust_margin_token}"
+        f"route:v11:{stops_token}|{vehicle_token}|{eia_token}|"
+        f"{dispatch_token}|{penalty_token}|{trust_margin_token}|"
+        f"{dataset_token}"
     )

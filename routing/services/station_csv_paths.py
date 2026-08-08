@@ -26,10 +26,14 @@ DATA_DIR = Path(settings.BASE_DIR) / "data"
 
 # Ordered tuple -- the ordering is part of the contract, because
 # `routing/cache.py`'s dataset-vintage token hashes these files in list
-# order. `data/overture_stations.csv` joins this tuple in the SAME COMMIT as
-# that file first appears (the standing same-commit rule), never before and
-# never after.
-CANONICAL_STATION_CSV_PATHS = (DATA_DIR / "stations_geocoded.csv",)
+# order. `data/overture_stations.csv` joined this tuple in THIS commit,
+# alongside the file's own first appearance and the `route:v11:` cache
+# bump (the standing same-commit rule, now discharged rather than
+# forward-looking).
+CANONICAL_STATION_CSV_PATHS = (
+    DATA_DIR / "stations_geocoded.csv",
+    DATA_DIR / "overture_stations.csv",
+)
 
 
 def reseed_all(stdout=None):

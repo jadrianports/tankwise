@@ -3,6 +3,7 @@ import io
 import tempfile
 from decimal import Decimal
 from pathlib import Path
+from unittest import mock
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -401,3 +402,26 @@ class SeedStationsMultiPathTests(TestCase):
         # whole run -- not per file -- so two files should not roughly
         # double the query count.
         self.assertLessEqual(two_file_count, one_file_count + 2)
+
+
+class SeedStationsDatasetVintageTokenResetTests(TestCase):
+    """Plan 22-12's own added behavior: `seed_stations` resets the
+    process-level dataset-vintage token memo after every reseed, exactly as
+    it already resets the corridor STRtree via `reset_index()` -- a reseed
+    inside a long-lived process must not leave `routing.cache`'s memo
+    describing the dataset the process started with rather than the one it
+    just replayed."""
+
+    def setUp(self):
+        self.csv_path = _write_fixture_csv(FIXTURE_ROWS)
+
+    def tearDown(self):
+        Path(self.csv_path).unlink(missing_ok=True)
+
+    def test_reset_dataset_vintage_token_is_called_once_per_run(self):
+        with mock.patch(
+            "routing.management.commands.seed_stations.reset_dataset_vintage_token"
+        ) as mock_reset:
+            call_command("seed_stations", self.csv_path, stdout=io.StringIO())
+
+        mock_reset.assert_called_once()

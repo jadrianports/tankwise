@@ -19,5 +19,11 @@ class StationCsvPathsTests(SimpleTestCase):
         names = [p.name for p in CANONICAL_STATION_CSV_PATHS]
         self.assertNotIn("gazetteer_places_trimmed.csv", names)
 
-    def test_tuple_currently_has_exactly_one_member(self):
-        self.assertEqual(len(CANONICAL_STATION_CSV_PATHS), 1)
+    def test_tuple_currently_has_exactly_two_members(self):
+        self.assertEqual(len(CANONICAL_STATION_CSV_PATHS), 2)
+
+    def test_members_are_ordered_opis_then_overture(self):
+        # Order is part of the contract -- routing/cache.py's dataset-vintage
+        # token hashes these files in list order (D-27/D-28).
+        names = [p.name for p in CANONICAL_STATION_CSV_PATHS]
+        self.assertEqual(names, ["stations_geocoded.csv", "overture_stations.csv"])
