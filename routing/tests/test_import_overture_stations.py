@@ -1,4 +1,5 @@
-"""Tests for the pure Overture transform (`routing.pipeline.overture`).
+"""Tests for the pure Overture transform (`routing.pipeline.overture`) and
+its thin command (`import_overture_stations`).
 
 `ImportOvertureStationsCommandTests` and `ApplyHygieneUnitTests` cover
 hygiene, brand, price, identity, precision and provenance behaviour against
@@ -6,16 +7,20 @@ the hand-authored fixture extract. `OvertureIdCollisionRaiseTests` proves
 the collision guard's raise branch is actually reachable via the pinned
 witness pair -- a natural collision is unlikely at fixture (or even real
 import) scale, so only the witness pair exercises that path.
-
-`OvertureTransformDeterminismTests`, covering the thin `import_overture_
-stations` command's determinism and dry-run behaviour, is added in the
-next task once that command exists.
+`OvertureTransformDeterminismTests` proves whole-file and identifier
+determinism, disjointness against the real committed OPIS dataset, and
+dry-run behaviour. D-22's third check (a pinned route solving to a
+byte-identical plan across two independent imports) needs the real dataset
+and the corridor/DP machinery and belongs to plan 22-12, not here.
 """
 import csv
 import io
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 
+from django.conf import settings
+from django.core.management import call_command
 from django.test import SimpleTestCase
 
 from routing.pipeline import overture, overture_scope
@@ -24,6 +29,7 @@ from routing.services import regions
 FIXTURE_PATH = (
     Path(__file__).resolve().parent / "fixtures" / "overture" / "raw_extract_sample.csv"
 )
+STATIONS_GEOCODED_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
 
 
 def _read_fixture_rows():
@@ -188,3 +194,86 @@ class OvertureIdCollisionRaiseTests(SimpleTestCase):
         self.assertIn(gers_a, message)
         self.assertIn(gers_b, message)
         self.assertIn(str(overture_scope.COLLISION_WITNESS_MINTED_ID), message)
+
+
+class OvertureTransformDeterminismTests(SimpleTestCase):
+    """Whole-file and identifier determinism, disjointness against the real
+    committed OPIS dataset, and dry-run behaviour -- everything provable
+    without the real Overture extract or the corridor/DP machinery."""
+
+    def test_whole_file_determinism_station_csv_and_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_a, report_a = tmp_path / "a.csv", tmp_path / "a-report.md"
+            out_b, report_b = tmp_path / "b.csv", tmp_path / "b-report.md"
+
+            call_command(
+                "import_overture_stations",
+                input_path=str(FIXTURE_PATH),
+                output_path=str(out_a),
+                report_path=str(report_a),
+            )
+            call_command(
+                "import_overture_stations",
+                input_path=str(FIXTURE_PATH),
+                output_path=str(out_b),
+                report_path=str(report_b),
+            )
+
+            # Byte-identity asserted on raw file bytes, not parsed content.
+            self.assertEqual(out_a.read_bytes(), out_b.read_bytes())
+            self.assertEqual(report_a.read_bytes(), report_b.read_bytes())
+
+    def test_identifier_determinism_across_two_independent_runs(self):
+        rows_a, _ = _read_fixture_rows()
+        rows_b, _ = _read_fixture_rows()
+        ids_a = {row.gers_id: row.opis_id for row in rows_a}
+        ids_b = {row.gers_id: row.opis_id for row in rows_b}
+        self.assertEqual(ids_a, ids_b)
+
+    def test_minted_ids_disjoint_from_real_committed_opis_ids(self):
+        station_rows, _ = _read_fixture_rows()
+        with open(STATIONS_GEOCODED_PATH, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            real_opis_ids = {int(row["opis_id"]) for row in reader}
+
+        for row in station_rows:
+            self.assertTrue(overture_scope.is_overture_id(row.opis_id))
+            self.assertNotIn(row.opis_id, real_opis_ids)
+
+    def test_dry_run_writes_reports_and_leaves_station_output_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_path = tmp_path / "stations.csv"
+            report_path = tmp_path / "report.md"
+
+            call_command(
+                "import_overture_stations",
+                input_path=str(FIXTURE_PATH),
+                output_path=str(out_path),
+                report_path=str(report_path),
+                dry_run=True,
+            )
+
+            self.assertFalse(out_path.exists())
+            self.assertTrue(report_path.exists())
+            self.assertIn("Kept:", report_path.read_text(encoding="utf-8"))
+
+    def test_without_dry_run_writes_station_csv_with_export_header(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_path = tmp_path / "stations.csv"
+            report_path = tmp_path / "report.md"
+
+            call_command(
+                "import_overture_stations",
+                input_path=str(FIXTURE_PATH),
+                output_path=str(out_path),
+                report_path=str(report_path),
+            )
+
+            self.assertTrue(out_path.exists())
+            with open(out_path, newline="", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                header = next(reader)
+                self.assertEqual(header, overture.EXPORT_HEADER)
