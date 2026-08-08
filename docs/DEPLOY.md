@@ -259,6 +259,36 @@ covering API, infra, and UI:
 
 ---
 
+## Rollback
+
+If a production deploy needs to be reverted, **a code revert alone is
+incomplete**: `seed_stations` upserts by `opis_id` on every boot and never
+wipes the table, so reverting the merge commit leaves every previously
+seeded row -- including any Overture-sourced rows -- in the database, and
+the reverted code has no `source`/`gers_id` fields to understand or
+disclose them. Follow these steps in order, every time:
+
+1. [ ] Revert the merge commit on `main` (`git revert -m 1 <merge-sha>`)
+       and push. `autoDeployTrigger: checksPass` deploys the reverted code
+       once CI reports green on it, same as any other push.
+2. [ ] Wait for that deploy to complete (Section 4 above describes what to
+       watch for).
+3. [ ] Run `manage.py purge_overture_stations --confirm` against the
+       production database. This is the data half of the rollback: it
+       deletes exactly the rows whose `source` is `overture` and resets
+       the corridor index and dataset-vintage token memo, leaving an
+       OPIS-only table.
+4. [ ] Run `manage.py verify_stations` against production and confirm it
+       exits 0 -- this proves the rolled-back table is a *valid* state
+       (all four dataset invariants hold), not merely a smaller one.
+5. [ ] Confirm a previously-failing West Coast route (e.g. Seattle to San
+       Diego) returns to its pre-import behavior.
+
+Run `purge_overture_stations` without `--confirm` first if you want to see
+the row count it would delete before committing to the delete.
+
+---
+
 ## Pre-flight verified (2026-07-25, 12:03–12:12 UTC)
 
 Run immediately before opening the provisioning checkpoint, in the same
