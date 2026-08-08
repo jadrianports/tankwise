@@ -1,11 +1,17 @@
 """Tests for the cache-key normalizer. No DB needed --
 pure string-formatting behavior."""
+import tempfile
 from decimal import Decimal
+from pathlib import Path
 from unittest import mock
 
 from django.test import SimpleTestCase
 
-from routing.cache import build_cache_key
+from routing.cache import (
+    _dataset_vintage_token,
+    build_cache_key,
+    reset_dataset_vintage_token,
+)
 
 
 def coord(lat, lng):
@@ -415,3 +421,140 @@ class DispatchPolicyCacheKeyTests(SimpleTestCase):
         key_b = build_cache_key(self._payload())
 
         self.assertEqual(key_a, key_b)
+
+
+class DatasetVintageTokenTests(SimpleTestCase):
+    """The `s:` dataset-vintage token (plan 22-08, D-27/D-28/D-30) hashes
+    exactly the canonical station CSVs `seed_stations` replays -- proven in
+    three directions rather than two, because the third is the one a naive
+    single-file hash passes the other two while failing (D-30, criterion 6).
+
+    Every test here operates on temporary files, never on the committed
+    CSVs under `data/` -- `CANONICAL_STATION_CSV_PATHS` is patched at its
+    declaration site (`routing.services.station_csv_paths`), which
+    `_dataset_vintage_token`'s own local import picks up on every call."""
+
+    def setUp(self):
+        reset_dataset_vintage_token()
+
+    def tearDown(self):
+        reset_dataset_vintage_token()
+
+    def _write(self, tmp_dir, name, content: bytes) -> Path:
+        path = Path(tmp_dir) / name
+        path.write_bytes(content)
+        return path
+
+    def test_token_changes_when_station_data_changes(self):
+        """Direction 1: the token changes when station data changes."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first = self._write(tmp_dir, "stations_geocoded.csv", b"a,b\n1,2\n")
+            second = self._write(tmp_dir, "overture_stations.csv", b"c,d\n3,4\n")
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (first, second),
+            ):
+                token_before = _dataset_vintage_token()
+                first.write_bytes(first.read_bytes() + b"5,6\n")
+                reset_dataset_vintage_token()
+                token_after = _dataset_vintage_token()
+
+        self.assertNotEqual(token_before, token_after)
+
+    def test_token_unchanged_across_a_non_dataset_change(self):
+        """Direction 2: unchanged across a change that touches no station
+        data. This repository deploys far more often than Overture
+        releases land, so a build-derived token would nuke the whole route
+        cache on every copy fix -- this is the direction that guards
+        against that over-invalidation failure mode."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first = self._write(tmp_dir, "stations_geocoded.csv", b"a,b\n1,2\n")
+            outside = self._write(tmp_dir, "gazetteer_places_trimmed.csv", b"x,y\n7,8\n")
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (first,),
+            ):
+                token_before = _dataset_vintage_token()
+                outside.write_bytes(outside.read_bytes() + b"9,10\n")
+                reset_dataset_vintage_token()
+                token_after = _dataset_vintage_token()
+
+        self.assertEqual(token_before, token_after)
+
+    def test_token_changes_when_only_the_second_member_changes(self):
+        """Direction 3: changes when ONLY a non-first member of the
+        canonical list changes -- the shape criterion 6 names explicitly
+        as the one a naive single-file hash fails. An implementation that
+        hashes only the first CSV passes directions 1 and 2 above and
+        still fails this one, which is exactly why it exists: that
+        implementation looks correct under the other two tests."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first = self._write(tmp_dir, "stations_geocoded.csv", b"a,b\n1,2\n")
+            second = self._write(tmp_dir, "overture_stations.csv", b"c,d\n3,4\n")
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (first, second),
+            ):
+                token_before = _dataset_vintage_token()
+                second.write_bytes(second.read_bytes() + b"5,6\n")
+                reset_dataset_vintage_token()
+                token_after = _dataset_vintage_token()
+
+        self.assertNotEqual(token_before, token_after)
+
+    def test_memo_does_not_re_read_files_without_a_reset(self):
+        """The memo is genuine: a second call with no reset does not
+        re-read the files -- it is what makes the token once-per-process
+        rather than per-request."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            first = self._write(tmp_dir, "stations_geocoded.csv", b"a,b\n1,2\n")
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (first,),
+            ):
+                token_before = _dataset_vintage_token()
+                first.write_bytes(first.read_bytes() + b"changed\n")
+                token_after = _dataset_vintage_token()
+
+        self.assertEqual(token_before, token_after)
+
+    def test_token_is_sensitive_to_canonical_list_order(self):
+        """Order sensitivity: the token is built name-then-bytes over the
+        canonical tuple IN LIST ORDER, so two files swapping positions
+        (with different content in each) must produce a different token --
+        this is why the canonical tuple's ordering is part of the
+        contract, not an implementation detail."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            a = self._write(tmp_dir, "a.csv", b"aaa\n")
+            b = self._write(tmp_dir, "b.csv", b"bbb\n")
+
+            reset_dataset_vintage_token()
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (a, b),
+            ):
+                token_ab = _dataset_vintage_token()
+
+            reset_dataset_vintage_token()
+            with mock.patch(
+                "routing.services.station_csv_paths.CANONICAL_STATION_CSV_PATHS",
+                (b, a),
+            ):
+                token_ba = _dataset_vintage_token()
+
+        self.assertNotEqual(token_ab, token_ba)
+
+    def test_real_canonical_list_excludes_the_raw_extract_and_gazetteer(self):
+        """Membership exclusion at the boundary this plan owns (D-28):
+        with `CANONICAL_STATION_CSV_PATHS` pointed at the real committed
+        tuple, no member's name is the raw extract or the gazetteer.
+        Plan 22-05 asserts the same thing from the other side
+        (`StationCsvPathsTests`); asserting it here too means neither file
+        can enter the hash list without failing a test in the module that
+        does the hashing."""
+        from routing.services.station_csv_paths import CANONICAL_STATION_CSV_PATHS
+
+        names = {path.name for path in CANONICAL_STATION_CSV_PATHS}
+
+        self.assertNotIn("overture_raw_extract.csv", names)
+        self.assertNotIn("gazetteer_places_trimmed.csv", names)
