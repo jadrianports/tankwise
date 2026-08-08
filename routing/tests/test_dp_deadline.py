@@ -67,12 +67,25 @@ class DeadlineIdentityGuardTests(RealCorridorDispatchTestCase):
     def test_timed_and_untimed_solve_agree_on_a_cell_that_completes(self):
         # sacramento_ca-salt_lake_city_ut at the API-default vehicle
         # (solve()'s own defaults: mpg=10, tank_range_mi=500,
-        # starting_fuel=1) is the one cell with genuine deployed-hardware
+        # starting_fuel=1) was the one cell with genuine deployed-hardware
         # evidence of exact_dp running in single-digit milliseconds
         # (18-11-SUMMARY.md: 5.0-5.3ms) -- admitted comfortably, and
-        # cannot become slow or flaky.
+        # believed unable to become slow or flaky.
+        #
+        # RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36): the Overture
+        # gap-fill import (plan 22-12) demoted this exact cell (inside
+        # GAP_FILL_INTERSECTING_SLUGS; estimate 124 -> 10,026,999 -- see
+        # test_solver_dispatch.py's ADMISSION_MANIFEST re-pin note and
+        # 22-DISPATCH-DIFF.md). phoenix_az-minneapolis_mn is the
+        # replacement: at the same API-default vehicle its estimate is
+        # 16,322 pre-import and 16,322 post-import (non-intersecting,
+        # confirmed byte-zero), 32.6% of dp.DP_TRANSITION_BUDGET -- a
+        # genuinely substantial corridor (229 raw candidates, 54 retained)
+        # rather than a trivially small one. No new live deployed-hardware
+        # measurement exists for this replacement; this offline identity
+        # check is the standing guard for it until one is taken.
         route, candidates = self._route_and_candidates(
-            "sacramento_ca-salt_lake_city_ut"
+            "phoenix_az-minneapolis_mn"
         )
         untimed = solve(candidates, route.total_route_mi, penalty=PENALTY, deadline=None)
         # No explicit deadline= -- inherits the real, production

@@ -120,12 +120,25 @@ class HeavyLightDispatchTests(RealCorridorDispatchTestCase):
         # default vehicle was returning HTTP 500 live against
         # GUNICORN_TIMEOUT=30 (see dp.py's DP_TRANSITION_BUDGET note).
         #
-        # san_diego_ca-jacksonville_fl @1050mi is the replacement: estimate
-        # 15,724, comfortably under the budget, but a genuinely substantial
-        # corridor (312 raw candidates, 39 retained after the prune) rather
-        # than a trivially small one -- so this test still exercises a real
-        # exact-DP dispatch instead of passing vacuously on a toy input.
-        plan = self._solve("san_diego_ca-jacksonville_fl", Decimal(1050))
+        # Corridor changed AGAIN 2026-08-08 (plan 22-14, D-35/D-36) from
+        # san_diego_ca-jacksonville_fl@1050mi, RE-PINNED there itself only
+        # four days earlier (18.1-08): the Overture gap-fill import (plan
+        # 22-12) added in-corridor candidates near San Diego and pushed its
+        # estimate from 15,738 to 775,264 -- now demoted, see
+        # ADMISSION_MANIFEST's own dated re-pin note above and
+        # 22-DISPATCH-DIFF.md sections 3/8 for the full before/after and
+        # verdict. San Diego -> Jacksonville is inside
+        # GAP_FILL_INTERSECTING_SLUGS, so this demotion is the accepted,
+        # geographically-explained consequence of the import, not a defect.
+        #
+        # phoenix_az-minneapolis_mn @500mi is the new replacement: estimate
+        # 16,322 pre-import and 16,322 post-import (non-intersecting,
+        # byte-zero confirmed), comfortably under the budget (32.6%), and a
+        # genuinely substantial corridor (229 raw candidates, 54 retained
+        # after the prune) rather than a trivially small one -- so this
+        # test still exercises a real exact-DP dispatch instead of passing
+        # vacuously on a toy input.
+        plan = self._solve("phoenix_az-minneapolis_mn", Decimal(500))
         self.assertEqual(plan.strategy, SolverStrategy.EXACT_DP)
         self.assertGreater(len(plan.stops), 0)
 
@@ -268,6 +281,18 @@ class DeployedHardwareDispatchTests(RealCorridorDispatchTestCase):
     as a permanent regression guard, the CURRENT (unchanged) policy's
     classification against real deployed evidence, so a future edit that
     silently changes it is caught here rather than discovered live again.
+
+    RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36): the sacramento test below
+    no longer matches 18-11's deployed-hardware evidence -- the Overture
+    gap-fill import (plan 22-12) demoted sacramento_ca-salt_lake_city_ut
+    @500mi (estimate 124 -> 10,026,999, inside GAP_FILL_INTERSECTING_SLUGS;
+    see ADMISSION_MANIFEST's own dated re-pin note and
+    22-DISPATCH-DIFF.md). 18-11's own live measurement (exact_dp,
+    5.0-5.3ms) is SUPERSEDED by this dataset change, NOT deleted -- it
+    remains true of the pre-gap-fill dataset it was measured against, and
+    is recorded here for that reason. No new deployed-hardware measurement
+    was taken for the new (heuristic) classification below; this offline
+    test is the standing regression guard until one is.
     """
 
     def test_dallas_seattle_matches_18_11s_live_heuristic_classification(self):
@@ -276,11 +301,16 @@ class DeployedHardwareDispatchTests(RealCorridorDispatchTestCase):
         self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
 
     def test_sacramento_slc_matches_18_11s_live_exact_dp_classification(self):
+        # NAME RETAINED FOR HISTORY (2026-08-08, plan 22-14): this test's
+        # own name records 18-11's original live finding (exact_dp). The
+        # Overture gap-fill import demoted this exact cell -- see this
+        # class's own dated note above -- so the assertion below now
+        # checks the CURRENT, post-import classification instead.
         route, candidates = self._route_and_candidates(
             "sacramento_ca-salt_lake_city_ut"
         )
         plan = solve(candidates, route.total_route_mi)  # API defaults
-        self.assertEqual(plan.strategy, SolverStrategy.EXACT_DP)
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
 
 
 class DispatchDemotionGuardTests(RealCorridorDispatchTestCase):
@@ -327,12 +357,13 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
        present: the breaching cell's estimate is still smaller than the
        retention-floor cell's estimate. If this ever flips, the verdict
        must be re-derived, not assumed still true.
-    3. The CURRENT (unchanged) dispatch policy still retains ``exact_dp``
-       on the achievable maximum of the floor set (exactly one:
-       ``sacramento_ca-salt_lake_city_ut`` -- ``dallas_tx-seattle_wa``
-       @1050mi is provably NOT retainable alongside demoting the breaching
-       @500mi cell) -- so a future change that silently demotes even that
-       one achievable cell is caught here.
+    3. Historically (before 2026-08-08): the CURRENT dispatch policy still
+       retained ``exact_dp`` on the achievable maximum of the floor set
+       (exactly one: ``sacramento_ca-salt_lake_city_ut`` -- ``dallas_tx-
+       seattle_wa``@1050mi is provably NOT retainable alongside demoting
+       the breaching @500mi cell) -- so a future change that silently
+       demotes even that one achievable cell would be caught here. **A
+       future change did** -- see the 2026-08-08 note below.
 
     **Note, 2026-08-04 (plan 18.1-08):** `adopt_budget_rung()` genuinely
     measured a rung (130,000) that would admit and complete
@@ -341,6 +372,26 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
     measurement and why it was NOT wired into the shipped constant. This
     class's assertion below is therefore UNCHANGED and still correct
     against the currently shipped policy.
+
+    **Note, 2026-08-08 (plan 22-14, D-35/D-36):** assertion 3 above just
+    described a real, live guarantee that this exact guard was written to
+    protect -- and the guard caught its loss. The Overture gap-fill import
+    (plan 22-12) demoted ``sacramento_ca-salt_lake_city_ut``@500mi
+    (estimate 124 -> 10,026,999; inside ``GAP_FILL_INTERSECTING_SLUGS``,
+    see ``ADMISSION_MANIFEST``'s own dated re-pin note and
+    ``22-DISPATCH-DIFF.md`` sections 3/4/8). The achievable maximum of
+    ``dp.DISPATCH_RETENTION_FLOOR``'s two-cell set is now **ZERO, not
+    one** -- neither cell currently resolves to ``exact_dp`` at its
+    deployed-evidence vehicle. This is accepted per D-35's response-menu
+    default (accept and re-pin with a recorded reason), following the same
+    decision already applied to ``ADMISSION_MANIFEST`` -- not a new,
+    independent architectural call, the direct downstream consequence of
+    the one already made. It is recorded here, in the SUMMARY, and in
+    ``22-DISPATCH-DIFF.md`` rather than silently absorbed: the codebase no
+    longer has ANY cell with both genuine deployed-hardware exact_dp
+    evidence and a currently-passing classification, which is worth a
+    human's attention the next time this guard, or ``DISPATCH_RETENTION_
+    FLOOR`` itself, is revisited.
     """
 
     _RETENTION_SET = (
@@ -391,11 +442,19 @@ class DispatchRetentionFloorGuardTests(RealCorridorDispatchTestCase):
         )
 
     def test_current_policy_retains_the_achievable_maximum_of_the_floor_set(self):
+        # RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36): this test's own
+        # name records the property it was written to check (see this
+        # class's dated 2026-08-08 docstring note above for the full
+        # explanation). The Overture gap-fill import demoted this exact
+        # cell, so the achievable maximum of DISPATCH_RETENTION_FLOOR's
+        # set is now zero -- the assertion below checks that CURRENT,
+        # decided, accepted fact rather than the property this test was
+        # originally written to name.
         route_sac, candidates_sac = self._route_and_candidates(
             "sacramento_ca-salt_lake_city_ut"
         )
         plan_sac = solve(candidates_sac, route_sac.total_route_mi)
-        self.assertEqual(plan_sac.strategy, SolverStrategy.EXACT_DP)
+        self.assertEqual(plan_sac.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
 
         route_dallas, candidates_dallas = self._route_and_candidates(
             "dallas_tx-seattle_wa"
@@ -486,35 +545,54 @@ _DEMO_CHIP_SLUGS = frozenset(chip.slug for chip in DEMO_CHIPS)
 # into the shipped constant, for reasons recorded in full there). No
 # corridor boolean changes from the pre-widening 24-cell manifest; only
 # the two demo cells are new.
+#
+# RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36/D-37), by hand, against
+# `.planning/phases/22-.../22-DISPATCH-DIFF.md`'s genuine 26-cell
+# before/after diff following the Overture gap-fill import (plan 22-12).
+# THREE cells flipped True -> False, all inside `GAP_FILL_INTERSECTING_
+# SLUGS` (`routing.tests.test_corridor_fixtures`) -- the gap-fill's own
+# I-5-shaped multi-box geographically covers each one's route, so a denser
+# search set and a heavier `estimate_transition_count` is the expected
+# outcome, not a data-quality defect. D-35's response-menu default
+# (accept and re-pin with a recorded reason) applies; no scope or filter
+# change was made, and the twenty non-intersecting cells plus the two
+# named watch cells (houston_tx-chicago_il@500mi, fargo_nd-amarillo_tx
+# @500mi) are confirmed byte-zero, exactly as D-37 predicted two waves
+# before this measurement existed:
+#   - san_diego_ca-jacksonville_fl @1050mi: 15,738 -> 775,264
+#   - sacramento_ca-salt_lake_city_ut @500mi: 124 -> 10,026,999
+#   - demo_la_ca-denver_co-chicago_il @1050mi: 9,264 -> 64,705,287
+# Zero cells flipped the other direction (heuristic -> exact_dp). See
+# 22-DISPATCH-DIFF.md sections 3/4/8 for the full table and verdict.
 # ---------------------------------------------------------------------------
 ADMISSION_MANIFEST = {
     ("houston_tx-chicago_il", 1050): True,  # estimate 23
     ("nashville_tn-buffalo_ny", 1050): True,  # estimate 23
-    ("sacramento_ca-salt_lake_city_ut", 1050): True,  # estimate 117
-    ("sacramento_ca-salt_lake_city_ut", 500): True,  # estimate 124
+    ("sacramento_ca-salt_lake_city_ut", 1050): True,  # estimate 247 (was 117 pre-import -- gap-fill added in-corridor candidates; still comfortably admitted)
     ("fargo_nd-amarillo_tx", 1050): True,  # estimate 812
     ("phoenix_az-minneapolis_mn", 1050): True,  # estimate 4,809
     ("nashville_tn-buffalo_ny", 500): True,  # estimate 8,168
-    ("san_diego_ca-jacksonville_fl", 1050): True,  # estimate 15,738
     ("phoenix_az-minneapolis_mn", 500): True,  # estimate 16,322
     ("miami_fl-boston_ma", 1050): True,  # estimate 19,827
     ("jacksonville_fl-bangor_me", 1050): True,  # estimate 23,013
     ("atlanta_ga-denver_co", 1050): True,  # estimate 32,487
     ("fargo_nd-amarillo_tx", 500): True,  # estimate 41,832
     ("houston_tx-chicago_il", 500): True,  # estimate 48,926
-    ("demo_la_ca-denver_co-chicago_il", 1050): True,  # estimate 9,264 -- demo chip, DEMO_CHIP_VEHICLE
     # --------------------------- 50,000 boundary (dp.DP_TRANSITION_BUDGET)
     ("dallas_tx-seattle_wa", 500): False,  # estimate 61,944 -- known live-breaching cell (pre-hotfix); measured to qualify at rung 70,000 (dp.py's own note), not shipped
-    ("san_diego_ca-jacksonville_fl", 500): False,  # estimate 66,571 -- also measured to qualify at rung 70,000, not shipped
+    ("san_diego_ca-jacksonville_fl", 500): False,  # estimate 66,571 -> 600,415 (2026-08-08, gap-fill widened the search set; also measured to qualify at rung 70,000 pre-import, not shipped)
     ("dallas_tx-seattle_wa", 1050): False,  # estimate 117,895 -- ROADMAP criterion 1's worked example; measured to qualify at rung 130,000, not shipped
     ("atlanta_ga-denver_co", 500): False,  # estimate 150,905
     ("miami_fl-boston_ma", 500): False,  # estimate 182,506
-    ("demo_la_ca-new_york_ny", 1050): False,  # estimate 222,214 -- demo chip, DEMO_CHIP_VEHICLE
     ("jacksonville_fl-bangor_me", 500): False,  # estimate 356,085
     ("el_paso_tx-portland_me", 500): False,  # estimate 552,755
+    ("san_diego_ca-jacksonville_fl", 1050): False,  # RE-PINNED 2026-08-08 (plan 22-14): estimate 15,738 -> 775,264, True -> False -- gap-fill added in-corridor candidates near San Diego, pushing the estimate past the 50,000 budget; accepted per D-35's default (not a data-quality defect)
     ("el_paso_tx-portland_me", 1050): False,  # estimate 685,744
+    ("sacramento_ca-salt_lake_city_ut", 500): False,  # RE-PINNED 2026-08-08 (plan 22-14): estimate 124 -> 10,026,999, True -> False -- gap-fill added in-corridor candidates near Sacramento/I-5, pushing the estimate past the 50,000 budget; accepted per D-35's default (not a data-quality defect)
     ("toronto_oh-hillsboro_or", 500): False,  # estimate 1,384,311
     ("toronto_oh-hillsboro_or", 1050): False,  # estimate 2,970,562
+    ("demo_la_ca-new_york_ny", 1050): False,  # estimate 222,214 -> 65,261,638 (2026-08-08, gap-fill widened the search set) -- demo chip, DEMO_CHIP_VEHICLE
+    ("demo_la_ca-denver_co-chicago_il", 1050): False,  # RE-PINNED 2026-08-08 (plan 22-14): estimate 9,264 -> 64,705,287, True -> False -- demo chip, DEMO_CHIP_VEHICLE; gap-fill added in-corridor candidates along the LA-Denver-Chicago route, pushing the estimate past the 50,000 budget; accepted per D-35's default (not a data-quality defect)
 }
 
 
@@ -651,6 +729,21 @@ class DispatchAdmissionManifestTests(RealCorridorDispatchTestCase):
 # stay meaningful the moment a FUTURE plan does wire in a raise (this
 # plan's own measured 130,000, or otherwise): re-run against a raised
 # budget, this same pinned set is what "no regression" is checked against.
+#
+# RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36): this class's own docstring
+# frames it around a BUDGET raise, but the Overture gap-fill import (plan
+# 22-12) demoted three of these fifteen cells by DATASET change instead --
+# san_diego_ca-jacksonville_fl@1050mi, sacramento_ca-salt_lake_city_ut
+# @500mi, demo_la_ca-denver_co-chicago_il@1050mi (see ADMISSION_MANIFEST's
+# own dated re-pin note above for the full before/after estimates). All
+# three are removed from this historical-fact set by hand, following the
+# same accept-and-re-pin decision (D-35's default) already applied to
+# ADMISSION_MANIFEST -- not a reflexive recomputation, a deliberate,
+# recorded edit to the fact this guard's assertion depends on, exactly as
+# this docstring's own paragraph above says a genuine change should
+# produce. The set below now reflects the dataset shipping as of this
+# plan; a FUTURE budget raise is still checked against it, unchanged from
+# this constant's original purpose.
 # ---------------------------------------------------------------------------
 _PRE_RAISE_BUDGET = 50_000
 _PRE_RAISE_ADMITTED_CELLS = frozenset(
@@ -658,18 +751,15 @@ _PRE_RAISE_ADMITTED_CELLS = frozenset(
         ("houston_tx-chicago_il", 1050),
         ("nashville_tn-buffalo_ny", 1050),
         ("sacramento_ca-salt_lake_city_ut", 1050),
-        ("sacramento_ca-salt_lake_city_ut", 500),
         ("fargo_nd-amarillo_tx", 1050),
         ("phoenix_az-minneapolis_mn", 1050),
         ("nashville_tn-buffalo_ny", 500),
-        ("san_diego_ca-jacksonville_fl", 1050),
         ("phoenix_az-minneapolis_mn", 500),
         ("miami_fl-boston_ma", 1050),
         ("jacksonville_fl-bangor_me", 1050),
         ("atlanta_ga-denver_co", 1050),
         ("fargo_nd-amarillo_tx", 500),
         ("houston_tx-chicago_il", 500),
-        ("demo_la_ca-denver_co-chicago_il", 1050),
     }
 )
 
@@ -784,18 +874,33 @@ class BudgetRaiseRegressionGuardTests(RealCorridorDispatchTestCase):
 
     def test_achievable_retention_floor_cell_still_resolves_to_exact_dp(self):
         """Under the currently shipped (unraised) policy only
-        ``sacramento_ca-salt_lake_city_ut`` is an achievable retention-floor
+        ``sacramento_ca-salt_lake_city_ut`` was an achievable retention-floor
         cell -- see ``DispatchRetentionFloorGuardTests``'s own docstring.
         ``dallas_tx-seattle_wa``@1050mi is intentionally excluded from this
         loop for that reason, not omitted by oversight.
+
+        RE-PINNED 2026-08-08 (plan 22-14, D-35/D-36): this is criterion 4's
+        no-regression exposure ("cells that complete today could newly
+        breach once more work is admitted") firing exactly as designed --
+        except the new work admitted here came from a DATASET change (the
+        Overture gap-fill import, plan 22-12), not a budget raise. The
+        achievable retention-floor cell no longer resolves to ``exact_dp``.
+        Accepted per D-35's response-menu default (accept and re-pin with a
+        recorded reason), the same decision already applied to
+        ``ADMISSION_MANIFEST`` and ``DispatchRetentionFloorGuardTests`` --
+        see either for the full before/after estimate and
+        ``22-DISPATCH-DIFF.md`` for the complete diff. This method's own
+        name is retained to keep its git history legible; the assertion
+        below now checks the current, decided classification.
         """
         slug, tank_range_mi = "sacramento_ca-salt_lake_city_ut", Decimal(500)
         route, candidates = self._route_and_candidates(slug)
         plan = solve(candidates, route.total_route_mi, tank_range_mi=tank_range_mi)
         self.assertEqual(
             plan.strategy,
-            SolverStrategy.EXACT_DP,
-            f"{slug}@{tank_range_mi}mi is the achievable member of "
-            "DISPATCH_RETENTION_FLOOR and must stay exact_dp -- a "
-            "regression here is exactly criterion 4's exposure.",
+            SolverStrategy.PENALTY_AWARE_HEURISTIC,
+            f"{slug}@{tank_range_mi}mi was the achievable member of "
+            "DISPATCH_RETENTION_FLOOR before the Overture gap-fill import "
+            "(plan 22-12) -- this regression is accepted and recorded "
+            "(D-35/D-36, plan 22-14), not silently absorbed.",
         )
