@@ -141,8 +141,10 @@ class Command(BaseCommand):
             "--slug",
             default=None,
             help=(
-                "Fixture slug to write for an ad-hoc waypointed capture, "
-                "used together with --start/--finish (not --corridor)."
+                "Fixture slug to write for an ad-hoc capture, used "
+                "together with --start/--finish (not --corridor). "
+                "Single-leg by default; add --waypoints for a multi-leg "
+                "ad-hoc capture."
             ),
         )
         parser.add_argument(
@@ -166,6 +168,45 @@ class Command(BaseCommand):
         corridor_option = options["corridor"]
 
         CORRIDOR_GEOMETRY_DIR.mkdir(parents=True, exist_ok=True)
+
+        ad_hoc_fields_given_no_waypoints = bool(
+            (slug_option or start_option or finish_option) and not waypoints_raw
+        )
+        if ad_hoc_fields_given_no_waypoints:
+            # Ad-hoc SINGLE-LEG capture: a slug not registered in
+            # CORRIDORS/DEMO_CHIPS, captured via explicit
+            # --slug/--start/--finish with no --waypoints. Mirrors the
+            # --waypoints ad-hoc branch below (same _AdHocTarget shape)
+            # but drives _capture_one's existing single-leg branch
+            # (waypoints=None), producing a fixture identical in shape to
+            # a captured CORRIDORS entry. Added for the West Coast probe
+            # captures (plan 22-06), which are single-leg and not
+            # registered in CORRIDORS.
+            if corridor_option:
+                raise CommandError(
+                    "--slug/--start/--finish cannot combine with "
+                    "--corridor -- choose exactly one capture target."
+                )
+            if not (slug_option and start_option and finish_option):
+                raise CommandError(
+                    "An ad-hoc capture requires --slug, --start and "
+                    "--finish all set."
+                )
+            target = _AdHocTarget(
+                slug_option,
+                self._parse_point(start_option),
+                self._parse_point(finish_option),
+            )
+            result = self._capture_one(target, force=force, no_budget=no_budget)
+            captured = [result] if result is not None else []
+            total_bytes = sum(entry["byte_size"] for entry in captured)
+            self.stdout.write(
+                self.style.SUCCESS(
+                    f"Captured {len(captured)}/1 requested ad-hoc route(s), "
+                    f"{total_bytes} total bytes."
+                )
+            )
+            return
 
         if waypoints_raw:
             waypoints = [self._parse_point(value) for value in waypoints_raw]
