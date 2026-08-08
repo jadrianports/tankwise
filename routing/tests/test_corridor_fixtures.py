@@ -341,6 +341,126 @@ def load_demo_chip_route(slug):
     return routes[0]
 
 
+@dataclass(frozen=True)
+class WestCoastProbe:
+    """One pinned West Coast feasibility probe route (Phase 22 D-06/D-07),
+    registered here rather than appended to `CORRIDORS`. These routes exist
+    to record the feasibility residual the targeted Overture gap-fill import
+    leaves behind -- what the shipped build does with each of them BEFORE
+    the import exists (this plan's BEFORE verdict) and later, plan 22-13's
+    AFTER comparison. They are registered separately, following the same
+    precedent `DemoChip`/`DEMO_CHIPS` set (Phase 18.1 D-13/D-14), because
+    `CorridorFixtureTests` pins `CORRIDORS` at exactly twelve and
+    `ADMISSION_MANIFEST`'s 26 cells must stay like-for-like against the
+    plan 22-01 pre-import baseline -- extending either set would break that
+    bookend. `WEST_COAST_PROBES` plays no part in the twelve-corridor
+    evidence base `CorridorFixtureTests` guards.
+
+    Field shape mirrors `DemoChip` exactly: `slug`, `label`, `start`,
+    `waypoints`, `finish`, `estimated_driving_mi`.
+    """
+
+    slug: str
+    label: str
+    start: tuple[Decimal, Decimal]
+    waypoints: tuple
+    finish: tuple[Decimal, Decimal]
+    estimated_driving_mi: int
+
+
+# Four West Coast probes (D-06), the upper end of D-06's stated 3-to-4
+# range -- chosen because the fourth is the only route that crosses both
+# gap-fill boxes. Pinned now, before the Overture import exists, so the
+# probe set is never chosen after seeing a result (D-06).
+WEST_COAST_PROBES = (
+    WestCoastProbe(
+        slug="seattle_wa-san_diego_ca",
+        label="Seattle, WA -> San Diego, CA",
+        start=_pt("47.6062", "-122.3321"),
+        waypoints=(),
+        finish=_pt("32.7157", "-117.1611"),
+        estimated_driving_mi=1255,
+    ),  # criterion 1's own named route
+    WestCoastProbe(
+        slug="san_francisco_ca-seattle_wa",
+        label="San Francisco, CA -> Seattle, WA",
+        start=_pt("37.7749", "-122.4194"),
+        waypoints=(),
+        finish=_pt("47.6062", "-122.3321"),
+        estimated_driving_mi=810,
+    ),  # README's demo walkthrough item 5 already documents this as a
+    # live, reproducible 422 -- the probe whose BEFORE verdict is
+    # independently corroborated by shipped documentation
+    WestCoastProbe(
+        slug="portland_or-sacramento_ca",
+        label="Portland, OR -> Sacramento, CA",
+        start=_pt("45.5152", "-122.6784"),
+        waypoints=(),
+        finish=_pt("38.5816", "-121.4944"),
+        estimated_driving_mi=580,
+    ),  # interior of the northern gap-fill band, end to end
+    WestCoastProbe(
+        slug="los_angeles_ca-eugene_or",
+        label="Los Angeles, CA -> Eugene, OR",
+        start=_pt("34.0522", "-118.2437"),
+        waypoints=(),
+        finish=_pt("44.0521", "-123.0868"),
+        estimated_driving_mi=900,
+    ),  # the only probe that spans BOTH gap-fill boxes: exercises the
+    # SoCal extension and the northern band in a single route
+)
+
+
+# D-06: WEST_COAST_PROBE_VEHICLE's values are deliberately identical to
+# DEMO_CHIP_VEHICLE's -- the SPA hero preset, which is literally what a
+# visitor planning Seattle -> San Diego sends -- but this is a SEPARATELY
+# NAMED constant rather than a reuse, following the same "named here
+# explicitly so the vehicles are never conflated" discipline
+# DEMO_CHIP_VEHICLE's own comment applies to the three existing vehicles.
+# There are now four: ADMISSION_MANIFEST_VEHICLE (mpg=10,
+# starting_fuel=0.5), DEMO_CHIP_VEHICLE, the API default (mpg=10,
+# tank_range_mi=500, starting_fuel=1), and this one. PRICE_BASIS_NEUTRAL
+# matches what ADMISSION_MANIFEST_VEHICLE and DEMO_CHIP_VEHICLE both use,
+# so a single factor_for lookup remains valid across all of them.
+WEST_COAST_PROBE_VEHICLE = {
+    "mpg": Decimal("6.5"),
+    "tank_range_mi": Decimal(1050),
+    "starting_fuel": Decimal(1),
+    "price_basis": PRICE_BASIS_NEUTRAL,
+}
+
+
+def load_west_coast_probe_route(slug):
+    """Load West Coast probe `slug`'s committed Mapbox Directions fixture
+    and replay it through the existing, already-tested parser -- same
+    fixture directory and same shape as `load_corridor_route`/
+    `load_demo_chip_route`.
+
+    Raises `FileNotFoundError` naming the exact ad-hoc
+    `fetch_corridor_geometry` invocation that captures it. No substitution
+    fallback of any kind (D-08/D-16).
+    """
+    fixture_path = CORRIDOR_GEOMETRY_DIR / f"{slug}.json"
+    if not fixture_path.exists():
+        probe = next((p for p in WEST_COAST_PROBES if p.slug == slug), None)
+        coord_hint = ""
+        if probe is not None:
+            coord_hint = (
+                f" --start {probe.start[0]},{probe.start[1]} --finish "
+                f"{probe.finish[0]},{probe.finish[1]}"
+            )
+        raise FileNotFoundError(
+            f"No committed geometry fixture for West Coast probe {slug!r} "
+            f"at {fixture_path}. Run `manage.py fetch_corridor_geometry "
+            f"--slug {slug}{coord_hint}` to capture it (one-time, online, "
+            "see fetch_corridor_geometry.py)."
+        )
+    with open(fixture_path, encoding="utf-8") as f:
+        raw = json.load(f)
+    routes = _parse_directions_response(raw)
+    return routes[0]
+
+
 class CorridorFixtureTests(SimpleTestCase):
     """CI-side guard that the twelve committed corridor fixtures (D-15)
     stay valid: present, parseable, single-leg, geometrically plausible,
@@ -486,3 +606,93 @@ class DemoChipFixtureTests(SimpleTestCase):
                     f"pinned estimate {pinned} mi exceeds the "
                     f"{_MILEAGE_TOLERANCE_FRACTION:.0%} sanity band",
                 )
+
+
+# 4 decimal places -- the endpoint-match precision D-08's no-substitution
+# rule is verified against (roughly 11 m at these latitudes), matching the
+# plan's own "match the registry to 4 decimal places" acceptance criterion.
+_PROBE_COORD_MATCH_TOLERANCE = Decimal("0.0001")
+
+
+class WestCoastProbeFixtureTests(SimpleTestCase):
+    """CI-side guard that the four West Coast feasibility probes (D-06/D-07)
+    stay valid, mirroring `CorridorFixtureTests`'/`DemoChipFixtureTests`'
+    shape. Until plan 22-06 Task 2 captures the four geometry fixtures, the
+    per-fixture assertions below fail with a `FileNotFoundError` naming the
+    exact capture invocation -- that failure IS the no-substitution rule
+    (D-08/D-16) demonstrating itself: there is no fallback path that could
+    let this class pass on missing geometry, and no assertion here treats a
+    missing fixture as anything other than a hard error.
+    """
+
+    def test_west_coast_probes_has_exactly_four_unique_slugs_in_order(self):
+        self.assertEqual(len(WEST_COAST_PROBES), 4)
+        slugs = [p.slug for p in WEST_COAST_PROBES]
+        self.assertEqual(len(slugs), len(set(slugs)))
+        self.assertEqual(
+            slugs,
+            [
+                "seattle_wa-san_diego_ca",
+                "san_francisco_ca-seattle_wa",
+                "portland_or-sacramento_ca",
+                "los_angeles_ca-eugene_or",
+            ],
+        )
+
+    def test_every_probe_fixture_file_exists(self):
+        for probe in WEST_COAST_PROBES:
+            with self.subTest(slug=probe.slug):
+                fixture_path = CORRIDOR_GEOMETRY_DIR / f"{probe.slug}.json"
+                self.assertTrue(
+                    fixture_path.exists(),
+                    f"Missing committed fixture for {probe.slug!r} at "
+                    f"{fixture_path}",
+                )
+
+    def test_every_probe_loads_and_parses_without_raising(self):
+        for probe in WEST_COAST_PROBES:
+            with self.subTest(slug=probe.slug):
+                route = load_west_coast_probe_route(probe.slug)
+                self.assertIsNotNone(route)
+
+    def test_every_probe_is_single_leg_feasible_geometry(self):
+        for probe in WEST_COAST_PROBES:
+            with self.subTest(slug=probe.slug):
+                route = load_west_coast_probe_route(probe.slug)
+                self.assertLessEqual(len(route.leg_distances_mi), 1)
+                self.assertGreater(route.total_route_mi, 0)
+
+    def test_every_probe_endpoint_matches_registry_to_four_decimal_places(self):
+        for probe in WEST_COAST_PROBES:
+            with self.subTest(slug=probe.slug):
+                route = load_west_coast_probe_route(probe.slug)
+                first_lng, first_lat = route.raw_coordinates[0]
+                last_lng, last_lat = route.raw_coordinates[-1]
+                expected_start_lat, expected_start_lng = probe.start
+                expected_finish_lat, expected_finish_lng = probe.finish
+                self.assertLessEqual(
+                    abs(Decimal(str(first_lat)) - expected_start_lat),
+                    _PROBE_COORD_MATCH_TOLERANCE,
+                )
+                self.assertLessEqual(
+                    abs(Decimal(str(first_lng)) - expected_start_lng),
+                    _PROBE_COORD_MATCH_TOLERANCE,
+                )
+                self.assertLessEqual(
+                    abs(Decimal(str(last_lat)) - expected_finish_lat),
+                    _PROBE_COORD_MATCH_TOLERANCE,
+                )
+                self.assertLessEqual(
+                    abs(Decimal(str(last_lng)) - expected_finish_lng),
+                    _PROBE_COORD_MATCH_TOLERANCE,
+                )
+
+    def test_corridors_and_admission_manifest_are_unmoved(self):
+        # Read-only import of the manifest, done here (inside the test
+        # method) rather than at module level to avoid a circular import:
+        # test_solver_dispatch.py itself imports CORRIDORS/DEMO_CHIPS from
+        # this module.
+        from routing.tests.test_solver_dispatch import ADMISSION_MANIFEST
+
+        self.assertEqual(len(CORRIDORS), 12)
+        self.assertEqual(len(ADMISSION_MANIFEST), 26)
