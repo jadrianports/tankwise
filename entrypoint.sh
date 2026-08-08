@@ -15,15 +15,25 @@ else
   python manage.py migrate --noinput
 fi
 
-# --verbosity 0 suppresses the "N objects imported automatically" banner the
-# Django shell prints on startup, which would otherwise contaminate the count;
-# tail -n1 keeps only the printed number so the -eq test gets a clean integer.
-STATION_COUNT=$(python manage.py shell --verbosity 0 -c "from routing.models import Station; print(Station.objects.count())" | tail -n1)
-
-if [ "$STATION_COUNT" -eq "0" ]; then
-  echo "Station table empty -- seeding from committed CSV..."
-  python manage.py seed_stations
-fi
+# seed_stations runs unconditionally, on every boot, not only when the
+# station table is empty. The command is an idempotent upsert on opis_id
+# (see its own docstring) -- never skip-if-already-populated, never
+# truncate-and-reload -- so a boot against an already-converged table costs
+# one full-table read plus two batched writes that Django short-circuits to
+# no-ops when nothing changed. The previous empty-table guard was a
+# cold-start optimization that became a correctness hole the moment the
+# committed CSV(s) became something that changes: production's database is
+# never empty after the first boot, so under that guard a dataset edit would
+# ship, pass every test, bump the cache prefix, and never reach a single
+# served request. This step still uses the pooled DB_HOST, not
+# DB_MIGRATE_HOST -- it is the seed step, not the migrate step, per the
+# distinction the comment above already establishes. A token-comparison
+# reseed was rejected because it needs new database state and a write path;
+# a row-count guard was rejected because it misses any change that keeps the
+# count identical, such as an edited price or a moved coordinate; a one-off
+# manual seed was rejected because it is exactly the human bump-on-change
+# step this project's provenance requirement forbids.
+python manage.py seed_stations
 
 # Worker/timeout/recycling defaults below are measurement-backed, not
 # guessed: a fully-warmed worker of this codebase (Django loaded, shapely

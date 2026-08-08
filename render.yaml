@@ -11,14 +11,18 @@
 #
 # No preDeployCommand: that field is only available on paid web/private
 # services and background workers, not the free plan (confirmed against
-# Render's own docs). Migrate and conditional seeding instead run inside
+# Render's own docs). Migrate and seeding instead run inside
 # entrypoint.sh's container start sequence, which is correct here rather
 # than a workaround: the free plan runs a single instance only, so there
 # is no second container that could race a concurrent migrate/seed.
-# seed_stations is an idempotent update_or_create upsert, and
-# entrypoint.sh only invokes it when the station table is empty, so a
-# restart never reseeds and a hypothetical double-invocation still
-# converges to the same rows.
+# seed_stations is an idempotent upsert on opis_id, and entrypoint.sh now
+# invokes it on EVERY boot, unconditionally, from the committed CSV(s) --
+# not only when the station table is empty. This is safe because the
+# command issues two batched writes that no-op against an already-
+# converged table, so a restart or a hypothetical double-invocation still
+# converges to the same rows. It is necessary because a committed dataset
+# change must otherwise be applied by hand, which is the human step this
+# project's provenance requirement forbids.
 services:
   - type: web
     name: tankwise
