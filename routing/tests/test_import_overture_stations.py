@@ -25,16 +25,23 @@ from pathlib import Path
 
 from django.conf import settings
 from django.core.management import call_command
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from routing.pipeline import overture, overture_dedupe, overture_scope
-from routing.services import regions
+from routing.services import corridor, regions
+from routing.services.solver import solve
+from routing.tests.test_corridor_fixtures import (
+    factor_lookup_for_basis,
+    load_corridor_route,
+)
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "overture"
 FIXTURE_PATH = FIXTURE_DIR / "raw_extract_sample.csv"
 EMPTY_EXISTING_PATH = FIXTURE_DIR / "existing_stations_empty.csv"
 SAMPLE_EXISTING_PATH = FIXTURE_DIR / "existing_stations_sample.csv"
 STATIONS_GEOCODED_PATH = Path(settings.BASE_DIR) / "data" / "stations_geocoded.csv"
+RAW_EXTRACT_PATH = Path(settings.BASE_DIR) / "data" / "overture_raw_extract.csv"
+OVERTURE_STATIONS_PATH = Path(settings.BASE_DIR) / "data" / "overture_stations.csv"
 
 
 def _read_fixture_rows(existing_rows=()):
@@ -412,3 +419,183 @@ class OvertureDedupeReportTests(SimpleTestCase):
         # And the deliberate fixture design: exactly one of each tier.
         self.assertEqual(tight_from_decisions, 1)
         self.assertEqual(city_from_decisions, 1)
+
+
+def _serialize_plan(plan):
+    """A stable serialization for comparing two `FuelPlan`s field by field
+    (D-22 check 3) -- asserted on this, never on object identity, since two
+    independently-solved `FuelPlan` instances are never the same object
+    even when every field matches."""
+    return {
+        "stops": [
+            (
+                stop.opis_id,
+                stop.name,
+                str(stop.gallons),
+                str(stop.price_per_gallon),
+            )
+            for stop in plan.stops
+        ],
+        "total_cost": str(plan.total_cost),
+        "strategy": plan.strategy,
+    }
+
+
+class RealFileIdentifierProofTests(TestCase):
+    """Criterion 3's three identifier checks, proven against the real
+    committed files and the real corridor/DP machinery (D-22) -- the
+    fixture-scale proofs in `OvertureTransformDeterminismTests` above prove
+    the identical properties at fixture scale; this class is what makes the
+    claim true of what actually ships.
+
+    Uses `TestCase` (not `SimpleTestCase`, unlike every other class in this
+    module) because check 3 solves against the real DB-backed
+    `corridor.candidates()` path -- the same reason
+    `RealCorridorDispatchTestCase` (`routing/tests/test_solver_dispatch.py`)
+    does.
+    """
+
+    # sacramento_ca-salt_lake_city_ut is a member of GAP_FILL_INTERSECTING_SLUGS
+    # (routing/tests/test_corridor_fixtures.py, D-37) -- its real committed
+    # polyline genuinely passes through the gap-fill boxes, so a plan solved
+    # against it can actually reach an Overture-id station; a slug outside
+    # that set would exercise nothing new. Picked over the other three
+    # intersecting slugs (san_diego_ca-jacksonville_fl and the two demo
+    # chips) by direct measurement: at this tank range/vehicle combination
+    # it is the plain CORRIDORS member (not a demo chip needing
+    # DEMO_CHIP_VEHICLE) whose solved plan actually purchases at an
+    # Overture-id station, which is what the anti-vacuity assertion below
+    # requires -- san_diego_ca-jacksonville_fl's own solved plans at every
+    # tank range/starting-fuel combination measured never do, despite
+    # intersecting the boxes geographically. The dispatch strategy here is
+    # the penalty-aware heuristic, not the exact DP (measured directly, not
+    # assumed from test_solver_dispatch.py's own EXACT_DP corridor comment,
+    # which was measured on the pre-Overture station set and no longer
+    # holds now that the search set is larger) -- DispatchDeterminismTests
+    # (test_solver_dispatch.py) already establishes that arm is exactly as
+    # deterministic as the DP given fixed inputs, which is the only
+    # property this check actually needs.
+    PINNED_SLUG = "sacramento_ca-salt_lake_city_ut"
+    PINNED_TANK_RANGE_MI = Decimal(500)
+    _MPG = Decimal(10)
+    _STARTING_FUEL = Decimal("0.5")
+    _PENALTY = Decimal(35)
+
+    @classmethod
+    def setUpTestData(cls):
+        # reseed_all()'s own canonical-list replay, via the plain
+        # seed_stations default (no args) -- both CSVs, OPIS then Overture,
+        # exactly as production seeds.
+        call_command("seed_stations", stdout=io.StringIO())
+        corridor.warm_index()
+
+    def test_check1_transform_reproduces_the_committed_station_csv_byte_for_byte(self):
+        """Criterion 3 check 1 -- determinism against the committed
+        extract, at real scale. Plan 22-10's OvertureTransformDeterminismTests
+        already proves this at fixture scale (two runs match each other);
+        this additionally proves the COMMITTED file is what the committed
+        extract itself produces, so a hand edit to either one fails here."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_path = tmp_path / "overture_stations.csv"
+            call_command(
+                "import_overture_stations",
+                input_path=str(RAW_EXTRACT_PATH),
+                existing_path=str(STATIONS_GEOCODED_PATH),
+                output_path=str(out_path),
+                report_path=str(tmp_path / "report.md"),
+                decisions_path=str(tmp_path / "decisions.csv"),
+            )
+            self.assertEqual(
+                out_path.read_bytes(), OVERTURE_STATIONS_PATH.read_bytes()
+            )
+
+    def test_check2_ids_disjoint_against_the_real_committed_files(self):
+        """Criterion 3 check 2 -- disjointness, asserted on the real files,
+        not on generated data."""
+        with open(OVERTURE_STATIONS_PATH, newline="", encoding="utf-8") as f:
+            overture_ids = {int(row["opis_id"]) for row in csv.DictReader(f)}
+        with open(STATIONS_GEOCODED_PATH, newline="", encoding="utf-8") as f:
+            opis_ids = {int(row["opis_id"]) for row in csv.DictReader(f)}
+
+        self.assertTrue(overture_ids, "no Overture rows found -- check is vacuous")
+        self.assertTrue(opis_ids, "no OPIS rows found -- check is vacuous")
+        self.assertTrue(all(overture_scope.is_overture_id(i) for i in overture_ids))
+        self.assertTrue(
+            all(not overture_scope.is_overture_id(i) for i in opis_ids)
+        )
+        self.assertEqual(overture_ids & opis_ids, set())
+
+    def test_check3_pinned_route_solves_identically_across_two_independent_imports(
+        self,
+    ):
+        """Criterion 3 check 3 -- the one checks 1 and 2 cannot substitute
+        for: `opis_id` is the DP's third tie-break key
+        (`routing.services.dp`), so an id that silently moves across a
+        re-import can change which plan a route gets even when the CSV
+        content is otherwise identical. Solves the pinned route once
+        against the committed station set, once against a station set
+        whose Overture half was independently rebuilt from the committed
+        extract into a temp directory, and asserts the two plans match
+        field by field."""
+        factor_for = factor_lookup_for_basis("neutral")
+        route = load_corridor_route(self.PINNED_SLUG)
+
+        candidates_first = corridor.candidates(route, factor_for=factor_for)
+        plan_first = solve(
+            candidates_first,
+            route.total_route_mi,
+            tank_range_mi=self.PINNED_TANK_RANGE_MI,
+            mpg=self._MPG,
+            starting_fuel=self._STARTING_FUEL,
+            penalty=self._PENALTY,
+            trust_margin=Decimal(0),
+        )
+
+        # Anti-vacuity: without this, a route that never reaches a new
+        # station would pass this whole check while proving nothing about
+        # the new ids -- the same vacuity class as a referee-invariance
+        # check aimed at a file that does not exist.
+        self.assertTrue(
+            any(
+                overture_scope.is_overture_id(stop.opis_id)
+                for stop in plan_first.stops
+            ),
+            "pinned route's first-import plan reaches no Overture-id "
+            "station -- this check would prove nothing about the new ids",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            rebuilt_overture_csv = tmp_path / "overture_stations.csv"
+            call_command(
+                "import_overture_stations",
+                input_path=str(RAW_EXTRACT_PATH),
+                existing_path=str(STATIONS_GEOCODED_PATH),
+                output_path=str(rebuilt_overture_csv),
+                report_path=str(tmp_path / "report.md"),
+                decisions_path=str(tmp_path / "decisions.csv"),
+            )
+            # Reseeds the DB from the OPIS file plus the FRESHLY rebuilt
+            # Overture file -- seed_stations' own handle() calls
+            # reset_index()/reset_dataset_vintage_token() at the end, so no
+            # separate cache-busting call is needed here.
+            call_command(
+                "seed_stations",
+                str(STATIONS_GEOCODED_PATH),
+                str(rebuilt_overture_csv),
+                stdout=io.StringIO(),
+            )
+
+        candidates_second = corridor.candidates(route, factor_for=factor_for)
+        plan_second = solve(
+            candidates_second,
+            route.total_route_mi,
+            tank_range_mi=self.PINNED_TANK_RANGE_MI,
+            mpg=self._MPG,
+            starting_fuel=self._STARTING_FUEL,
+            penalty=self._PENALTY,
+            trust_margin=Decimal(0),
+        )
+
+        self.assertEqual(_serialize_plan(plan_first), _serialize_plan(plan_second))

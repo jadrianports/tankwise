@@ -437,9 +437,9 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # regression test pinning ROADMAP criterion 5's real
 # el_paso_tx-portland_me/QUIKTRIP #667 witness) -- 11 production
 # unchanged, 73 -> 74 test, 84 -> 85 total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 85
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 87
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 74
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 76
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):
@@ -598,8 +598,8 @@ def _collect_seed_stations_calls_with_literal_path(path):
 # (its `call_command("seed_stations", *[...])` call is itself scanned and
 # found compliant, not exempted).
 SEED_STATIONS_CALL_SITE_PRODUCTION_COUNT = 8
-SEED_STATIONS_CALL_SITE_TEST_COUNT = 33
-SEED_STATIONS_CALL_SITE_TOTAL_COUNT = 41
+SEED_STATIONS_CALL_SITE_TEST_COUNT = 36
+SEED_STATIONS_CALL_SITE_TOTAL_COUNT = 44
 
 
 class SeedStationsCallSiteGateTest(SimpleTestCase):
