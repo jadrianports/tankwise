@@ -58,7 +58,11 @@ from routing.tests.test_solver_fixed_charge_optimality import (
     optimal_fixed_charge_plan,
     single_leg_routes,
 )
-from routing.tests.test_trust_margin_rule import TAG_SHARE_LADDER, tagged_candidates
+from routing.tests.test_trust_margin_rule import (
+    ADOPTED_MARGIN_USD,
+    TAG_SHARE_LADDER,
+    tagged_candidates,
+)
 
 
 def _candidate(opis_id, price, position, name=None):
@@ -1849,4 +1853,370 @@ class PruneMarginBlockedRetentionTests(SimpleTestCase):
             "station (opis_id=5) -- real-dominates-anything is unchanged. "
             "A blanket dedup-within-provenance-class implementation would "
             f"wrongly retain both. Got {[c.opis_id for c in result]!r}",
+        )
+
+
+# ---------------------------------------------------------------------------
+# D-12/PIPE-02 (plan 22-04): the identically-priced-cluster prune-soundness
+# apparatus. D-09 assigns every same-region Overture row the identical
+# retail_price, so a dense cluster of identically-priced candidates is the
+# literal shape the gap-fill import creates, in a corridor stretch none of
+# the twelve pinned corridors currently reaches -- this module is the only
+# place that shape gets proven sound before the import lands.
+
+
+@dataclass(frozen=True)
+class PruneClusterCorpusParams:
+    """The D-12 single source of truth for the identically-priced-cluster
+    corpus below, mirroring PruneCorpusParams/PruneMixedCorpusParams'
+    precedent exactly: every field fixed here, before the first retention
+    count is ever computed, and never revisited after seeing a result
+    (D-14/D-17).
+
+    Each generated route carries exactly ONE identically-priced cluster of
+    cluster_size stations, at distinct positions spaced cluster_spacing_mi
+    apart -- never co-located, so pass 1's co-located dedup never touches
+    them and only pass 2's tail-reach branch (or its absence) decides what
+    survives. Routes alternate, by index, between two placements, each with
+    its OWN total_route_mi -- a single shared route length cannot make both
+    shapes simultaneously reachable from the origin AND correctly tail/
+    non-tail, so the two placements are genuinely different route lengths,
+    not merely different station positions on one shared route:
+
+    * "non-tail" (even index): starts at non_tail_start_mi, well inside
+      tank_range_mi of the origin (reachable directly) but positioned so
+      pos_S + tank_range_mi < non_tail_total_route_mi holds for EVERY
+      member -- condition 2 of the domination rule (prune.py) then fails
+      for every pair inside the cluster (neither pos_B == pos_A, distinct
+      positions, nor pos_B + T >= L, no member reaches FINISH), so no
+      member can ever dominate another. All cluster_size members survive.
+      (The route itself is infeasible past the cluster -- nothing else is
+      on it -- which is fine: this shape's evidence is the retained set,
+      not a feasible plan; see IdenticalPriceClusterPruneSoundnessTests'
+      own soundness assertion, which handles infeasibility symmetrically.)
+
+    * "tail" (odd index): starts at tail_start_mi, ALSO reachable directly
+      from the origin, but positioned so pos_S + tank_range_mi >=
+      tail_total_route_mi holds for EVERY member (even the earliest) --
+      every member is then eligible as a pass-2 dominator/dominated pair;
+      since every member shares one price, the total order's first
+      (earliest-position) member sets the running minimum and every later
+      member satisfies price_B <= price_A (equality), so it is dominated
+      and removed. Exactly ONE member -- the earliest -- survives. This
+      shape IS feasible end to end (a genuine single-stop plan exists),
+      which is what gives the soundness assertion real cost content
+      rather than a trivial infeasibility match.
+
+    cluster_size is capped at MAX_STATIONS so a route's full candidate
+    list stays inside the oracle's own subset-enumeration ceiling (see
+    IdenticalPriceClusterPruneSoundnessTests' differential assertion,
+    which calls the oracle over the FULL, unpruned candidate list).
+    """
+
+    seed: int
+    n_routes: int
+    cluster_size: int
+    cluster_spacing_mi: Decimal
+    tank_range_mi: Decimal
+    non_tail_total_route_mi: Decimal
+    non_tail_start_mi: Decimal
+    tail_total_route_mi: Decimal
+    tail_start_mi: Decimal
+    min_price_cents: int
+    max_price_cents: int
+
+
+# The D-12 single shared instance. n_routes=40 is even (an exact 20/20
+# non-tail/tail split, so PRUNE_CLUSTER_RETENTION_EXPECTATION below has no
+# rounding ambiguity). cluster_size=5 sits comfortably under MAX_STATIONS=6
+# (imported above from test_solver_fixed_charge_optimality), leaving the
+# oracle's own subset enumeration well inside its budget.
+#
+# tank_range_mi=500, non_tail_start_mi=50: the non-tail cluster's own last
+# member (50 + (5-1)*5 = 70) plus tank_range_mi is 570, comfortably short
+# of non_tail_total_route_mi=2000 -- non-tail by construction, not by luck.
+#
+# tail_start_mi=250, tail_total_route_mi=700: the tail cluster's own
+# EARLIEST member (250 + 500 = 750 >= 700) already reaches FINISH, so
+# every member does -- comfortably tail by construction too. 250 is also
+# <= tank_range_mi, so the whole cluster is reachable directly from the
+# origin at the default starting_fuel=1 the oracle assumes when it is not
+# passed explicitly -- this is what makes the tail shape genuinely
+# feasible end to end, not merely reach-tagged on paper.
+PRUNE_CLUSTER_CORPUS_PARAMS = PruneClusterCorpusParams(
+    seed=20260808,
+    n_routes=40,
+    cluster_size=5,
+    cluster_spacing_mi=Decimal("5"),
+    tank_range_mi=Decimal("500"),
+    non_tail_total_route_mi=Decimal("2000"),
+    non_tail_start_mi=Decimal("50"),
+    tail_total_route_mi=Decimal("700"),
+    tail_start_mi=Decimal("250"),
+    min_price_cents=300,
+    max_price_cents=500,
+)
+
+
+def build_price_cluster_corpus(*, params=PRUNE_CLUSTER_CORPUS_PARAMS):
+    """Deterministically build params.n_routes routes, each a single
+    identically-priced cluster of params.cluster_size stations, from a
+    fresh random.Random(params.seed) -- never the global random module, so
+    two consecutive calls return byte-identical corpora (proven by
+    test_build_price_cluster_corpus_is_deterministic_across_two_calls
+    below), mirroring build_prune_corpus()/build_mixed_provenance_corpus()'s
+    own determinism precedent exactly.
+
+    Route index parity decides placement (see PruneClusterCorpusParams'
+    own docstring for the full geometric argument): even index -> non-tail,
+    odd index -> tail. Each route's cluster provenance is drawn once per
+    route (recorded or estimate, D-09's own regional-uniformity rule -- one
+    tag per region, never a per-station mix within one cluster) and its
+    price once per route -- every member of that route's cluster shares
+    both. Returns a list of (candidates, total_route_mi, is_tail) tuples.
+    """
+    rng = random.Random(params.seed)
+
+    routes = []
+    for i in range(params.n_routes):
+        is_tail = i % 2 == 1
+        start_mi = params.tail_start_mi if is_tail else params.non_tail_start_mi
+        total_route_mi = params.tail_total_route_mi if is_tail else params.non_tail_total_route_mi
+
+        price_cents = rng.randint(params.min_price_cents, params.max_price_cents)
+        price = Decimal(price_cents) / Decimal(100)
+        price_source = ESTIMATE_PRICE_SOURCE if rng.random() < 0.5 else "opis_indexed"
+
+        candidates = [
+            Candidate(
+                name=f"PC{i}-{j}",
+                opis_id=i * params.cluster_size + j,
+                price_per_gallon=price,
+                distance_from_start_mi=start_mi + Decimal(j) * params.cluster_spacing_mi,
+                price_source=price_source,
+            )
+            for j in range(params.cluster_size)
+        ]
+        routes.append((candidates, total_route_mi, is_tail))
+    return routes
+
+
+def _expected_cluster_retention(params):
+    """Pure function of PruneClusterCorpusParams, derived directly from
+    the domination rule in routing/services/prune.py (condition 2) --
+    never measured. Half of params.n_routes (the tail-placed routes)
+    retain exactly ONE member each (the earliest position dominates every
+    later, identically-priced, tail-reaching sibling); the other half (the
+    non-tail-placed routes) retain every member -- condition 2 fails for
+    every pair inside a non-tail cluster, so nothing there can ever be
+    dominated. See PruneClusterCorpusParams' own docstring for the full
+    geometric argument this reduces to arithmetic.
+    """
+    n_tail_routes = params.n_routes // 2
+    n_non_tail_routes = params.n_routes - n_tail_routes
+    return n_tail_routes * 1 + n_non_tail_routes * params.cluster_size
+
+
+# Computed, not hand-typed, from PRUNE_CLUSTER_CORPUS_PARAMS above -- a
+# floor expressed as "removed at least N" (PRUNE_REDUCTION_FLOOR's own
+# shape) would pass a no-op prune(x) -> x just as readily as it would pass
+# an over-pruning implementation that also strips a non-tail cluster down
+# to one survivor; only an exact equality, derived from the rule rather
+# than measured from a run, catches both directions at once.
+PRUNE_CLUSTER_RETENTION_EXPECTATION = _expected_cluster_retention(PRUNE_CLUSTER_CORPUS_PARAMS)
+
+
+class IdenticalPriceClusterPruneSoundnessTests(SimpleTestCase):
+    """D-12/PIPE-02 (plan 22-04): the prune is sound, and provably
+    non-vacuous, on the exact price-degeneracy the gap-fill import is
+    about to create (D-09). Three assertions:
+
+    1. Differential soundness against this module's own imported oracle
+       (optimal_fixed_charge_plan), at both PENALTY_ANCHORS rungs and at
+       the adopted TRUST_MARGIN_USD default (ADOPTED_MARGIN_USD) -- never
+       argued, always checked.
+    2. A closed-form retention equality (PRUNE_CLUSTER_RETENTION_EXPECTATION),
+       catching both a no-op prune (which would over-retain the tail
+       clusters relative to the derived expectation) and an over-pruning
+       implementation (which would under-retain the non-tail clusters) --
+       the two directions a one-sided floor (PRUNE_REDUCTION_FLOOR's own
+       shape) cannot both catch at once.
+    3. A permanent witness, reusing SLIVER_WITNESS_EQUAL_PRICE's own shape,
+       proving a chain of identically-priced stations -- none of which
+       individually reaches FINISH except the last -- all survive, because
+       only the last is ever eligible to dominate or be dominated.
+    """
+
+    def test_prune_never_raises_the_optimum_on_identically_priced_clusters(self):
+        margins = (Decimal(0), ADOPTED_MARGIN_USD)
+        routes = build_price_cluster_corpus()
+
+        for route_index, (candidates, total_route_mi, is_tail) in enumerate(routes):
+            self.assertLessEqual(
+                len(candidates),
+                MAX_STATIONS,
+                f"route {route_index}: build_price_cluster_corpus() drew more "
+                f"than MAX_STATIONS candidates: {candidates!r} -- the oracle's "
+                f"subset enumeration cannot terminate over this input.",
+            )
+
+            retained = prune_dominated_candidates(
+                candidates,
+                tank_range_mi=PRUNE_CLUSTER_CORPUS_PARAMS.tank_range_mi,
+                total_route_mi=total_route_mi,
+            )
+
+            for penalty in PENALTY_ANCHORS:
+                for margin in margins:
+                    unpruned_plan = optimal_fixed_charge_plan(
+                        candidates,
+                        total_route_mi,
+                        penalty=penalty,
+                        tank_range_mi=PRUNE_CLUSTER_CORPUS_PARAMS.tank_range_mi,
+                        trust_margin=margin,
+                    )
+                    pruned_plan = optimal_fixed_charge_plan(
+                        retained,
+                        total_route_mi,
+                        penalty=penalty,
+                        tank_range_mi=PRUNE_CLUSTER_CORPUS_PARAMS.tank_range_mi,
+                        trust_margin=margin,
+                    )
+
+                    context = (
+                        f"route_index={route_index}, is_tail={is_tail}, "
+                        f"candidates={candidates!r}, retained={retained!r}, "
+                        f"total_route_mi={total_route_mi}, penalty={penalty}, "
+                        f"margin={margin}"
+                    )
+
+                    self.assertEqual(
+                        unpruned_plan is None,
+                        pruned_plan is None,
+                        f"feasibility verdicts disagree between pruned and "
+                        f"unpruned solves on an identically-priced cluster "
+                        f"route; {context}",
+                    )
+                    if unpruned_plan is None:
+                        continue
+
+                    self.assertLessEqual(
+                        abs(unpruned_plan.objective - pruned_plan.objective),
+                        COST_TOLERANCE,
+                        f"pruned objective ({pruned_plan.objective}) differs "
+                        f"from the unpruned objective ({unpruned_plan.objective}) "
+                        f"beyond COST_TOLERANCE on an identically-priced "
+                        f"cluster route -- a removed candidate raised the "
+                        f"optimum; {context}",
+                    )
+
+    def test_retained_count_equals_the_closed_form_expectation(self):
+        """Anti-vacuity by closed-form equality, not by floor alone (see
+        this class's own docstring). `prune(x) -> x` passes every
+        soundness property in this module vacuously; only this equality --
+        derived from the rule, never measured -- catches it, and catches
+        over-pruning too.
+        """
+        routes = build_price_cluster_corpus()
+        total_retained = 0
+        for candidates, total_route_mi, _is_tail in routes:
+            retained = prune_dominated_candidates(
+                candidates,
+                tank_range_mi=PRUNE_CLUSTER_CORPUS_PARAMS.tank_range_mi,
+                total_route_mi=total_route_mi,
+            )
+            total_retained += len(retained)
+
+        self.assertEqual(
+            total_retained,
+            PRUNE_CLUSTER_RETENTION_EXPECTATION,
+            f"retained {total_retained} candidates across "
+            f"PRUNE_CLUSTER_CORPUS_PARAMS.n_routes="
+            f"{PRUNE_CLUSTER_CORPUS_PARAMS.n_routes} identically-priced-"
+            f"cluster routes; expected exactly "
+            f"PRUNE_CLUSTER_RETENTION_EXPECTATION="
+            f"{PRUNE_CLUSTER_RETENTION_EXPECTATION}. A reduction floor "
+            f"alone ('removed at least N') cannot catch this: prune(x) -> "
+            f"x passes every floor and every soundness property in this "
+            f"module vacuously, and an over-pruning implementation that "
+            f"also strips a non-tail cluster below its full size would "
+            f"pass a floor too -- only this closed-form equality catches "
+            f"both directions.",
+        )
+
+    def test_build_price_cluster_corpus_is_deterministic_across_two_calls(self):
+        """Without random.Random(seed) freshly seeded per call, a corpus
+        that quietly consumed global RNG state would make the two guards
+        above unreproducible."""
+        first = build_price_cluster_corpus()
+        second = build_price_cluster_corpus()
+        self.assertEqual(
+            [
+                [
+                    (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                    for c in candidates
+                ]
+                for candidates, _total, _is_tail in first
+            ],
+            [
+                [
+                    (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                    for c in candidates
+                ]
+                for candidates, _total, _is_tail in second
+            ],
+            "build_price_cluster_corpus() returned different corpora "
+            "across two consecutive calls -- it must be freshly seeded on "
+            "every call, never consuming global RNG state.",
+        )
+
+    def test_equal_priced_chain_survives_when_only_the_last_member_reaches_finish(self):
+        """The permanent relay witness (assertion 3). Reuses
+        SLIVER_WITNESS_EQUAL_PRICE's own shape -- a chain of stations at
+        1-mile spacing near the start of the route -- generalized to a
+        chain_size-station case. Only the LAST member's own supply
+        interval reaches FINISH (pos_S + tank_range_mi >= total_route_mi);
+        every earlier member's does not. So only the last member is ever
+        eligible to dominate or be dominated under condition 2 -- and there
+        is nothing before it that is ALSO tail-reaching to dominate it, and
+        nothing after it in the chain -- so no domination fires anywhere in
+        the chain and every member survives. SLIVER_WITNESS_EQUAL_PRICE
+        (this module, above) is the two-station instance of exactly this
+        shape that first proved a naive "reach-sliver" rule wrong; this
+        witness pins the general chain_size-station case permanently.
+        """
+        chain_size = 5
+        tank_range_mi = Decimal(100)
+        total_route_mi = Decimal(chain_size) + tank_range_mi
+        candidates = [
+            _candidate(opis_id=i, price="1.00", position=i + 1, name=f"R{i}")
+            for i in range(chain_size)
+        ]
+
+        for i in range(chain_size - 1):
+            self.assertLess(
+                candidates[i].distance_from_start_mi + tank_range_mi,
+                total_route_mi,
+                f"witness construction error: chain member {i} reaches "
+                f"FINISH but only the last member should.",
+            )
+        self.assertGreaterEqual(
+            candidates[-1].distance_from_start_mi + tank_range_mi,
+            total_route_mi,
+            "witness construction error: the last chain member must reach "
+            "FINISH.",
+        )
+
+        result = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+
+        self.assertEqual(
+            {c.opis_id for c in result},
+            {c.opis_id for c in candidates},
+            f"the equal-priced relay chain must survive prune in full -- "
+            f"only the last member's own supply interval reaches FINISH, "
+            f"so no member is ever eligible to dominate another. Got "
+            f"{sorted(c.opis_id for c in result)!r}, expected "
+            f"{sorted(c.opis_id for c in candidates)!r}.",
         )
