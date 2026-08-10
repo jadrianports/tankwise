@@ -115,6 +115,12 @@ jobs:
           con.execute('INSTALL spatial; LOAD spatial;')
           sql = _extract_sql('routing/tests/fixtures/overture/places_sample.parquet')
           rows = con.execute(sql).fetchall()
+          # Re-derived (not carried over) after the taxonomy struct
+          # migration: run against the regenerated fixture (both new
+          # basic_category/taxonomy columns) and the migrated predicate,
+          # this is still 7 -- the same set the deprecated categories.primary
+          # predicate selected, confirming the migration is a no-op on row
+          # selection.
           expected = 7
           assert len(rows) == expected, f'expected {expected} rows, got {len(rows)}'
           print(f'OK: {len(rows)} rows returned by the real extract query')

@@ -96,14 +96,14 @@ def _extract_sql(source_path):
         "addresses[1].locality AS address_locality, "
         "addresses[1].region AS address_region, "
         "addresses[1].postcode AS address_postcode, "
-        "categories.primary AS category, "
+        "taxonomy.primary AS category, "
         "confidence, "
         "operating_status, "
         "ST_X(geometry) AS longitude, "
         "ST_Y(geometry) AS latitude "
         f"FROM read_parquet('{source_path}', hive_partitioning=1) "
         f"WHERE ({overture_scope.bbox_predicate_sql()}) "
-        f"AND categories.primary IN ({category_list}) "
+        f"AND taxonomy.primary IN ({category_list}) "
         f"AND confidence >= {overture_scope.CONFIDENCE_FLOOR}"
     )
 
