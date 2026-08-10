@@ -159,10 +159,16 @@ class FetchOvertureExtractCommandTests(SimpleTestCase):
             with self.assertRaises(RuntimeError):
                 self._call()
 
-    def test_resolved_s3_path_contains_the_pinned_release_literal(self):
-        sql = cmd_module._extract_sql(overture_scope.overture_s3_path())
+    def test_resolved_s3_path_contains_the_pinned_release_exactly_once(self):
+        resolved_path = overture_scope.overture_s3_path()
+        sql = cmd_module._extract_sql(resolved_path)
         self.assertIn(overture_scope.OVERTURE_RELEASE, sql)
-        self.assertIn("2026-07-22.0", sql)
+
+        expected_path = overture_scope.OVERTURE_S3_PATH_TEMPLATE.format(
+            release=overture_scope.OVERTURE_RELEASE
+        )
+        self.assertEqual(resolved_path, expected_path)
+        self.assertEqual(resolved_path.count(overture_scope.OVERTURE_RELEASE), 1)
 
     def test_parser_exposes_no_pinned_scope_parameter_flags(self):
         parser = cmd_module.Command().create_parser("manage.py", "fetch_overture_extract")

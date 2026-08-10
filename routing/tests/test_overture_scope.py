@@ -17,11 +17,11 @@ NOTICE_PATH = REPO_ROOT / "NOTICE"
 
 
 class OvertureScopeConstantTests(SimpleTestCase):
-    def test_release_string_is_the_pinned_literal(self):
-        self.assertEqual(overture_scope.OVERTURE_RELEASE, "2026-07-22.0")
+    def test_release_string_is_well_formed(self):
+        self.assertTrue(overture_scope.is_well_formed_release(overture_scope.OVERTURE_RELEASE))
 
     def test_release_string_matches_the_release_shape(self):
-        self.assertRegex(overture_scope.OVERTURE_RELEASE, r"^\d{4}-\d{2}-\d{2}\.\d+$")
+        self.assertTrue(overture_scope.is_well_formed_release(overture_scope.OVERTURE_RELEASE))
 
     def test_gap_fill_boxes_has_exactly_two_entries(self):
         self.assertEqual(len(overture_scope.GAP_FILL_BOXES), 2)
@@ -56,6 +56,69 @@ class OvertureScopeConstantTests(SimpleTestCase):
     def test_no_planning_decision_codes_in_shipped_source(self):
         source = open(overture_scope.__file__, encoding="utf-8").read()
         self.assertEqual(re.findall(r"D-\d{2}", source), [])
+
+
+class ReleaseRestatementConsistencyTests(SimpleTestCase):
+    """The self-maintaining guard that replaces the two former hard-coded
+    release literals: every prose restatement of `OVERTURE_RELEASE` must
+    agree with the live constant, checked without any test ever needing an
+    edit on a release bump."""
+
+    def test_every_restatement_file_exists_and_is_non_empty(self):
+        for name in overture_scope.RELEASE_RESTATEMENT_FILES:
+            path = REPO_ROOT / name
+            self.assertTrue(path.is_file(), f"{name} does not exist under {REPO_ROOT}")
+            self.assertGreater(
+                path.stat().st_size, 0, f"{name} exists but is empty"
+            )
+
+    def test_no_real_restatement_file_is_stale(self):
+        texts = {
+            name: (REPO_ROOT / name).read_text(encoding="utf-8")
+            for name in overture_scope.RELEASE_RESTATEMENT_FILES
+        }
+        missing = overture_scope.missing_release_restatements(
+            overture_scope.OVERTURE_RELEASE, texts
+        )
+        self.assertEqual(
+            missing,
+            (),
+            f"stale release restatement in: {missing} -- these files still "
+            f"quote a release other than {overture_scope.OVERTURE_RELEASE!r}",
+        )
+
+    def test_missing_release_restatements_is_non_vacuous(self):
+        # Synthetic, non-date-shaped tokens -- the predicate is a plain
+        # substring check, so it needs no real release shape to exercise
+        # either direction, and using non-date tokens here keeps this test
+        # itself free of any quoted release-date literal.
+        current_token = "RELEASE-TOKEN-CURRENT"
+        wrong_token = "RELEASE-TOKEN-STALE"
+
+        # A synthetic mapping where one file restates a different,
+        # deliberately wrong release: the predicate must name it.
+        stale_texts = {
+            "NOTICE": f"Release: {wrong_token}",
+            "README.md": f"release `{current_token}`",
+            "docs/ALGORITHM.md": f"release `{current_token}`",
+        }
+        self.assertEqual(
+            overture_scope.missing_release_restatements(current_token, stale_texts),
+            ("NOTICE",),
+        )
+
+        # A synthetic mapping where every file is in sync: the predicate
+        # must report nothing. Constructed strings only -- no real file is
+        # touched by either half of this test.
+        synced_texts = {
+            "NOTICE": f"Release: {current_token}",
+            "README.md": f"release `{current_token}`",
+            "docs/ALGORITHM.md": f"release `{current_token}`",
+        }
+        self.assertEqual(
+            overture_scope.missing_release_restatements(current_token, synced_texts),
+            (),
+        )
 
 
 class GapFillBoxContainsTests(SimpleTestCase):
