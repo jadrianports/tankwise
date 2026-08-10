@@ -68,6 +68,58 @@ def overture_s3_path() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Release well-formedness and prose-restatement consistency
+# ---------------------------------------------------------------------------
+
+# The release naming shape: a four-digit year, a two-digit month, a
+# two-digit day, a dot, then one or more digits (the sequence number within
+# that day). Anchored at both ends so a value that merely contains the shape
+# somewhere inside a longer string does not pass. This is the one place the
+# shape is spelled out; every test that used to spell it inline now routes
+# through `is_well_formed_release` instead.
+RELEASE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\.\d+$")
+
+
+def is_well_formed_release(value) -> bool:
+    """True when `value` matches `RELEASE_PATTERN`. Pure, no I/O."""
+    return bool(RELEASE_PATTERN.match(value))
+
+
+# The prose files that restate `OVERTURE_RELEASE` by hand, in hand-maintained
+# text rather than generated output: the repo-root NOTICE file, README.md and
+# docs/ALGORITHM.md. Paths are repo-root-relative, POSIX-style.
+#
+# The two generated reports under `data/` -- `overture-extract-report.md` and
+# `overture-import-report.md` -- are deliberately NOT members of this tuple.
+# They are rewritten wholesale by their own generating commands on every
+# run, so they are in sync with the release that produced them by
+# construction, never by a human edit; a substitution-based rewrite of a
+# generated file would make it describe a run that never happened.
+#
+# This is the single list a release bump's rewrite step and this module's
+# own consistency guard both consume -- neither can silently disagree with
+# the other about which files are in scope.
+RELEASE_RESTATEMENT_FILES = (
+    "NOTICE",
+    "README.md",
+    "docs/ALGORITHM.md",
+)
+
+
+def missing_release_restatements(release, texts) -> tuple:
+    """Given a release string and a mapping of {file name: file text}, return
+    the tuple of names, in `RELEASE_RESTATEMENT_FILES` order, whose text does
+    not contain `release`. Pure -- no file I/O, no `open`, no `Path` reads --
+    which is what lets a test exercise the failing direction against
+    synthetic strings without touching the real tree."""
+    return tuple(
+        name
+        for name in RELEASE_RESTATEMENT_FILES
+        if release not in texts.get(name, "")
+    )
+
+
+# ---------------------------------------------------------------------------
 # Scope geometry
 # ---------------------------------------------------------------------------
 
@@ -374,6 +426,7 @@ SCOPE_PARAM_NAMES = (
     "OVERTURE_ATTRIBUTION",
     "OVERTURE_S3_PATH_TEMPLATE",
     "OVERTURE_S3_REGION",
+    "RELEASE_RESTATEMENT_FILES",
     "GAP_FILL_BOXES",
     "CATEGORY_FILTER",
     "CONFIDENCE_FLOOR",
