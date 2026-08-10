@@ -1,0 +1,419 @@
+name: Overture station data refresh
+
+# Schedule and workflow_dispatch only -- deliberately NO pull_request or
+# pull_request_target trigger. This repository is public, and a fork's
+# pull request must never be able to reach the stored fine-grained token
+# (OVERTURE_REFRESH_PAT). Weekly, off-the-hour, on a Monday: Overture ships
+# roughly monthly, so weekly picks up a new release within 7 days while most
+# runs exit before the fetch ever starts (see the discover job below). The
+# weekly cadence also keeps this workflow inside GitHub's 60-day
+# scheduled-workflow auto-disable window without depending on other
+# repository activity -- the same hazard .github/workflows/keep-warm.yml's
+# own comment block already documents for this repo (see that file's cron
+# trigger comment), not re-derived here.
+on:
+  schedule:
+    - cron: '41 7 * * 1'
+  workflow_dispatch:
+
+# Least privilege: the stored fine-grained token (OVERTURE_REFRESH_PAT, a
+# repository secret), NOT the default GITHUB_TOKEN, performs every write
+# this workflow makes -- both checkouts, the branch push, the pull request,
+# and the staleness sweep's labels/comments. GITHUB_TOKEN never writes
+# anywhere in this workflow, so widening this block because the refresh job
+# pushes a branch would be a mistake.
+permissions:
+  contents: read
+
+# A cron run and a manual dispatch must never race into two pull requests
+# for the same release.
+concurrency:
+  group: overture-refresh
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------
+  # Job one: discover the newest release, and whether there is anything to
+  # do at all. Exits before the ~512s real extract ever starts when there
+  # isn't -- the structural distinction between a genuine no-op run and a
+  # silently broken one (D-03/D-04).
+  # ---------------------------------------------------------------------
+  discover:
+    name: Discover the newest Overture release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      pinned_release: ${{ steps.discover.outputs.pinned_release }}
+      newest_release: ${{ steps.discover.outputs.newest_release }}
+      is_newer: ${{ steps.discover.outputs.is_newer }}
+      branch_exists: ${{ steps.branch_check.outputs.branch_exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Explicit token, not the implicit default: a later step in THIS
+          # job never pushes, but every checkout in this workflow sets this
+          # explicitly on principle and so a static guard can assert it
+          # uniformly across every checkout site in the file.
+          token: ${{ secrets.OVERTURE_REFRESH_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      # Both requirement files, matching ci.yml's duckdb-fixture job's own
+      # install step exactly -- discover_overture_release lazily imports
+      # duckdb inside handle() the same way fetch_overture_extract does, and
+      # is the second of only two consumers of requirements-offline.txt in
+      # this repository (neither backend CI job ever installs it).
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-offline.txt
+
+      # discover_overture_release's stdout contract is exactly three
+      # unstyled key=value lines (pinned_release=/newest_release=/is_newer=)
+      # -- appending it straight to GITHUB_OUTPUT is why that contract is
+      # pinned so tightly; every human-readable line goes to stderr instead.
+      - name: Discover the newest release
+        id: discover
+        run: python manage.py discover_overture_release >> "$GITHUB_OUTPUT"
+
+      # Stops every subsequent weekly run from opening a duplicate pull
+      # request for a release whose pull request is still open and
+      # unmerged, since OVERTURE_RELEASE stays old until that merge lands.
+      # The "overture-refresh/" prefix literal here is D-09's, and must stay
+      # byte-identical to the refresh job's branch-creation step and the
+      # staleness sweep's head-branch filter below -- written as a literal
+      # at each of the three sites rather than derived, per this phase's own
+      # accepted risk that a drift between them has no runtime symptom.
+      - name: Check whether a branch already exists for the discovered release
+        id: branch_check
+        run: |
+          set -euo pipefail
+          BRANCH="overture-refresh/${{ steps.discover.outputs.newest_release }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "branch_exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The explicit distinction success criteria ask for: a no-op run
+      # states plainly that there is nothing to do, reached before any
+      # fetch exists to break.
+      - name: Log the discovery result
+        run: |
+          if [ "${{ steps.discover.outputs.is_newer }}" = "true" ]; then
+            echo "Newer release ${{ steps.discover.outputs.newest_release }} found (pinned release: ${{ steps.discover.outputs.pinned_release }})."
+            echo "Branch already exists for it: ${{ steps.branch_check.outputs.branch_exists }}"
+          else
+            echo "Pinned release ${{ steps.discover.outputs.pinned_release }} is still the newest release available (discovered: ${{ steps.discover.outputs.newest_release }}). Nothing to do."
+          fi
+
+  # ---------------------------------------------------------------------
+  # Job two: the real refresh. Runs only when discovery found a genuinely
+  # newer release with no open branch for it yet.
+  # ---------------------------------------------------------------------
+  refresh:
+    name: Refresh the Overture station data
+    needs: discover
+    if: needs.discover.outputs.is_newer == 'true' && needs.discover.outputs.branch_exists == 'false'
+    runs-on: ubuntu-latest
+    # Generous on purpose: the real extract alone measured about 512s, and
+    # the before/after dispatch measurement runs the full 26-cell grid
+    # twice. This repository is public, so runner minutes are free and a
+    # generous budget costs nothing.
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Explicit, not the implicit default: actions/checkout's default
+          # credential persistence would otherwise write GITHUB_TOKEN's
+          # credentials into git config, and the push several steps below
+          # would silently re-authenticate as it, landing in GitHub's
+          # anti-recursion rule -- the pull request would open with zero CI
+          # checks and present as "it opened but CI isn't running."
+          token: ${{ secrets.OVERTURE_REFRESH_PAT }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      # Both requirement files, matching ci.yml's duckdb-fixture job's own
+      # install step exactly (byte-identical convention, not a new install
+      # mechanism): the count-only gate and the real extract below both
+      # need duckdb. This is the second of the two places in this workflow
+      # -- alongside the discover job above -- that installs
+      # requirements-offline.txt; GitHub Actions jobs are separate runners,
+      # so each one that touches the Parquet/geo toolchain needs its own
+      # install. Neither backend CI job (backend-sqlite/backend-postgres)
+      # ever installs it -- that split remains the evidence production
+      # never needs this toolchain.
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-offline.txt
+
+      - name: Apply migrations
+        run: python manage.py migrate --noinput
+
+      # The correctness-gate side of this repository's fatal/non-fatal
+      # split (contrast: the staleness sweep job below, which swallows
+      # everything). This runs BEFORE the real extract, the transform, the
+      # measurement and the rewrite -- a source-integrity failure here must
+      # abort the job, not be treated as a data change to accept.
+      - name: Count-only source-integrity gate
+        run: python manage.py fetch_overture_extract --count-only
+
+      - name: Fetch the real extract
+        run: python manage.py fetch_overture_extract --force
+
+      # The station CSV lands at a scratch path under the runner's own
+      # temporary directory, never at the canonical data/overture_stations.csv
+      # path -- the measurement step below needs the committed file intact
+      # as its "before" world. Only the report and per-decision CSV land at
+      # their committed paths (both regenerated on every real run, D-13).
+      - name: Transform the raw extract into a candidate station CSV
+        run: python manage.py import_overture_stations --output-path "$RUNNER_TEMP/overture_stations_candidate.csv"
+
+      # Measures the 26-cell dispatch grid against the committed CSVs, swaps
+      # the candidate over the canonical path, measures again, and renders
+      # data/overture-refresh-report.md (D-12). The flag below is the one
+      # place it appears in this file: it leaves the candidate bytes at the
+      # canonical path so the commit further down carries them, rather than
+      # restoring the committed file the way a local/developer run should.
+      - name: Measure the before/after dispatch diff
+        run: python manage.py measure_refresh_diff "$RUNNER_TEMP/overture_stations_candidate.csv" --keep-after
+
+      # Rewrites OVERTURE_RELEASE plus its three prose restatements
+      # (NOTICE, README.md, docs/ALGORITHM.md) -- the same
+      # RELEASE_RESTATEMENT_FILES tuple the consistency guard checks, so the
+      # writer and the guard can never silently disagree about scope.
+      - name: Bump the pinned release
+        run: python manage.py bump_overture_release "${{ needs.discover.outputs.newest_release }}"
+
+      # Runtime counterpart to the static write-scope guard in
+      # test_overture_refresh_workflow.py: before anything is staged, prove
+      # the working tree changed exactly the allowed files and nothing else
+      # -- never a test, never the dispatch admission manifest (D-06/D-22).
+      - name: Assert the write scope matches the allowlist
+        run: |
+          set -euo pipefail
+          EXPECTED=$(printf '%s\n' \
+            "NOTICE" \
+            "README.md" \
+            "docs/ALGORITHM.md" \
+            "routing/pipeline/overture_scope.py" \
+            "data/overture_stations.csv" \
+            "data/overture_raw_extract.csv" \
+            "data/overture-dedupe-decisions.csv" \
+            "data/overture-import-report.md" \
+            "data/overture-extract-report.md" \
+            "data/overture-refresh-report.md" \
+            | sort)
+          MODIFIED=$(git diff --name-only HEAD | sort)
+          if [ "$MODIFIED" != "$EXPECTED" ]; then
+            echo "Write-scope mismatch. Expected exactly:"
+            echo "$EXPECTED"
+            echo "Actually modified:"
+            echo "$MODIFIED"
+            exit 1
+          fi
+          UNTRACKED_DATA=$(git status --porcelain --untracked-files=all -- data/ | awk '$1=="??" {print $2}')
+          if [ -n "$UNTRACKED_DATA" ]; then
+            echo "Unexpected untracked file(s) under data/:"
+            echo "$UNTRACKED_DATA"
+            exit 1
+          fi
+
+      # Commit identity: the repository owner's own platform no-reply
+      # address, matching every human commit already in this repository's
+      # history -- this workflow's commit reads as an ordinary commit, not
+      # a bot's. The branch prefix literal below is the same
+      # "overture-refresh/" D-09 pins at the discover job's branch-exists
+      # check above and the staleness sweep's head-branch filter below.
+      - name: Configure commit identity, branch, stage the allowlist, and commit
+        env:
+          NEWEST_RELEASE: ${{ needs.discover.outputs.newest_release }}
+        run: |
+          set -euo pipefail
+          git config user.name "jadrianports"
+          git config user.email "158122947+jadrianports@users.noreply.github.com"
+          git checkout -b "overture-refresh/${NEWEST_RELEASE}"
+          git add \
+            NOTICE \
+            README.md \
+            docs/ALGORITHM.md \
+            routing/pipeline/overture_scope.py \
+            data/overture_stations.csv \
+            data/overture_raw_extract.csv \
+            data/overture-dedupe-decisions.csv \
+            data/overture-import-report.md \
+            data/overture-extract-report.md \
+            data/overture-refresh-report.md
+          SUBJECT="Refresh the Overture station data to release ${NEWEST_RELEASE}"
+          if [ "${#SUBJECT}" -gt 72 ]; then
+            echo "Commit subject is ${#SUBJECT} characters, over the 72-character limit: $SUBJECT"
+            exit 1
+          fi
+          git commit \
+            -m "$SUBJECT" \
+            -m "Regenerates the station CSV, raw extract, per-decision CSV and both reports for the new release." \
+            -m "See the attached refresh diff report for the measured plan-quality effect before merging."
+
+      - name: Push the branch
+        env:
+          NEWEST_RELEASE: ${{ needs.discover.outputs.newest_release }}
+        run: git push origin "overture-refresh/${NEWEST_RELEASE}"
+
+      # The rendered report is the exact text that lands both here and as
+      # the committed data/overture-refresh-report.md (D-12) -- one
+      # artifact, two destinations. Built to a file and passed by path
+      # rather than inlined, since it can run to several KB.
+      - name: Build the pull request body
+        run: |
+          {
+            printf '%s\n\n' "This pull request was opened automatically by the scheduled Overture refresh workflow."
+            printf '%s\n\n' "Read the table below, decide on any flipped cell, and update the hand-maintained prose station counts in README.md and docs/ALGORITHM.md if they moved."
+            cat data/overture-refresh-report.md
+          } > "$RUNNER_TEMP/pr-body.md"
+
+      # Opened with the preinstalled GitHub CLI in a plain run step, not a
+      # third-party action -- this step runs with the same token that can
+      # write to the repository, so keeping it first-party removes the
+      # supply-chain surface entirely.
+      - name: Open the pull request
+        id: open_pr
+        env:
+          GH_TOKEN: ${{ secrets.OVERTURE_REFRESH_PAT }}
+          NEWEST_RELEASE: ${{ needs.discover.outputs.newest_release }}
+        run: |
+          set -euo pipefail
+          BRANCH="overture-refresh/${NEWEST_RELEASE}"
+          TITLE="Refresh the Overture station data to release ${NEWEST_RELEASE}"
+          PR_URL=$(gh pr create --base main --head "$BRANCH" --title "$TITLE" --body-file "$RUNNER_TEMP/pr-body.md")
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+
+      # A pull request sitting with zero checks is the exact failure this
+      # phase exists to prevent, and it must not present as success. Polls
+      # for several minutes before failing the job loudly.
+      - name: Verify the pull request actually received CI checks
+        env:
+          GH_TOKEN: ${{ secrets.OVERTURE_REFRESH_PAT }}
+        run: |
+          set -euo pipefail
+          PR_URL="${{ steps.open_pr.outputs.pr_url }}"
+          for attempt in $(seq 1 20); do
+            CHECK_COUNT=$(gh pr checks "$PR_URL" --json name 2>/dev/null | jq 'length' 2>/dev/null || echo 0)
+            if [ "$CHECK_COUNT" -gt 0 ]; then
+              echo "CI checks present on $PR_URL: $CHECK_COUNT"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "No CI checks appeared on $PR_URL after roughly five minutes of polling."
+          echo "This is the exact failure this phase exists to prevent: the branch push likely re-authenticated as the default GITHUB_TOKEN instead of the stored OVERTURE_REFRESH_PAT, landing in GitHub's anti-recursion rule rather than firing a real pull_request event."
+          exit 1
+
+  # ---------------------------------------------------------------------
+  # Job three: the staleness sweep. Depends on nothing and runs on every
+  # invocation regardless of whether this run found a new release -- its
+  # whole purpose is catching a pull request left open by a PREVIOUS run
+  # (D-16). No checkout, no Python: every call goes through the GitHub CLI,
+  # whose pull-request permission on the stored token already covers labels
+  # and comments.
+  # ---------------------------------------------------------------------
+  stale_sweep:
+    name: Label and comment on stale refresh pull requests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Non-fatal on purpose, following .github/workflows/keep-warm.yml's
+      # own stated argument by name: a scheduled job that paints a red X on
+      # every transient GitHub CLI hiccup is worse noise than a near-zero
+      # signal on a badge-bearing public repository. Every command below is
+      # swallowed individually AND the step ends with an explicit exit 0, so
+      # a single pull request's failure can never abort the sweep of the
+      # rest. This is deliberately the opposite posture from
+      # .github/workflows/smoke.yml's correctness gate -- that fatal style
+      # belongs to the CI checks the refresh pull request itself triggers,
+      # never to this staleness signal.
+      #
+      # A red check on a refresh pull request is not automatically a data
+      # problem: this repository tracks a known intermittent full-suite
+      # failure (roughly 1 run in 40), and this staleness signal must never
+      # be conflated with that CI status.
+      - name: Sweep open refresh pull requests for staleness
+        env:
+          GH_TOKEN: ${{ secrets.OVERTURE_REFRESH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set +e
+
+          # Named values, never bare numbers scattered through the script
+          # (D-16's escalation cadence).
+          STALE_THRESHOLD_DAYS=14
+          RECOMMENT_INTERVAL_DAYS=7
+          # This exact marker identifies this job's own prior comments so
+          # the re-comment cadence can be computed statelessly, with
+          # nothing remembered between runs.
+          MARKER="<!-- overture-refresh-stale-sweep -->"
+          # D-09's literal, byte-identical to the discover job's
+          # branch-exists check and the refresh job's branch-creation step
+          # above -- a drift here is the one failure in this design with no
+          # runtime symptom (pull requests still open, duplicate
+          # suppression still appears to work, this signal simply never
+          # fires on anything).
+          BRANCH_PREFIX="overture-refresh/"
+
+          gh label create stale-refresh \
+            --color B60205 \
+            --description "An automated Overture refresh pull request has been open for at least ${STALE_THRESHOLD_DAYS} days" \
+            --repo "$REPO" 2>/dev/null || true
+
+          NOW_EPOCH=$(date -u +%s)
+
+          gh pr list --repo "$REPO" --state open --json number,headRefName,createdAt 2>/dev/null \
+            | jq -c '.[]' 2>/dev/null \
+            | while read -r pr; do
+                NUM=$(echo "$pr" | jq -r '.number')
+                HEAD=$(echo "$pr" | jq -r '.headRefName')
+                CREATED=$(echo "$pr" | jq -r '.createdAt')
+
+                case "$HEAD" in
+                  "${BRANCH_PREFIX}"*) ;;
+                  *) continue ;;
+                esac
+
+                CREATED_EPOCH=$(date -u -d "$CREATED" +%s 2>/dev/null) || continue
+                AGE_DAYS=$(( (NOW_EPOCH - CREATED_EPOCH) / 86400 ))
+
+                if [ "$AGE_DAYS" -lt "$STALE_THRESHOLD_DAYS" ]; then
+                  continue
+                fi
+
+                gh pr edit "$NUM" --repo "$REPO" --add-label stale-refresh 2>/dev/null || true
+
+                LATEST_MARKED_AT=$(gh pr view "$NUM" --repo "$REPO" --json comments \
+                  --jq "[.comments[] | select(.body | contains(\"$MARKER\")) | .createdAt] | sort | last // empty" \
+                  2>/dev/null)
+
+                SHOULD_COMMENT=true
+                if [ -n "$LATEST_MARKED_AT" ]; then
+                  MARKED_EPOCH=$(date -u -d "$LATEST_MARKED_AT" +%s 2>/dev/null)
+                  if [ -n "$MARKED_EPOCH" ]; then
+                    MARKED_AGE_DAYS=$(( (NOW_EPOCH - MARKED_EPOCH) / 86400 ))
+                    if [ "$MARKED_AGE_DAYS" -lt "$RECOMMENT_INTERVAL_DAYS" ]; then
+                      SHOULD_COMMENT=false
+                    fi
+                  fi
+                fi
+
+                if [ "$SHOULD_COMMENT" = true ]; then
+                  COMMENT_BODY=$(printf '%s\n%s' "$MARKER" "This pull request has been open for ${AGE_DAYS} day(s). The Overture station dataset cannot advance past this release until it is merged or closed. This signal is deliberately separate from CI status -- a red check here is not automatically a data problem.")
+                  gh pr comment "$NUM" --repo "$REPO" --body "$COMMENT_BODY" 2>/dev/null || true
+                fi
+              done
+
+          exit 0
