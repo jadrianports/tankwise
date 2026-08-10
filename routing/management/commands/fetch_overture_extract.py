@@ -23,6 +23,16 @@ guard, not the lazy import alone, is what actually proves a production
 environment that never installed `requirements-offline.txt` still boots
 gunicorn cleanly.
 
+[AMENDED 2026-08-11] The claim above ("the ONLY consumer") is no longer
+accurate in isolation: `discover_overture_release` (Phase 23) is now a
+second consumer of the same Parquet/geo toolchain, with its own lazy
+`import duckdb` inside its own `handle()`. What the paragraph above still
+gets right: neither command is installed in either of the two backend CI
+jobs (`backend-sqlite`/`backend-postgres`), `requirements-offline.txt`
+remains the only place `duckdb` is pinned, and
+`DuckdbModuleScopeImportGuardTests`'s repo-wide scan covers both commands'
+modules -- neither imports the toolchain at module scope.
+
 Every filter parameter -- release, bbox, category set, confidence floor --
 comes from `routing.pipeline.overture_scope` and is pinned in code, never a
 CLI flag (D-03/D-05). This command applies NO hygiene filtering of its own
@@ -279,11 +289,12 @@ class Command(BaseCommand):
     help = (
         "One-time, ONLINE, developer-machine-only capture of Overture "
         "Places rows inside the gap-fill scope (routing.pipeline."
-        "overture_scope). The only consumer of the Parquet/geo toolchain "
-        "in this repository -- must NOT run in CI's backend-sqlite or "
-        "backend-postgres jobs. Writes a committed CSV extract that the "
-        "pure-Python transform (import_overture_stations, plan 22-10) "
-        "reads; applies no hygiene filtering of its own."
+        "overture_scope). One of two consumers of the Parquet/geo "
+        "toolchain in this repository (with discover_overture_release) -- "
+        "neither runs in CI's backend-sqlite or backend-postgres jobs. "
+        "Writes a committed CSV extract that the pure-Python transform "
+        "(import_overture_stations, plan 22-10) reads; applies no hygiene "
+        "filtering of its own."
     )
 
     def add_arguments(self, parser):
