@@ -91,8 +91,26 @@ _FORWARD_RISK_NOTE = (
 )
 
 
+def _where_clause():
+    """The WHERE predicate fragment shared by `_extract_sql` and
+    `_count_only_sql` -- the two-box bbox predicate, the category membership
+    test against `overture_scope.CATEGORY_FILTER`, and the confidence floor.
+    Extracted into one place so the count query and the extract query can
+    never disagree about which rows they describe: the count-only pre-check
+    exists to assert an expected row count for the exact rows the real
+    extract will later read, and a second, independently-written copy of
+    this predicate would be a second place for that agreement to silently
+    break."""
+    category_list = ", ".join(f"'{c}'" for c in overture_scope.CATEGORY_FILTER)
+    return (
+        f"({overture_scope.bbox_predicate_sql()}) "
+        f"AND taxonomy.primary IN ({category_list}) "
+        f"AND confidence >= {overture_scope.CONFIDENCE_FLOOR}"
+    )
+
+
 def _extract_sql(source_path):
-    """Build the one SQL statement this command issues. `source_path` is
+    """Build the one SQL statement the real extract issues. `source_path` is
     the `read_parquet(...)` FROM target -- the real S3 URI in production
     (`overture_scope.overture_s3_path()`), or a local Parquet fixture path
     when exercised by the CI `duckdb-fixture` job against
@@ -100,7 +118,6 @@ def _extract_sql(source_path):
     is pinned from `overture_scope`; nothing here is a CLI flag
     (D-03/D-05). No hygiene predicate (operating_status, mojibake,
     alt-fuel) is applied -- that is the transform's job, not this fetch."""
-    category_list = ", ".join(f"'{c}'" for c in overture_scope.CATEGORY_FILTER)
     return (
         "SELECT "
         "id AS gers_id, "
@@ -116,9 +133,7 @@ def _extract_sql(source_path):
         "ST_X(geometry) AS longitude, "
         "ST_Y(geometry) AS latitude "
         f"FROM read_parquet('{source_path}', hive_partitioning=1) "
-        f"WHERE ({overture_scope.bbox_predicate_sql()}) "
-        f"AND taxonomy.primary IN ({category_list}) "
-        f"AND confidence >= {overture_scope.CONFIDENCE_FLOOR}"
+        f"WHERE {_where_clause()}"
     )
 
 

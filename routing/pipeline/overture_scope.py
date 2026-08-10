@@ -426,6 +426,25 @@ SPOT_CHECK_CLUSTER_COUNT = 8
 EXTRACT_SIZE_FINDING_THRESHOLD_BYTES = 3_000_000
 
 
+# ---------------------------------------------------------------------------
+# Source-integrity tolerance band
+# ---------------------------------------------------------------------------
+
+# An order-of-magnitude check, not a tight regression check -- matching the
+# refresh pipeline's own success criterion wording ("an expected
+# order-of-magnitude source row count"). A tight band would go red on
+# legitimate month-over-month upstream growth and train a reviewer to widen
+# it, the exact failure this project already corrected once with the trust
+# margin rung. The lower multiplier catches the failure mode this band
+# exists for -- a truncated or partially-written source read returns a small
+# fraction of the expected rows, or zero -- with wide room to spare; the
+# upper multiplier catches a scope explosion. The observed baseline this
+# band is applied to is the currently-committed raw extract's own row count
+# (10,248 as shipped by Phase 22), read at run time, never pinned here as a
+# second constant.
+RAW_EXTRACT_COUNT_BAND = (0.5, 2.0)
+
+
 # Every pinned constant above, named so the anti-drift test can assert the
 # pinned set by name rather than by inspecting the module by hand.
 SCOPE_PARAM_NAMES = (
@@ -446,6 +465,7 @@ SCOPE_PARAM_NAMES = (
     "TIGHT_TIER_SENSITIVITY_MI",
     "SPOT_CHECK_CLUSTER_COUNT",
     "EXTRACT_SIZE_FINDING_THRESHOLD_BYTES",
+    "RAW_EXTRACT_COUNT_BAND",
 )
 
 
