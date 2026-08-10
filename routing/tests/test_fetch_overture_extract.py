@@ -25,6 +25,7 @@ from unittest import mock
 from django.conf import settings
 from django.test import SimpleTestCase
 from django.core.management import call_command
+from django.core.management.base import CommandError
 
 from routing.management.commands import fetch_overture_extract as cmd_module
 from routing.pipeline import overture_scope
@@ -258,6 +259,126 @@ class FixtureColumnPresenceTests(SimpleTestCase):
         # check can genuinely fail rather than always passing regardless of
         # fixture content.
         self.assertNotIn(b"DEFINITELY_NOT_A_REAL_COLUMN_SENTINEL", self.raw_bytes)
+
+
+class WhereClauseSharingTests(SimpleTestCase):
+    """Pins that `_extract_sql` and `_count_only_sql` embed the identical
+    `_where_clause()` fragment (D-15's "one predicate, two queries")."""
+
+    def test_shared_fragment_is_non_empty_and_present_in_both_queries(self):
+        fragment = cmd_module._where_clause()
+        # Non-empty is asserted first -- an empty fragment would make the
+        # `assertIn` checks below pass vacuously against any string.
+        self.assertTrue(fragment)
+
+        extract_sql = cmd_module._extract_sql("source.parquet")
+        count_sql = cmd_module._count_only_sql("source.parquet")
+        self.assertIn(fragment, extract_sql)
+        self.assertIn(fragment, count_sql)
+
+
+class CountBandArithmeticTests(SimpleTestCase):
+    def test_floor_below_ceiling_above_floor_positive(self):
+        baseline = 10_248
+        floor, ceiling = cmd_module._count_band(baseline)
+        self.assertLess(floor, baseline)
+        self.assertGreater(ceiling, baseline)
+        self.assertGreater(floor, 0)
+
+
+class CommittedExtractRowCountTests(SimpleTestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def test_missing_file_raises_command_error_naming_the_path(self):
+        missing_path = Path(self.tmpdir.name) / "does-not-exist.csv"
+        with self.assertRaises(CommandError) as captured:
+            cmd_module._committed_extract_row_count(missing_path)
+        self.assertIn(str(missing_path), str(captured.exception))
+
+    def test_header_only_file_raises_command_error(self):
+        header_only_path = Path(self.tmpdir.name) / "header_only.csv"
+        with open(header_only_path, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(cmd_module.RAW_EXTRACT_HEADER)
+        with self.assertRaises(CommandError) as captured:
+            cmd_module._committed_extract_row_count(header_only_path)
+        self.assertIn(str(header_only_path), str(captured.exception))
+
+
+class CountOnlyModeTests(SimpleTestCase):
+    """Exercises `--count-only` end to end via `call_command`, reusing the
+    single `_run_extract_query` mocking boundary and the `duckdb`
+    sys.modules stub convention `FetchOvertureExtractCommandTests` already
+    establishes."""
+
+    BASELINE = 100
+
+    def setUp(self):
+        duckdb_stub_patcher = mock.patch.dict(sys.modules, {"duckdb": mock.MagicMock()})
+        duckdb_stub_patcher.start()
+        self.addCleanup(duckdb_stub_patcher.stop)
+
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.output_path = Path(self.tmpdir.name) / "raw.csv"
+        self.report_path = Path(self.tmpdir.name) / "report.md"
+        self.baseline_path = Path(self.tmpdir.name) / "baseline.csv"
+        self._write_baseline(self.BASELINE)
+
+    def _write_baseline(self, row_count):
+        with open(self.baseline_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(cmd_module.RAW_EXTRACT_HEADER)
+            for i in range(row_count):
+                writer.writerow(_row(gers_id=f"id-{i}"))
+
+    def _call(self, source_count):
+        with mock.patch.object(
+            cmd_module, "_run_extract_query", return_value=[(source_count,)]
+        ):
+            call_command(
+                "fetch_overture_extract",
+                "--count-only",
+                f"--output-path={self.output_path}",
+                f"--report-path={self.report_path}",
+                f"--baseline-path={self.baseline_path}",
+            )
+
+    def test_source_count_equal_to_baseline_is_accepted(self):
+        self._call(self.BASELINE)  # must not raise
+
+    def test_source_count_of_zero_is_rejected(self):
+        # The exact truncation symptom this gate exists to catch -- a gate
+        # that accepts zero is worse than no gate.
+        with self.assertRaises(CommandError):
+            self._call(0)
+
+    def test_floor_boundary_just_inside_is_accepted_just_outside_is_rejected(self):
+        floor, _ceiling = cmd_module._count_band(self.BASELINE)
+        self._call(floor)  # just inside -- accepted
+        with self.assertRaises(CommandError):
+            self._call(floor - 1)  # just outside -- rejected
+
+    def test_ceiling_boundary_just_inside_is_accepted_just_outside_is_rejected(self):
+        _floor, ceiling = cmd_module._count_band(self.BASELINE)
+        self._call(ceiling)  # just inside -- accepted
+        with self.assertRaises(CommandError):
+            self._call(ceiling + 1)  # just outside -- rejected
+
+    def test_count_only_run_writes_neither_csv_nor_report(self):
+        self._call(self.BASELINE)
+        self.assertFalse(self.output_path.exists())
+        self.assertFalse(self.report_path.exists())
+
+    def test_count_only_still_checks_when_output_path_already_exists(self):
+        # Proves the pre-existing "output exists, pass --force" early
+        # return does not swallow the count-only branch: an out-of-band
+        # count against an already-existing output path must still raise,
+        # not silently no-op.
+        self.output_path.write_text("pretend pre-existing extract", encoding="utf-8")
+        with self.assertRaises(CommandError):
+            self._call(0)
 
 
 class RequirementsOfflineIsolationTests(SimpleTestCase):

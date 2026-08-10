@@ -2,6 +2,18 @@
 inside the gap-fill scope, via DuckDB's httpfs/spatial extensions reading
 straight off the public Overture S3 bucket.
 
+[AMENDED 2026-08-11] The opening line above describes this command's
+original, one-time developer-machine capture. As of this phase, the
+`--count-only` mode also runs inside the scheduled refresh workflow, as a
+fast source-integrity pre-check against the real bucket before the full
+extract this command otherwise performs. The full extract itself remains a
+one-time, developer-machine-only capture per that original line; only the
+count-only mode is now also invoked from CI-adjacent, automated context.
+This does NOT relax the statement below that this command must not run in
+CI's `backend-sqlite` or `backend-postgres` jobs -- that remains true and
+load-bearing; the refresh workflow that runs `--count-only` is a separate,
+dedicated job, not either of those two.
+
 This command is the ONLY consumer of the Parquet/geo toolchain
 (`requirements-offline.txt`, never `requirements.txt`) anywhere in this
 repository. `DuckdbModuleScopeImportGuardTests`
