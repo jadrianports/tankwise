@@ -50,7 +50,7 @@ import time
 from pathlib import Path
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 
 from routing.pipeline import overture_scope
 
@@ -137,13 +137,84 @@ def _extract_sql(source_path):
     )
 
 
+def _count_only_sql(source_path):
+    """Sibling of `_extract_sql`: a `COUNT(*)` over the same
+    `read_parquet(...)` target with the identical `_where_clause()`
+    fragment and no projection columns. This is the query the `--count-only`
+    pre-check runs -- seconds, not the ~512s the real extract takes --
+    against the real bucket before any transform or diff logic runs."""
+    return (
+        "SELECT COUNT(*) "
+        f"FROM read_parquet('{source_path}', hive_partitioning=1) "
+        f"WHERE {_where_clause()}"
+    )
+
+
 def _run_extract_query(connection, sql):
-    """Thin wrapper around the one DuckDB call this command makes -- the
-    single boundary the test suite mocks (mirrors
+    """Thin wrapper around a DuckDB call this command makes -- shared by
+    both the real extract query and the count-only pre-check's `COUNT(*)`
+    query, so this is no longer literally "the one DuckDB call" singular.
+    It remains the single boundary the test suite mocks (mirrors
     test_geocode_stations.py's mock-the-query-layer precedent). Everything
     else in this module is reachable and testable without the Parquet
     toolchain installed."""
     return connection.execute(sql).fetchall()
+
+
+def _open_duckdb_connection(duckdb_module):
+    """Open a DuckDB connection with the httpfs/spatial extensions loaded
+    and the pinned S3 region configured -- the setup both the real extract
+    and the count-only pre-check need before either issues a query against
+    the real bucket."""
+    connection = duckdb_module.connect()
+    # Runtime extensions, not pip packages -- INSTALL performs a one-time
+    # network fetch of the extension binary on a fresh developer machine (a
+    # few seconds), separate from and prior to the real query.
+    connection.execute("INSTALL httpfs; LOAD httpfs;")
+    connection.execute("INSTALL spatial; LOAD spatial;")
+    # Anonymous access is sufficient -- the Overture bucket is genuinely
+    # public and DuckDB falls through to unsigned requests when no
+    # credential provider resolves. No credential plumbing of any kind.
+    connection.execute(f"SET s3_region='{overture_scope.OVERTURE_S3_REGION}';")
+    return connection
+
+
+def _committed_extract_row_count(path):
+    """Return the number of data rows (header excluded) in the committed
+    raw-extract CSV at `path` -- the observed baseline the count-only band
+    is applied to. Raises `CommandError` naming `path` when the file is
+    missing or carries no data rows: a zero baseline would make the band
+    vacuous, accepting any source count at all."""
+    path = Path(path)
+    if not path.exists():
+        raise CommandError(
+            f"Committed baseline extract not found at {path} -- cannot "
+            "derive a count-only tolerance band without it."
+        )
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        try:
+            next(reader)
+        except StopIteration:
+            raise CommandError(
+                f"Committed baseline extract at {path} is empty (no header "
+                "row) -- cannot derive a count-only tolerance band."
+            )
+        count = sum(1 for _ in reader)
+    if count == 0:
+        raise CommandError(
+            f"Committed baseline extract at {path} has a header row but "
+            "zero data rows -- a zero baseline would make the count-only "
+            "tolerance band vacuous, accepting any source count."
+        )
+    return count
+
+
+def _count_band(baseline):
+    """Return `(floor, ceiling)` -- the integer bounds produced by applying
+    `overture_scope.RAW_EXTRACT_COUNT_BAND` to `baseline`. Pure."""
+    lo_multiplier, hi_multiplier = overture_scope.RAW_EXTRACT_COUNT_BAND
+    return int(baseline * lo_multiplier), int(baseline * hi_multiplier)
 
 
 def _render_report(
@@ -223,6 +294,24 @@ class Command(BaseCommand):
             help="Overwrite an existing extract. Default: a second run "
             "against an existing output path is a no-op.",
         )
+        parser.add_argument(
+            "--count-only",
+            dest="count_only",
+            action="store_true",
+            default=False,
+            help="Run only the fast COUNT(*) source-integrity pre-check "
+            "against the real bucket and exit -- no CSV or report is "
+            "written. Aborts non-zero when the source count falls outside "
+            "the tolerance band derived from --baseline-path's row count. "
+            "Evaluated before the existing output-exists no-op check.",
+        )
+        parser.add_argument(
+            "--baseline-path",
+            dest="baseline_path",
+            default=str(DEFAULT_OUTPUT_PATH),
+            help="Committed raw-extract CSV whose row count is the "
+            "count-only band's baseline. Default: data/overture_raw_extract.csv",
+        )
 
     def handle(self, *args, **options):
         # Imported here, not at module scope, so a production environment
@@ -231,6 +320,34 @@ class Command(BaseCommand):
         # manage.py startup, and boot gunicorn cleanly. See
         # DuckdbModuleScopeImportGuardTests.
         import duckdb
+
+        # Evaluated BEFORE the output-exists no-op check below. In the
+        # refresh workflow the committed extract always exists, so if this
+        # branch were ordered after that check it would never run there --
+        # silently disabling the one pre-check that catches a truncated or
+        # partially-written source read before the ~512s real extract.
+        if options["count_only"]:
+            baseline = _committed_extract_row_count(options["baseline_path"])
+            floor, ceiling = _count_band(baseline)
+
+            connection = _open_duckdb_connection(duckdb)
+            sql = _count_only_sql(overture_scope.overture_s3_path())
+            ((source_count,),) = _run_extract_query(connection, sql)
+
+            self.stdout.write(
+                f"Count-only: source_count={source_count} baseline={baseline} "
+                f"band=[{floor}, {ceiling}]"
+            )
+
+            if not (floor <= source_count <= ceiling):
+                raise CommandError(
+                    f"Source integrity failure: observed source count "
+                    f"{source_count} falls outside the tolerance band "
+                    f"[{floor}, {ceiling}] derived from baseline {baseline}. "
+                    "This is a source integrity failure, not a data change "
+                    "to accept."
+                )
+            return
 
         output_path = Path(options["output_path"])
         report_path = Path(options["report_path"])
@@ -242,18 +359,7 @@ class Command(BaseCommand):
             )
             return
 
-        connection = duckdb.connect()
-        # Runtime extensions, not pip packages -- INSTALL performs a
-        # one-time network fetch of the extension binary on a fresh
-        # developer machine (a few seconds), separate from and prior to
-        # the real query below.
-        connection.execute("INSTALL httpfs; LOAD httpfs;")
-        connection.execute("INSTALL spatial; LOAD spatial;")
-        # Anonymous access is sufficient -- the Overture bucket is
-        # genuinely public and DuckDB falls through to unsigned requests
-        # when no credential provider resolves. No credential plumbing of
-        # any kind.
-        connection.execute(f"SET s3_region='{overture_scope.OVERTURE_S3_REGION}';")
+        connection = _open_duckdb_connection(duckdb)
 
         sql = _extract_sql(overture_scope.overture_s3_path())
 
