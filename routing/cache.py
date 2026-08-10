@@ -32,6 +32,27 @@ the token's hash list (D-28), because it is a build input rather than a
 seed source, and including it would invalidate every cached plan on an
 extract refresh producing a byte-identical station CSV.
 
+[AMENDED 2026-08-11, Phase 23 plan 23-06] The standing rule stated at the
+top of this docstring -- a change to the underlying dataset must bump the
+key prefix in the same commit -- reads literally as if it demands a
+prefix bump on every future station-data refresh too. It does not. A
+refresh merged through the Phase 23 pipeline is exactly the kind of
+dataset change `_dataset_vintage_token` already exists to catch: the
+token is a content hash over every path in `CANONICAL_STATION_CSV_PATHS`,
+so a merged refresh that actually changes the station CSVs moves the
+`s:` segment automatically, invalidating every cached plan the change
+could affect -- by construction, not by a human remembering to bump
+anything. Bumping the prefix ON TOP of that would additionally invalidate
+every cached plan for every OTHER route the refresh never touched, which
+is broader than the change warrants and is not what the standing rule is
+protecting against. The prefix therefore stays put on a pipeline refresh;
+the standing rule continues to apply unchanged to a change in the solver
+objective, the dispatch policy, or the response shape -- none of which
+the `s:` token has any way to detect, and all of which genuinely need a
+new prefix. This clarification is pinned before the pipeline's first real
+refresh measures it; the next plan to merge a real refresh must verify
+empirically that the derived `s:` segment actually moved.
+
 Still `route:v10:` as of the `bypassed_estimate_count`/
 `bypassed_estimate_saving_forgone` rationale pair (Phase 21 plan 21-07,
 PROV-03) -- deliberately NOT bumped. Assessed against the `solver_strategy`
