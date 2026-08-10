@@ -35,6 +35,14 @@ removal in the September 2026 Overture release, replaced by
 `basic_category`/`taxonomy`. See the written report's own note. A refresh
 run against a later release (Phase 23) must migrate this command's category
 predicate at that point.
+
+[AMENDED 2026-08-11] The migration described above has happened. `_extract_sql`
+now reads `taxonomy.primary` -- never `categories.primary` -- in both its
+SELECT projection and its WHERE membership predicate. `CATEGORY_FILTER` is
+unchanged. The committed `data/overture-extract-report.md` still carries the
+OLD note text above (`_FORWARD_RISK_NOTE`'s pre-migration wording) because
+that file is regenerated wholesale by this command's next real run against
+the real Overture bucket, not hand-edited here.
 """
 import csv
 import logging
@@ -68,12 +76,18 @@ RAW_EXTRACT_HEADER = [
     "latitude",
 ]
 
+# [AMENDED 2026-08-11] Original wording (kept for the record, no longer
+# current): "The `categories` field this extract filters on is deprecated
+# as of the pinned release and is scheduled for removal in the September
+# 2026 Overture release, replaced by `basic_category` and `taxonomy`. A
+# refresh run against a later release must migrate this command's category
+# predicate before that release ships."
 _FORWARD_RISK_NOTE = (
-    "The `categories` field this extract filters on is deprecated as of "
-    "the pinned release and is scheduled for removal in the September "
-    "2026 Overture release, replaced by `basic_category` and `taxonomy`. "
-    "A refresh run against a later release must migrate this command's "
-    "category predicate before that release ships."
+    "This command's category predicate was migrated off the deprecated "
+    "`categories` field to `taxonomy.primary` on 2026-08-11, ahead of the "
+    "September 2026 Overture release in which `categories` is removed. "
+    "`CATEGORY_FILTER`'s two values are unchanged; only the struct path "
+    "reading them changed."
 )
 
 

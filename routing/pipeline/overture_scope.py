@@ -27,6 +27,14 @@ September 2026 release, replaced by `basic_category` and `taxonomy`. All
 three fields coexist in the pinned release, and `CATEGORY_FILTER` below is
 correct against it, but a refresh against any later release must migrate the
 field this module reads `categories.primary` from.
+
+[AMENDED 2026-08-11] The migration described above has happened.
+`fetch_overture_extract._extract_sql` now reads `taxonomy.primary` in both
+its SELECT projection and its WHERE membership predicate; `CATEGORY_FILTER`
+itself is unchanged -- same two literal values, new struct path. This
+module's own constants needed no change: `CATEGORY_FILTER` was never a
+`categories.primary`-shaped value, only a set of category strings consumed
+by whichever struct path reads them.
 """
 import re
 from hashlib import sha256
