@@ -180,6 +180,86 @@ class FetchOvertureExtractCommandTests(SimpleTestCase):
         self.assertEqual(offending, set())
 
 
+class CategoryPredicateMigrationTests(SimpleTestCase):
+    """Pin the categories -> taxonomy struct-path migration (D-17/D-24) as
+    pure string assertions against the value `_extract_sql` returns. These
+    need no DuckDB and therefore run in both backend CI jobs -- the
+    duckdb-fixture job proves the migrated query executes; these prove it
+    kept reading the field it is supposed to read, in both positions it
+    appears (the SELECT projection and the WHERE membership predicate).
+
+    Reverting `_extract_sql`'s two `taxonomy.primary` occurrences back to
+    `categories.primary` by hand and re-running this class was observed to
+    fail both `test_taxonomy_primary_appears_in_projection_and_predicate_only`
+    and `test_deprecated_categories_struct_path_is_absent`; reverting the
+    hand edit restored a clean `git diff`. See the plan SUMMARY for the
+    exact failure text observed."""
+
+    def setUp(self):
+        self.sql = cmd_module._extract_sql("routing/tests/fixtures/overture/places_sample.parquet")
+
+    def test_taxonomy_primary_appears_in_projection_and_predicate_only(self):
+        # Exactly twice: once aliased to `category` in the SELECT
+        # projection, once in the `IN (...)` membership predicate.
+        self.assertEqual(self.sql.count("taxonomy.primary"), 2)
+
+    def test_deprecated_categories_struct_path_is_absent(self):
+        # Asserted on the *returned SQL string*, never by grepping the
+        # source file -- the module's own dated forward-risk amendment
+        # legitimately names the old field in prose, and a source-file grep
+        # would trip on that prose rather than the query itself.
+        self.assertNotIn("categories.primary", self.sql)
+
+    def test_category_filter_members_are_derived_not_restated(self):
+        # Both members of CATEGORY_FILTER still appear, quoted, inside the
+        # membership predicate -- derived from the live tuple rather than a
+        # second hard-coded literal pair in this test file.
+        for category in overture_scope.CATEGORY_FILTER:
+            self.assertIn(f"'{category}'", self.sql)
+
+    def test_confidence_floor_and_bbox_predicate_unchanged(self):
+        # The migration touches the category path only -- the confidence
+        # floor and the two-box bbox predicate are untouched.
+        self.assertIn(f"confidence >= {overture_scope.CONFIDENCE_FLOOR}", self.sql)
+        self.assertIn(overture_scope.bbox_predicate_sql(), self.sql)
+
+
+class FixtureColumnPresenceTests(SimpleTestCase):
+    """Asserts the committed Parquet fixture carries the two columns the
+    migrated query reads (`basic_category`, `taxonomy`), without importing
+    duckdb -- a byte-level scan of the file's raw bytes for the column
+    names. This is deliberately crude: it is chosen over adding a DuckDB
+    dependency to the backend test jobs, which is exactly the isolation
+    `RequirementsOfflineIsolationTests` and `DuckdbModuleScopeImportGuardTests`
+    below exist to preserve. Parquet's column names are written as literal
+    UTF-8 strings in both the per-row-group schema entries and the file
+    footer, so a plain substring search over the raw bytes reliably finds
+    them without parsing the container format."""
+
+    FIXTURE_PATH = (
+        Path(settings.BASE_DIR)
+        / "routing"
+        / "tests"
+        / "fixtures"
+        / "overture"
+        / "places_sample.parquet"
+    )
+
+    def setUp(self):
+        self.raw_bytes = self.FIXTURE_PATH.read_bytes()
+
+    def test_fixture_carries_basic_category_and_taxonomy_columns(self):
+        self.assertIn(b"basic_category", self.raw_bytes)
+        self.assertIn(b"taxonomy", self.raw_bytes)
+
+    def test_check_is_non_vacuous_absent_sentinel_is_not_found(self):
+        # Guards against the check having become a tautology: a column name
+        # that must NOT be present is asserted absent, so this byte-level
+        # check can genuinely fail rather than always passing regardless of
+        # fixture content.
+        self.assertNotIn(b"DEFINITELY_NOT_A_REAL_COLUMN_SENTINEL", self.raw_bytes)
+
+
 class RequirementsOfflineIsolationTests(SimpleTestCase):
     def test_duckdb_absent_from_requirements_txt(self):
         text = (BASE_DIR / "requirements.txt").read_text(encoding="utf-8")
