@@ -24,6 +24,7 @@ spec) -- `_trigger_block()` below reads `doc.get("on", doc.get(True))` to
 stay correct regardless of which key PyYAML actually produced.
 """
 import re
+import subprocess
 
 from django.conf import settings
 from django.test import SimpleTestCase
@@ -61,6 +62,25 @@ _AUTO_MERGE_FLAG_PATTERNS = (
     r"gh\s+pr\b[^\n]*--admin\b",
     r"gh\s+pr\b[^\n]*--squash\b",
 )
+
+# This path is in the refresh workflow's write-scope allowlist but is
+# generated at runtime by measure_refresh_diff and has never been
+# committed to git -- an exact-equality write-scope assert built on a
+# tracked-only listing could not see it, which is why the refresh job
+# aborted before ever opening a pull request (dated 2026-08-12). It is
+# exempt from the tracked-path assertion below. This exemption is
+# one-directional on purpose: once a refresh pull request actually merges,
+# the workflow's own `git add` will have committed the report and the path
+# becomes tracked -- the assertion is "tracked OR exempt," so it stays
+# correct across that transition rather than becoming a planted future
+# failure.
+UNTRACKED_ALLOWLIST_PATHS = frozenset({"data/overture-refresh-report.md"})
+
+# Anchors the write-scope allowlist's `ALLOWED=$(printf ...)` construction
+# and terminates at the `| sort)` line, so unrelated quoted strings
+# elsewhere in the step ("$CHANGED", the $RUNNER_TEMP file path) can never
+# be swept in.
+_ALLOWLIST_BLOCK_PATTERN = re.compile(r"ALLOWED=\$\(printf.*?\| sort\)", re.DOTALL)
 
 
 def _matches_any(patterns, text):
@@ -109,6 +129,49 @@ def _find_step_index(steps, substring):
         if substring in haystack:
             return index
     return None
+
+
+def _write_scope_step(doc):
+    """The `refresh` job's step whose name contains "write scope", or
+    None."""
+    refresh_steps = doc["jobs"]["refresh"]["steps"]
+    index = _find_step_index(refresh_steps, "write scope")
+    return refresh_steps[index] if index is not None else None
+
+
+def _allowlist_paths(run_text):
+    """The ordered list of quoted paths inside the `ALLOWED=$(printf ...)`
+    block, or None if the block is not found."""
+    match = _ALLOWLIST_BLOCK_PATTERN.search(run_text)
+    if match is None:
+        return None
+    return re.findall(r'"([^"]+)"', match.group(0))
+
+
+def _staged_paths(run_text):
+    """The paths the commit step's `git add` stages, or None if the
+    `git add` line is not found. Walks the lines following a line whose
+    stripped form is exactly `git add \\`, collecting each stripped token
+    with its trailing backslash removed, stopping after the first line
+    that does not end in a backslash."""
+    lines = run_text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line.strip() == "git add \\":
+            start = index + 1
+            break
+    if start is None:
+        return None
+    paths = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        has_continuation = stripped.endswith("\\")
+        if has_continuation:
+            stripped = stripped[:-1].strip()
+        paths.append(stripped)
+        if not has_continuation:
+            break
+    return paths
 
 
 class WorkflowNonVacuityTests(SimpleTestCase):
@@ -372,3 +435,91 @@ class RequirementsOfflineInstallSiteTests(SimpleTestCase):
         self.assertGreaterEqual(len(install_lines), 1)
         for line in install_lines:
             self.assertIn("pip install -r requirements.txt -r requirements-offline.txt", line)
+
+
+class WriteScopeAllowlistIntegrityTests(SimpleTestCase):
+    """Guards against an allowlist entry that names a file git can never
+    report as changed -- a defect with no local symptom at all: every unit
+    test passes, the YAML parses, and the failure only ever appears in a
+    scheduled run nobody watches. This is milestone audit finding W3."""
+
+    def test_write_scope_allowlist_parses_to_a_non_empty_path_list(self):
+        doc, _ = _load_workflow()
+        step = _write_scope_step(doc)
+        self.assertIsNotNone(step, "could not locate the write-scope step")
+        paths = _allowlist_paths(_step_run_text(step))
+        self.assertIsNotNone(paths, "could not parse the write-scope allowlist block")
+        self.assertTrue(paths)
+        for anchor in (
+            "data/overture_stations.csv",
+            "data/overture-refresh-report.md",
+            "routing/pipeline/overture_scope.py",
+            "NOTICE",
+        ):
+            self.assertIn(anchor, paths)
+
+    def test_every_allowlist_path_is_tracked_in_git_or_a_named_exemption(self):
+        doc, _ = _load_workflow()
+        step = _write_scope_step(doc)
+        self.assertIsNotNone(step, "could not locate the write-scope step")
+        paths = _allowlist_paths(_step_run_text(step))
+        self.assertTrue(paths)
+
+        result = subprocess.run(
+            ["git", "ls-files", "--"] + paths,
+            cwd=BASE_DIR,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        tracked = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+        for path in paths:
+            self.assertTrue(
+                path in tracked or path in UNTRACKED_ALLOWLIST_PATHS,
+                f"allowlist path {path!r} is neither tracked in git nor a declared "
+                "runtime-generated exemption -- git can never report it as changed, "
+                "so the refresh job's write-scope assert will abort before ever "
+                "opening a pull request",
+            )
+
+    def test_the_untracked_exemption_set_has_exactly_its_one_documented_member(self):
+        self.assertEqual(
+            UNTRACKED_ALLOWLIST_PATHS, frozenset({"data/overture-refresh-report.md"})
+        )
+
+    def test_the_allowlist_and_the_staged_path_list_agree(self):
+        """The same literal set of paths is written twice in this job, in the
+        assert step and the commit step. Drift in one direction is
+        self-detecting (`git add` errors on a path that does not exist);
+        drift in the other is silent -- a file passes the write-scope check,
+        is never staged, and quietly does not reach the pull request. This is
+        the identical argument BranchPrefixAgreementTests already makes for
+        the three "overture-refresh/" literals."""
+        doc, _ = _load_workflow()
+        refresh_steps = doc["jobs"]["refresh"]["steps"]
+
+        write_scope_step = _write_scope_step(doc)
+        self.assertIsNotNone(write_scope_step, "could not locate the write-scope step")
+        allowed = _allowlist_paths(_step_run_text(write_scope_step))
+        self.assertTrue(allowed)
+
+        commit_index = _find_step_index(refresh_steps, "git commit")
+        self.assertIsNotNone(commit_index, "could not locate the commit step")
+        staged = _staged_paths(_step_run_text(refresh_steps[commit_index]))
+        self.assertTrue(staged)
+
+        self.assertEqual(set(allowed), set(staged))
+
+    def test_the_write_scope_check_reads_untracked_files_not_only_tracked_modifications(self):
+        """The B1 regression guard: the allowlist names a file that is
+        created rather than modified, so a check built on a tracked-only
+        listing can never see it, always mismatches, and exits 1 three steps
+        before the pull request is opened -- this is milestone audit finding
+        B1, reproduced twice independently before it was fixed."""
+        doc, _ = _load_workflow()
+        step = _write_scope_step(doc)
+        self.assertIsNotNone(step, "could not locate the write-scope step")
+        run_text = _step_run_text(step)
+        self.assertIn("git status --porcelain --untracked-files=all", run_text)
+        self.assertNotIn("git diff --name-only", run_text)
