@@ -36,6 +36,36 @@ WORKFLOW_PATH = BASE_DIR / ".github" / "workflows" / "overture-refresh.yml"
 EXPECTED_JOB_NAMES = ("discover", "refresh", "stale_sweep")
 EXPECTED_BRANCH_PREFIX = "overture-refresh/"
 
+# The single source of truth for the branch name the two checks below refuse
+# to let this workflow write to. Every pattern is built from this constant
+# rather than the literal "main" so the guard stays correct if the default
+# branch is ever renamed.
+DEFAULT_BRANCH = "main"
+
+_PUSH_TO_DEFAULT_BRANCH_PATTERNS = (
+    r"git\s+push\b[^\n]*\borigin\s+" + re.escape(DEFAULT_BRANCH) + r"\b",
+    r"git\s+push\b[^\n]*\bHEAD:" + re.escape(DEFAULT_BRANCH) + r"\b",
+    r"git\s+push\b[^\n]*\brefs/heads/" + re.escape(DEFAULT_BRANCH) + r"\b",
+)
+
+_GH_API_DEFAULT_BRANCH_WRITE_PATTERNS = (
+    r"gh\s+api\b[^\n]*\bgit/refs/heads/" + re.escape(DEFAULT_BRANCH) + r"\b",
+    r"gh\s+api\b[^\n]*\bcontents/[^\n]*\bref=" + re.escape(DEFAULT_BRANCH) + r"\b",
+    r"gh\s+api\b[^\n]*\bcontents/[^\n]*\bbranch=" + re.escape(DEFAULT_BRANCH) + r"\b",
+)
+
+_PR_MERGE_PATTERNS = (r"gh\s+pr\s+merge\b",)
+
+_AUTO_MERGE_FLAG_PATTERNS = (
+    r"gh\s+pr\b[^\n]*--auto\b",
+    r"gh\s+pr\b[^\n]*--admin\b",
+    r"gh\s+pr\b[^\n]*--squash\b",
+)
+
+
+def _matches_any(patterns, text):
+    return [pattern for pattern in patterns if re.search(pattern, text)]
+
 
 def _load_workflow():
     text = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -252,6 +282,62 @@ class WriteScopeStaticGuardTests(SimpleTestCase):
                 "ADMISSION_MANIFEST",
                 run_text,
                 f"job {job_name!r} step {step.get('name')!r} references ADMISSION_MANIFEST",
+            )
+
+
+class NoWriteToDefaultBranchOrMergeCommandTests(SimpleTestCase):
+    """The agreed compensating control from 23-07-SUMMARY.md: the developer
+    declined the no-bypass ruleset on `main` that would have made this
+    property platform-enforced, so this guard is the only thing standing
+    between a future edit to this file and a silent write path to the
+    default branch. It does not restore platform enforcement -- it converts
+    "the YAML happens not to push to main" into "a test fails the moment it
+    does," which is the realistic failure mode this workflow being edited
+    later, by a human or an agent, and quietly acquiring a write path to
+    `main` or a way to merge its own pull request."""
+
+    def test_no_step_pushes_to_the_default_branch(self):
+        doc, _ = _load_workflow()
+        for job_name, step in _all_steps(doc):
+            run_text = _step_run_text(step)
+            hits = _matches_any(_PUSH_TO_DEFAULT_BRANCH_PATTERNS, run_text)
+            self.assertFalse(
+                hits,
+                f"job {job_name!r} step {step.get('name')!r} appears to push to "
+                f"the default branch {DEFAULT_BRANCH!r}: matched {hits}",
+            )
+
+    def test_no_step_writes_to_the_default_branch_via_gh_api(self):
+        doc, _ = _load_workflow()
+        for job_name, step in _all_steps(doc):
+            run_text = _step_run_text(step)
+            hits = _matches_any(_GH_API_DEFAULT_BRANCH_WRITE_PATTERNS, run_text)
+            self.assertFalse(
+                hits,
+                f"job {job_name!r} step {step.get('name')!r} appears to write to "
+                f"{DEFAULT_BRANCH!r} via the GitHub API: matched {hits}",
+            )
+
+    def test_no_step_merges_a_pull_request(self):
+        doc, _ = _load_workflow()
+        for job_name, step in _all_steps(doc):
+            run_text = _step_run_text(step)
+            hits = _matches_any(_PR_MERGE_PATTERNS, run_text)
+            self.assertFalse(
+                hits,
+                f"job {job_name!r} step {step.get('name')!r} appears to merge a "
+                f"pull request: matched {hits}",
+            )
+
+    def test_no_gh_pr_invocation_carries_an_auto_merge_flag(self):
+        doc, _ = _load_workflow()
+        for job_name, step in _all_steps(doc):
+            run_text = _step_run_text(step)
+            hits = _matches_any(_AUTO_MERGE_FLAG_PATTERNS, run_text)
+            self.assertFalse(
+                hits,
+                f"job {job_name!r} step {step.get('name')!r} appears to carry an "
+                f"auto-merge flag on a gh pr invocation: matched {hits}",
             )
 
 
