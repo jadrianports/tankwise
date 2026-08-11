@@ -195,12 +195,21 @@ jobs:
 
       # Runtime counterpart to the static write-scope guard in
       # test_overture_refresh_workflow.py: before anything is staged, prove
-      # the working tree changed exactly the allowed files and nothing else
-      # -- never a test, never the dispatch admission manifest (D-06/D-22).
-      - name: Assert the write scope matches the allowlist
+      # the working tree changed nothing outside the allowed files -- never
+      # a test, never the dispatch admission manifest (D-06/D-22). This is a
+      # containment check, not an equality check: the security-relevant half
+      # of this property is "nothing outside the allowlist," never "exactly
+      # these ten." The listing below is repository-wide and includes
+      # untracked files on purpose, because data/overture-refresh-report.md
+      # is created fresh by measure_refresh_diff on every run and has never
+      # been committed -- a listing that reports only tracked modifications
+      # can never see it. A refresh that leaves an allowlist file
+      # byte-identical to what is already committed is a healthy no-op
+      # refresh, not a violation.
+      - name: Assert the write scope stays inside the allowlist
         run: |
           set -euo pipefail
-          EXPECTED=$(printf '%s\n' \
+          ALLOWED=$(printf '%s\n' \
             "NOTICE" \
             "README.md" \
             "docs/ALGORITHM.md" \
@@ -212,19 +221,21 @@ jobs:
             "data/overture-extract-report.md" \
             "data/overture-refresh-report.md" \
             | sort)
-          MODIFIED=$(git diff --name-only HEAD | sort)
-          if [ "$MODIFIED" != "$EXPECTED" ]; then
-            echo "Write-scope mismatch. Expected exactly:"
-            echo "$EXPECTED"
-            echo "Actually modified:"
-            echo "$MODIFIED"
-            exit 1
-          fi
-          UNTRACKED_DATA=$(git status --porcelain --untracked-files=all -- data/ | awk '$1=="??" {print $2}')
-          if [ -n "$UNTRACKED_DATA" ]; then
-            echo "Unexpected untracked file(s) under data/:"
-            echo "$UNTRACKED_DATA"
-            exit 1
+          CHANGED=$(git status --porcelain --untracked-files=all | cut -c4- | sort -u)
+          if [ -z "$CHANGED" ]; then
+            echo "No tracked or untracked change found at all."
+          else
+            printf '%s\n' "$ALLOWED" > "$RUNNER_TEMP/write-scope-allowed.txt"
+            OUTSIDE=$(printf '%s\n' "$CHANGED" | grep -Fxv -f "$RUNNER_TEMP/write-scope-allowed.txt" || true)
+            if [ -n "$OUTSIDE" ]; then
+              echo "Write scope violation. Changed outside the allowlist:"
+              echo "$OUTSIDE"
+              echo "Allowlist:"
+              echo "$ALLOWED"
+              exit 1
+            fi
+            echo "Write scope is within the allowlist. Changed:"
+            echo "$CHANGED"
           fi
 
       # Commit identity: the repository owner's own platform no-reply
