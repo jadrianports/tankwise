@@ -164,6 +164,10 @@ class DiffCellResultsTests(TestCase):
 
 class RenderReportTests(TestCase):
     def _render(self, diffs, **overrides):
+        # baseline_diffs defaults to the same list passed as
+        # production_diffs, so these four existing tests keep their
+        # original one-world intent; TwoMarginWorldRenderTests below
+        # covers the genuinely-two-world cases.
         kwargs = dict(
             candidate_path=Path("candidate.csv"),
             canonical_path=Path("data/overture_stations.csv"),
@@ -171,7 +175,10 @@ class RenderReportTests(TestCase):
             after_overture_row_count=10300,
             before_routable_count=16341,
             after_routable_count=16400,
-            diffs=diffs,
+            production_diffs=diffs,
+            baseline_diffs=diffs,
+            production_trust_margin=Decimal("5.47"),
+            baseline_trust_margin=Decimal("0"),
         )
         kwargs.update(overrides)
         return cmd_module.render_report(**kwargs)
@@ -209,6 +216,133 @@ class RenderReportTests(TestCase):
         self.assertIn("### Censorship transitions", report)
         self.assertIn("measurable_to_censored", report)
         self.assertIn("InfeasibleRouteError: boom", report)
+
+
+class TwoMarginWorldRenderTests(TestCase):
+    """D-01/D-09/D-10/D-11 -- both margin worlds render in the per-cell
+    table, the report states its own measurement basis above that table,
+    and render_report stays one unforked function returning one string."""
+
+    def _render(self, production_diffs, baseline_diffs, **overrides):
+        kwargs = dict(
+            candidate_path=Path("candidate.csv"),
+            canonical_path=Path("data/overture_stations.csv"),
+            before_overture_row_count=10248,
+            after_overture_row_count=10300,
+            before_routable_count=16341,
+            after_routable_count=16400,
+            production_diffs=production_diffs,
+            baseline_diffs=baseline_diffs,
+            production_trust_margin=Decimal("5.47"),
+            baseline_trust_margin=Decimal("0"),
+        )
+        kwargs.update(overrides)
+        return cmd_module.render_report(**kwargs)
+
+    def _measurement_basis_section(self, report):
+        return report[
+            report.index("## Measurement basis") : report.index("## Per-cell table")
+        ]
+
+    def test_omitting_baseline_diffs_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            cmd_module.render_report(
+                candidate_path=Path("candidate.csv"),
+                canonical_path=Path("data/overture_stations.csv"),
+                before_overture_row_count=10248,
+                after_overture_row_count=10300,
+                before_routable_count=16341,
+                after_routable_count=16400,
+                production_diffs=[],
+                production_trust_margin=Decimal("5.47"),
+                baseline_trust_margin=Decimal("0"),
+            )
+
+    def test_measurement_basis_renders_above_per_cell_table(self):
+        report = self._render([], [])
+        self.assertLess(
+            report.index("## Measurement basis"),
+            report.index("## Per-cell table"),
+        )
+
+    def test_measurement_basis_names_both_margin_values_not_hardcoded(self):
+        report = self._render([], [], production_trust_margin=Decimal("9.99"))
+        section = self._measurement_basis_section(report)
+        self.assertIn("9.99", section)
+
+    def test_measurement_basis_states_which_set_drives_the_verdict(self):
+        report = self._render([], [])
+        section = self._measurement_basis_section(report)
+        self.assertIn("production column set alone", section)
+
+    def test_measurement_basis_names_margin_independent_and_movable_fields(self):
+        report = self._render([], [])
+        section = self._measurement_basis_section(report)
+        for field_name in (
+            "raw_candidates",
+            "kept",
+            "estimate",
+            "admitted_at_current_budget",
+            "stops",
+            "total_cost",
+        ):
+            self.assertIn(field_name, section)
+
+    def test_measurement_basis_states_bias_direction(self):
+        report = self._render([], [])
+        section = self._measurement_basis_section(report)
+        self.assertIn("eia_regional_estimate", section)
+        self.assertIn("overstate", section)
+
+    def test_table_header_has_fifteen_columns_with_margin_labels(self):
+        report = self._render(
+            [],
+            [],
+            production_trust_margin=Decimal("5.47"),
+            baseline_trust_margin=Decimal("0"),
+        )
+        header_line = next(
+            line for line in report.splitlines() if line.startswith("| Cell |")
+        )
+        columns = [c for c in header_line.split("|") if c.strip() != ""]
+        self.assertEqual(len(columns), 15)
+        self.assertIn("Stops @$5.47", header_line)
+        self.assertIn("Stops @$0", header_line)
+
+    def test_row_shows_both_worlds_and_changed_marker_follows_production_only(self):
+        production_diffs = cmd_module.diff_cell_results(
+            [_result(slug="a", tank_range_mi=Decimal("1050"), stops=2)],
+            [_result(slug="a", tank_range_mi=Decimal("1050"), stops=2)],
+        )
+        baseline_diffs = cmd_module.diff_cell_results(
+            [_result(slug="a", tank_range_mi=Decimal("1050"), stops=2)],
+            [_result(slug="a", tank_range_mi=Decimal("1050"), stops=5)],
+        )
+        self.assertFalse(production_diffs[0].is_changed)
+        self.assertTrue(baseline_diffs[0].is_changed)
+
+        report = self._render(production_diffs, baseline_diffs)
+        row_line = next(
+            line for line in report.splitlines() if line.startswith("| a | 1050")
+        )
+        # The baseline world's stops movement is visible in the row...
+        self.assertIn("2->5", row_line)
+        # ...but the CHANGED marker follows the production world only,
+        # which did not move.
+        self.assertNotIn("CHANGED", row_line)
+
+    def test_cell_present_in_one_world_and_absent_from_other_still_renders(self):
+        production_diffs = cmd_module.diff_cell_results(
+            [_result(slug="only_production", tank_range_mi=Decimal("1050"))],
+            [_result(slug="only_production", tank_range_mi=Decimal("1050"))],
+        )
+        report = self._render(production_diffs, [])
+        row_line = next(
+            line
+            for line in report.splitlines()
+            if line.startswith("| only_production |")
+        )
+        self.assertIn("(absent)", row_line)
 
 
 class MeasureRefreshDiffCommandTests(TestCase):

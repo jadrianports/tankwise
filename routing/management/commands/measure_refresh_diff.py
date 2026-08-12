@@ -85,6 +85,17 @@ DIFFED_FIELDS = (
     "total_cost",
 )
 
+# Display names for DIFFED_FIELDS, in the same order -- used to build both
+# margin worlds' per-cell table column headings (Phase 24, D-01).
+_FIELD_DISPLAY_NAMES = {
+    "raw_candidates": "Raw candidates",
+    "kept": "Kept",
+    "estimate": "Estimate",
+    "admitted_at_current_budget": "Admitted",
+    "stops": "Stops",
+    "total_cost": "Total cost",
+}
+
 
 def _count_csv_data_rows(path):
     """Count data rows in a CSV file, excluding its header row. Raises
@@ -281,15 +292,58 @@ def _field_display(result, field_name):
     return str(value)
 
 
-def _render_table_row(d):
-    cells = [_field_display(d.before, name) for name in DIFFED_FIELDS]
-    after_cells = [_field_display(d.after, name) for name in DIFFED_FIELDS]
-    combined = [f"{b}->{a}" for b, a in zip(cells, after_cells)]
-    marker = "CHANGED" if d.is_changed else ""
+def _pair_margin_worlds(production_diffs, baseline_diffs):
+    """Pair the two margin worlds' diff lists by (slug, tank_range_mi) --
+    the same key and sort order `diff_cell_results` already uses at
+    :201-203 -- yielding ordered `(production_diff, baseline_diff)` tuples.
+    Either element is `None` when that key is absent from that world's own
+    diff list, so a cell present in one world and missing from the other
+    still pairs and renders, never raising."""
+    production_by_key = {(d.slug, d.tank_range_mi): d for d in production_diffs}
+    baseline_by_key = {(d.slug, d.tank_range_mi): d for d in baseline_diffs}
+    all_keys = sorted(
+        set(production_by_key) | set(baseline_by_key),
+        key=lambda k: (k[0], str(k[1])),
+    )
+    for slug, tank_range_mi in all_keys:
+        yield (
+            production_by_key.get((slug, tank_range_mi)),
+            baseline_by_key.get((slug, tank_range_mi)),
+        )
+
+
+def _render_world_cells(world_diff):
+    """Six `before->after` cells for one margin world's `DIFFED_FIELDS`,
+    built from `_field_display` exactly as before -- or six `(absent)`
+    placeholders when the cell is missing from that world's diff list
+    entirely (D-01's presence-safety requirement)."""
+    if world_diff is None:
+        return ["(absent)"] * len(DIFFED_FIELDS)
+    before_cells = [_field_display(world_diff.before, name) for name in DIFFED_FIELDS]
+    after_cells = [_field_display(world_diff.after, name) for name in DIFFED_FIELDS]
+    return [f"{b}->{a}" for b, a in zip(before_cells, after_cells)]
+
+
+def _field_headers_for_margin(margin):
+    """Six column headings for one margin world, each of the form
+    `<Field> @$<margin>`, interpolated from the argument -- never
+    hardcoded (D-01)."""
+    return [f"{_FIELD_DISPLAY_NAMES[name]} @${margin}" for name in DIFFED_FIELDS]
+
+
+def _render_table_row(production_diff, baseline_diff):
+    """One per-cell table row pairing both margin worlds for the same
+    cell: the six production-world cells first, then the six
+    baseline-world cells, both still in the existing `before->after` form.
+    The trailing `CHANGED` marker reflects the production world's own
+    `is_changed` only (D-03) -- the baseline world can never set it."""
+    anchor = production_diff or baseline_diff
+    all_cells = _render_world_cells(production_diff) + _render_world_cells(baseline_diff)
+    marker = "CHANGED" if production_diff is not None and production_diff.is_changed else ""
     return (
-        f"| {d.slug} | {d.tank_range_mi} | {combined[0]} | {combined[1]} | "
-        f"{combined[2]} | {combined[3]} | {combined[4]} | {combined[5]} | "
-        f"{marker} |"
+        f"| {anchor.slug} | {anchor.tank_range_mi} | "
+        + " | ".join(all_cells)
+        + f" | {marker} |"
     )
 
 
@@ -322,6 +376,63 @@ def _render_changed_section(title, diffs):
     return lines
 
 
+def _render_measurement_basis_section(production_trust_margin, baseline_trust_margin):
+    """`## Measurement basis` -- the report's own objective statement
+    (D-09): which margin each column set was measured at, which one
+    drives the changed-cell verdict, which fields the margin can and
+    cannot move (D-10), and the direction of this report's own bias.
+    Mirrors `_render_changed_section`'s heading-plus-lines-plus-blank-
+    terminator shape; each bullet is a multi-sentence string in the same
+    style `## Reviewer notes`'s own bullets already use."""
+    return [
+        "## Measurement basis",
+        "",
+        (
+            "- Production column set: every solve in it ran at the "
+            f"production trust margin (${production_trust_margin}), read "
+            "live from settings.TRUST_MARGIN_USD, which is the objective "
+            "a driver's plan is actually computed under. This is the "
+            "authoritative column set for the reviewer's decision."
+        ),
+        (
+            "- Baseline column set: every solve in it ran at a zero trust "
+            f"margin (${baseline_trust_margin}), the objective every "
+            "Phase-22 hand measurement and every pinned calibration table "
+            "in this project was taken under. It is shown for "
+            "comparability with the project's own recorded history, never "
+            "for the reviewer's decision."
+        ),
+        (
+            "- Which set drives the verdict: the changed-cell count in "
+            "the header above and all four ## Changed cells subsections "
+            "below are computed from the production column set alone. A "
+            "cell that moves only in the baseline column set is not "
+            "counted as changed and is not listed in any of those "
+            "sections."
+        ),
+        (
+            "- Margin independence: the trust margin can move only "
+            "stops and total_cost. raw_candidates, kept, estimate and "
+            "admitted_at_current_budget cannot move with it, because "
+            "prune_dominated_candidates takes no trust-margin argument at "
+            "all and reads provenance as a binary rather than as a dollar "
+            "value. Four identical column pairs is therefore the "
+            "expected result below, not a rendering bug -- proven against "
+            "real committed data by TwoMarginWorldRenderTests."
+        ),
+        (
+            "- Direction of the bias: every Overture row is priced as an "
+            "eia_regional_estimate, precisely the rows the trust margin "
+            "exists to suppress, so the zero-margin (baseline) columns "
+            "overstate how often those rows get selected. This states the "
+            "direction only; it makes no attempt to quantify the size of "
+            "the effect, in keeping with this project's standing "
+            "rejection of false precision."
+        ),
+        "",
+    ]
+
+
 def render_report(
     *,
     candidate_path,
@@ -330,18 +441,27 @@ def render_report(
     after_overture_row_count,
     before_routable_count,
     after_routable_count,
-    diffs,
+    production_diffs,
+    baseline_diffs,
+    production_trust_margin,
+    baseline_trust_margin,
 ):
-    """Pure renderer: takes the two header figure pairs plus the diff list
-    and returns report text. No file or database access, so it is
-    testable against synthetic diffs. This is the exact text that lands
-    both in the refresh pull request body and as the committed
-    data/overture-refresh-report.md (D-12) -- one artifact, two
-    destinations."""
+    """Pure renderer: takes the two header figure pairs, both margin
+    worlds' diff lists and both margin values, and returns report text.
+    No file or database access, so it is testable against synthetic
+    diffs. This is the exact text that lands both in the refresh pull
+    request body and as the committed data/overture-refresh-report.md
+    (D-11/D-12) -- one artifact, two destinations, never a forked or
+    shortened second renderer.
+
+    The production diff list is authoritative (D-03): changed_count and
+    all four `## Changed cells` sections below are computed from it
+    alone. The baseline diff list feeds only the per-cell table's second
+    column set."""
     admission_flips, censorship_transitions, presence_events, other_movements = (
-        _categorize_changed_cells(diffs)
+        _categorize_changed_cells(production_diffs)
     )
-    changed_count = sum(1 for d in diffs if d.is_changed)
+    changed_count = sum(1 for d in production_diffs if d.is_changed)
 
     lines = [
         "# Overture Refresh Diff Report",
@@ -356,7 +476,7 @@ def render_report(
             "- Routable stations (Station.objects.routable()): "
             f"before={before_routable_count} after={after_routable_count}"
         ),
-        f"- Cells measured: {len(diffs)}",
+        f"- Cells measured: {len(production_diffs)}",
         (
             f"- Changed cells: {changed_count} (admission flips: "
             f"{len(admission_flips)}, censorship transitions: "
@@ -373,16 +493,24 @@ def render_report(
             f"vehicles are never conflated. penalty=${PENALTY} for every cell."
         ),
         "",
+    ]
+    lines += _render_measurement_basis_section(
+        production_trust_margin, baseline_trust_margin
+    )
+
+    field_headers = _field_headers_for_margin(
+        production_trust_margin
+    ) + _field_headers_for_margin(baseline_trust_margin)
+    lines += [
         "## Per-cell table",
         "",
-        (
-            "| Cell | Tank (mi) | Raw candidates | Kept | Estimate | "
-            "Admitted | Stops | Total cost | Changed |"
-        ),
-        "|---|---|---|---|---|---|---|---|---|",
+        "| Cell | Tank (mi) | " + " | ".join(field_headers) + " | Changed |",
+        "|" + "---|" * (2 + len(field_headers) + 1),
     ]
-    for d in diffs:
-        lines.append(_render_table_row(d))
+    for production_diff, baseline_diff in _pair_margin_worlds(
+        production_diffs, baseline_diffs
+    ):
+        lines.append(_render_table_row(production_diff, baseline_diff))
     lines.append("")
 
     lines += ["## Changed cells", ""]
@@ -570,9 +698,8 @@ class Command(BaseCommand):
         # The production-margin diff is authoritative (D-03): it alone
         # feeds changed_count, every `_categorize_changed_cells` section
         # and the closing stdout success line below. The baseline diff
-        # feeds only the report's second column set (wired in a later
-        # task) -- a cell that moves solely at margin zero is never
-        # counted as changed.
+        # feeds only the report's second column set -- a cell that moves
+        # solely at margin zero is never counted as changed.
         production_diffs = diff_cell_results(
             before_production_results, after_production_results
         )
@@ -586,7 +713,10 @@ class Command(BaseCommand):
             after_overture_row_count=after_overture_row_count,
             before_routable_count=before_routable_count,
             after_routable_count=after_routable_count,
-            diffs=production_diffs,
+            production_diffs=production_diffs,
+            baseline_diffs=baseline_diffs,
+            production_trust_margin=production_trust_margin,
+            baseline_trust_margin=baseline_trust_margin,
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report_text, encoding="utf-8")
