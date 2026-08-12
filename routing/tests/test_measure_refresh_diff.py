@@ -11,6 +11,16 @@ Command-level tests mock at the seams (`_measure_grid`, `reseed_all`,
 rather than running any real sweep or reseed, following the mock-the-
 single-boundary convention `test_fetch_overture_extract.py` established for
 its own external boundary.
+
+[AMENDED 2026-08-13, Phase 24] One class in this module,
+`MarginIndependentFieldsRealDataTests`, is a deliberate exception to the
+"never a real 26-cell sweep" statement above: it seeds the real committed
+station dataset via `RealCorridorDispatchTestCase` and runs real solves on
+a single light, DP-admitted corridor cell -- four solves on one cell, not
+a 26-cell sweep -- because D-07 requires the margin-independence claim
+this phase rests on be proven against real committed data, not synthetic
+`CellResult`s. Every other test in this module is unaffected and still
+follows the synthetic/mocked convention above.
 """
 import ast
 import inspect
@@ -27,6 +37,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from routing.management.commands import measure_dispatch_grid as grid_cmd_module
 from routing.management.commands import measure_refresh_diff as cmd_module
 from routing.management.commands.measure_dispatch_grid import CellResult
+from routing.tests.test_solver_dispatch import RealCorridorDispatchTestCase
 
 
 class MeasureCellTrustMarginSignatureTests(SimpleTestCase):
@@ -92,6 +103,79 @@ class MeasureCellTrustMarginSignatureTests(SimpleTestCase):
             "invocation must stay byte-identical so every figure it pins "
             "stays unchanged",
         )
+
+
+class MarginIndependentFieldsRealDataTests(RealCorridorDispatchTestCase):
+    """D-07 -- proves, against the real committed station dataset, that
+    `raw_candidates`, `kept`, `estimate` and `admitted_at_current_budget`
+    cannot move with the trust margin, while `stops` and `total_cost`
+    deliberately can.
+
+    `routing/services/prune.py` states the structural reason directly:
+    condition 3 of the domination rule is "provenance-shaped, not
+    magnitude-shaped" -- it compares which side of the binary each
+    station sits on, never the margin's dollar value, so it applies at
+    every `trust_margin` including zero. `prune_dominated_candidates`'s
+    own parameter tuple carries no `trust_margin` at all (`(candidates,
+    *, tank_range_mi, total_route_mi)`), and `dp.estimate_transition_count`
+    runs over that function's output, so none of the four fields above
+    has a call chain the margin's dollar value can reach. This is the
+    fact `measure_refresh_diff.render_report`'s own `## Measurement
+    basis` section states to the reviewer, and it is why
+    `ADMISSION_MANIFEST` (`routing.tests.test_solver_dispatch`) and its
+    dispatch guard need no re-pin in this phase -- confirmed by running
+    `routing.tests.test_corridor_fixtures` and
+    `routing.tests.test_solver_dispatch` directly (see 24-03-SUMMARY.md),
+    not by assertion here.
+    """
+
+    # phoenix_az-minneapolis_mn @500mi: a light, DP-admitted corridor cell
+    # (ADMISSION_MANIFEST pins it True, estimate 16,322, comfortably under
+    # dp.DP_TRANSITION_BUDGET=50,000 -- see test_solver_dispatch.py's own
+    # HeavyLightDispatchTests.test_light_corridor_takes_the_exact_dp),
+    # chosen so this class runs four real solves in seconds, not minutes.
+    _CELL_SLUG = "phoenix_az-minneapolis_mn"
+    _CELL_TANK_RANGE_MI = Decimal(500)
+
+    def test_four_fields_are_identical_across_two_margins(self):
+        self.assertNotEqual(
+            settings.TRUST_MARGIN_USD,
+            Decimal(0),
+            "settings.TRUST_MARGIN_USD must differ from the baseline "
+            "margin under test, or this comparison passes vacuously by "
+            "comparing a value with itself",
+        )
+
+        grid = grid_cmd_module._build_grid(
+            {(self._CELL_SLUG, self._CELL_TANK_RANGE_MI)}
+        )
+        self.assertEqual(len(grid), 1)
+        row = grid[0]
+
+        command = grid_cmd_module.Command()
+        zero_result = command._measure_cell(row, repeats=1, trust_margin=Decimal(0))
+        production_result = command._measure_cell(
+            row, repeats=1, trust_margin=settings.TRUST_MARGIN_USD
+        )
+
+        for field_name in (
+            "raw_candidates",
+            "kept",
+            "estimate",
+            "admitted_at_current_budget",
+        ):
+            self.assertEqual(
+                getattr(zero_result, field_name),
+                getattr(production_result, field_name),
+                f"{field_name} moved with the trust margin: "
+                f"{getattr(zero_result, field_name)!r} at Decimal(0) vs "
+                f"{getattr(production_result, field_name)!r} at "
+                f"{settings.TRUST_MARGIN_USD} -- prune.py's domination "
+                "rule says this cannot structurally happen",
+            )
+
+        # Deliberately no assertion on stops/total_cost -- those are the
+        # two fields the margin is allowed to move.
 
 
 def _result(
