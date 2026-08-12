@@ -120,8 +120,9 @@ jobs:
     if: needs.discover.outputs.is_newer == 'true' && needs.discover.outputs.branch_exists == 'false'
     runs-on: ubuntu-latest
     # Generous on purpose: the real extract alone measured about 512s, and
-    # the before/after dispatch measurement runs the full 26-cell grid
-    # twice. This repository is public, so runner minutes are free and a
+    # the before/after dispatch measurement runs the full 26-cell grid four
+    # times (before and after, each at the production and zero trust
+    # margins). This repository is public, so runner minutes are free and a
     # generous budget costs nothing.
     timeout-minutes: 90
     steps:
