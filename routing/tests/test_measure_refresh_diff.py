@@ -12,6 +12,8 @@ rather than running any real sweep or reseed, following the mock-the-
 single-boundary convention `test_fetch_overture_extract.py` established for
 its own external boundary.
 """
+import ast
+import inspect
 import tempfile
 from decimal import Decimal
 from pathlib import Path
@@ -20,10 +22,76 @@ from unittest import mock
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
+from routing.management.commands import measure_dispatch_grid as grid_cmd_module
 from routing.management.commands import measure_refresh_diff as cmd_module
 from routing.management.commands.measure_dispatch_grid import CellResult
+
+
+class MeasureCellTrustMarginSignatureTests(SimpleTestCase):
+    """D-06 -- guards the sibling `measure_dispatch_grid` command's own
+    zero-margin baseline by testing its *signature* and its *own call
+    site*, rather than by re-running a real 26-cell before/after
+    inertness sweep. That sweep would require running a command whose own
+    module docstring bars it from CI ("Must NOT run in CI -- the figures
+    this command prints are evidence, not a pass/fail gate"). The
+    regression that actually matters -- `_measure_cell`'s `trust_margin`
+    default silently moving away from `Decimal(0)`, or the sibling
+    command's own call site starting to pass `trust_margin` explicitly --
+    is exactly what these two tests catch, and they run in CI on every
+    push.
+    """
+
+    def test_measure_cell_trust_margin_default_is_decimal_zero(self):
+        sig = inspect.signature(grid_cmd_module.Command._measure_cell)
+        self.assertIn(
+            "trust_margin",
+            sig.parameters,
+            "_measure_cell must keep a trust_margin parameter",
+        )
+        default = sig.parameters["trust_margin"].default
+        self.assertIsInstance(
+            default,
+            Decimal,
+            f"trust_margin's default must be a Decimal, found {default!r} "
+            f"({type(default)!r})",
+        )
+        self.assertEqual(
+            default,
+            Decimal(0),
+            f"trust_margin's default drifted from Decimal(0) to {default!r}",
+        )
+
+    def test_measure_dispatch_grid_own_call_passes_no_trust_margin(self):
+        path = Path(grid_cmd_module.__file__)
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_measure_cell"
+        ]
+        self.assertTrue(
+            calls,
+            f"expected at least one self._measure_cell(...) call in {path}, "
+            "found none -- this test would otherwise pass vacuously "
+            "against a file that no longer calls it",
+        )
+        offending_lines = [
+            node.lineno
+            for node in calls
+            if any(kw.arg == "trust_margin" for kw in node.keywords)
+        ]
+        self.assertEqual(
+            offending_lines,
+            [],
+            f"{path}: _measure_cell call(s) at line(s) {offending_lines} "
+            "pass trust_margin= explicitly -- the sibling command's own "
+            "invocation must stay byte-identical so every figure it pins "
+            "stays unchanged",
+        )
 
 
 def _result(
