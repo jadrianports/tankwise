@@ -17,9 +17,10 @@ from decimal import Decimal
 from pathlib import Path
 from unittest import mock
 
+from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from routing.management.commands import measure_refresh_diff as cmd_module
 from routing.management.commands.measure_dispatch_grid import CellResult
@@ -241,7 +242,7 @@ class MeasureRefreshDiffCommandTests(TestCase):
         self.addCleanup(dirty_patcher.stop)
 
         reseed_patcher = mock.patch.object(cmd_module, "reseed_all")
-        reseed_patcher.start()
+        self.mock_reseed_all = reseed_patcher.start()
         self.addCleanup(reseed_patcher.stop)
 
         reset_index_patcher = mock.patch.object(cmd_module.corridor, "reset_index")
@@ -251,7 +252,7 @@ class MeasureRefreshDiffCommandTests(TestCase):
         measure_grid_patcher = mock.patch.object(
             cmd_module, "_measure_grid", return_value=[]
         )
-        measure_grid_patcher.start()
+        self.mock_measure_grid = measure_grid_patcher.start()
         self.addCleanup(measure_grid_patcher.stop)
 
         restore_patcher = mock.patch.object(cmd_module, "_restore_canonical_csv")
@@ -300,3 +301,113 @@ class MeasureRefreshDiffCommandTests(TestCase):
         missing_path = Path(self.tmpdir.name) / "does_not_exist.csv"
         with self.assertRaises(CommandError):
             self._call(candidate_path=missing_path)
+
+
+class MeasureGridMarginForwardingTests(TestCase):
+    """Unit tests against the real `_measure_grid` function itself (no
+    command-level mocking) -- `_build_grid(None)` touches no database, so
+    a Mock `grid_command` is enough to prove the required-keyword and
+    forwarding behaviour without a real 26-cell sweep."""
+
+    def test_calling_without_trust_margin_raises_type_error(self):
+        with self.assertRaises(TypeError):
+            cmd_module._measure_grid(mock.Mock(), 1)
+
+    def test_trust_margin_is_forwarded_to_every_cell_call(self):
+        grid_command = mock.Mock()
+        cmd_module._measure_grid(grid_command, 1, trust_margin=Decimal("3.21"))
+        self.assertTrue(grid_command._measure_cell.call_args_list)
+        for call in grid_command._measure_cell.call_args_list:
+            self.assertEqual(call.kwargs.get("trust_margin"), Decimal("3.21"))
+
+
+class FourSweepMarginWiringTests(MeasureRefreshDiffCommandTests):
+    """D-02/D-03/D-04 -- handle()'s four-sweep flow against two margin
+    worlds and two reseeds. Extends MeasureRefreshDiffCommandTests's own
+    six-patcher setUp; assertions inspect `self.mock_measure_grid`'s
+    `call_args_list` rather than `assert_called_with`, since the mock has
+    no per-call return differentiation by default."""
+
+    def test_handle_calls_measure_grid_four_times_at_two_distinct_margins(self):
+        self._call()
+        self.assertEqual(self.mock_measure_grid.call_count, 4)
+        margins = [
+            call.kwargs.get("trust_margin")
+            for call in self.mock_measure_grid.call_args_list
+        ]
+        self.assertEqual(len(margins), 4)
+        distinct = set(margins)
+        self.assertEqual(len(distinct), 2)
+        for margin in distinct:
+            self.assertEqual(margins.count(margin), 2)
+
+    def test_handle_calls_reseed_all_exactly_twice(self):
+        self._call()
+        self.assertEqual(self.mock_reseed_all.call_count, 2)
+
+    def test_production_margin_is_read_live_from_settings(self):
+        with override_settings(TRUST_MARGIN_USD=Decimal("9.99")):
+            self._call()
+        margins = [
+            call.kwargs.get("trust_margin")
+            for call in self.mock_measure_grid.call_args_list
+        ]
+        self.assertEqual(margins.count(Decimal("9.99")), 2)
+
+    def test_baseline_margin_is_zero(self):
+        self._call()
+        margins = [
+            call.kwargs.get("trust_margin")
+            for call in self.mock_measure_grid.call_args_list
+        ]
+        self.assertEqual(margins.count(Decimal(0)), 2)
+
+    def test_before_sweeps_run_before_swap_and_after_sweeps_run_after(self):
+        call_order = []
+
+        def _record_measure_grid(*args, **kwargs):
+            call_order.append(("measure_grid", kwargs.get("trust_margin")))
+            return []
+
+        self.mock_measure_grid.side_effect = _record_measure_grid
+
+        real_copyfile = cmd_module.shutil.copyfile
+
+        def _record_copyfile(*args, **kwargs):
+            call_order.append(("copyfile",))
+            return real_copyfile(*args, **kwargs)
+
+        with mock.patch.object(
+            cmd_module.shutil, "copyfile", side_effect=_record_copyfile
+        ):
+            self._call()
+
+        self.assertEqual(len(call_order), 5)  # 4 measure_grid calls + 1 copyfile
+        copyfile_index = next(
+            i for i, event in enumerate(call_order) if event[0] == "copyfile"
+        )
+        # Exactly two BEFORE sweeps precede the swap, two AFTER sweeps follow it.
+        self.assertEqual(copyfile_index, 2)
+
+    def test_changed_count_and_sections_come_from_production_diff_only(self):
+        production_row = _result(slug="corridor_0", tank_range_mi=Decimal("1050"))
+        baseline_before = _result(
+            slug="corridor_0", tank_range_mi=Decimal("1050"), stops=2
+        )
+        baseline_after = _result(
+            slug="corridor_0", tank_range_mi=Decimal("1050"), stops=3
+        )
+        baseline_calls = {"count": 0}
+
+        def _side_effect(grid_command, repeats, *, trust_margin):
+            if trust_margin == settings.TRUST_MARGIN_USD:
+                return [production_row]
+            baseline_calls["count"] += 1
+            return [baseline_before] if baseline_calls["count"] == 1 else [baseline_after]
+
+        self.mock_measure_grid.side_effect = _side_effect
+        self._call()
+
+        report_text = self.report_path.read_text(encoding="utf-8")
+        self.assertIn("Changed cells: 0", report_text)
+        self.assertIn("(none)", report_text)

@@ -152,16 +152,24 @@ def _preflight(candidate_path):
         )
 
 
-def _measure_grid(grid_command, repeats):
+def _measure_grid(grid_command, repeats, *, trust_margin):
     """Measure every row `_build_grid(None)` returns (the full 26-cell
     sweep) through the sibling command's own `_measure_cell`, called on a
     real instance -- never a bare module-level import of the method name,
     and never a null `self` (D-11), even though the method body happens not
     to use it today. Routed through its own function so command-level
     tests can mock this one seam instead of running two real 26-cell
-    sweeps, which is minutes of solver work by design."""
+    sweeps, which is minutes of solver work by design.
+
+    `trust_margin` is required, keyword-only -- which margin world this
+    call measures is now the caller's explicit decision (Phase 24), never
+    a silent default. Forwarded to every cell as
+    `grid_command._measure_cell(row, repeats, trust_margin=trust_margin)`."""
     grid = _build_grid(None)
-    return [grid_command._measure_cell(row, repeats) for row in grid]
+    return [
+        grid_command._measure_cell(row, repeats, trust_margin=trust_margin)
+        for row in grid
+    ]
 
 
 @dataclass
@@ -467,6 +475,16 @@ class Command(BaseCommand):
 
         grid_command = MeasureDispatchGridCommand()
 
+        # Read live, near the top of handle() -- no pinned literal for the
+        # production value and no assertion that it equals the committed
+        # default (D-04), the same call-site style routing/views.py:635
+        # and probe_live_latency.py:381 already use. The baseline world
+        # measures at zero, the objective every Phase-22 hand measurement
+        # and every pinned calibration table in this project was taken
+        # under.
+        production_trust_margin = settings.TRUST_MARGIN_USD
+        baseline_trust_margin = Decimal(0)
+
         self.stdout.write(
             "Rebuilding the station table from the committed CSVs "
             "(measuring the BEFORE world)..."
@@ -474,16 +492,28 @@ class Command(BaseCommand):
         reseed_all(stdout=io.StringIO())
         corridor.reset_index()
         self.stdout.write(
-            "Measuring the BEFORE world's 26-cell dispatch grid -- this "
+            "Measuring the BEFORE world's 26-cell dispatch grid at the "
+            f"production trust margin (${production_trust_margin}) -- "
+            "this takes minutes..."
+        )
+        before_production_results = _measure_grid(
+            grid_command, _MEASURE_REPEATS, trust_margin=production_trust_margin
+        )
+        self.stdout.write(
+            "Measuring the BEFORE world's 26-cell dispatch grid at the "
+            f"zero baseline margin (${baseline_trust_margin}) -- this "
             "takes minutes..."
         )
-        before_results = _measure_grid(grid_command, _MEASURE_REPEATS)
+        before_baseline_results = _measure_grid(
+            grid_command, _MEASURE_REPEATS, trust_margin=baseline_trust_margin
+        )
         before_overture_row_count = _count_csv_data_rows(CANONICAL_OVERTURE_CSV_PATH)
         before_routable_count = Station.objects.routable().count()
         self.stdout.write(
-            f"BEFORE world measured: {len(before_results)} cell(s), "
-            f"overture_stations.csv rows={before_overture_row_count}, "
-            f"routable stations={before_routable_count}"
+            f"BEFORE world measured: {len(before_production_results)} "
+            "cell(s) per margin world, overture_stations.csv rows="
+            f"{before_overture_row_count}, routable stations="
+            f"{before_routable_count}"
         )
 
         self.stdout.write(
@@ -498,16 +528,28 @@ class Command(BaseCommand):
         reseed_all(stdout=io.StringIO())
         corridor.reset_index()
         self.stdout.write(
-            "Measuring the AFTER world's 26-cell dispatch grid -- this "
+            "Measuring the AFTER world's 26-cell dispatch grid at the "
+            f"production trust margin (${production_trust_margin}) -- "
+            "this takes minutes..."
+        )
+        after_production_results = _measure_grid(
+            grid_command, _MEASURE_REPEATS, trust_margin=production_trust_margin
+        )
+        self.stdout.write(
+            "Measuring the AFTER world's 26-cell dispatch grid at the "
+            f"zero baseline margin (${baseline_trust_margin}) -- this "
             "takes minutes..."
         )
-        after_results = _measure_grid(grid_command, _MEASURE_REPEATS)
+        after_baseline_results = _measure_grid(
+            grid_command, _MEASURE_REPEATS, trust_margin=baseline_trust_margin
+        )
         after_overture_row_count = _count_csv_data_rows(CANONICAL_OVERTURE_CSV_PATH)
         after_routable_count = Station.objects.routable().count()
         self.stdout.write(
-            f"AFTER world measured: {len(after_results)} cell(s), "
-            f"overture_stations.csv rows={after_overture_row_count}, "
-            f"routable stations={after_routable_count}"
+            f"AFTER world measured: {len(after_production_results)} "
+            "cell(s) per margin world, overture_stations.csv rows="
+            f"{after_overture_row_count}, routable stations="
+            f"{after_routable_count}"
         )
 
         if keep_after:
@@ -525,7 +567,18 @@ class Command(BaseCommand):
             )
             _restore_canonical_csv()
 
-        diffs = diff_cell_results(before_results, after_results)
+        # The production-margin diff is authoritative (D-03): it alone
+        # feeds changed_count, every `_categorize_changed_cells` section
+        # and the closing stdout success line below. The baseline diff
+        # feeds only the report's second column set (wired in a later
+        # task) -- a cell that moves solely at margin zero is never
+        # counted as changed.
+        production_diffs = diff_cell_results(
+            before_production_results, after_production_results
+        )
+        baseline_diffs = diff_cell_results(
+            before_baseline_results, after_baseline_results
+        )
         report_text = render_report(
             candidate_path=candidate_path,
             canonical_path=CANONICAL_OVERTURE_CSV_PATH,
@@ -533,17 +586,17 @@ class Command(BaseCommand):
             after_overture_row_count=after_overture_row_count,
             before_routable_count=before_routable_count,
             after_routable_count=after_routable_count,
-            diffs=diffs,
+            diffs=production_diffs,
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report_text, encoding="utf-8")
 
-        admission_flips, _, _, _ = _categorize_changed_cells(diffs)
-        changed_count = sum(1 for d in diffs if d.is_changed)
+        admission_flips, _, _, _ = _categorize_changed_cells(production_diffs)
+        changed_count = sum(1 for d in production_diffs if d.is_changed)
         self.stdout.write(
             self.style.SUCCESS(
-                f"Refresh diff complete: {changed_count} changed cell(s), "
-                f"{len(admission_flips)} admission flip(s). Report written "
-                f"to {report_path}"
+                f"Refresh diff complete: {changed_count} changed cell(s) "
+                f"at the production trust margin, {len(admission_flips)} "
+                f"admission flip(s). Report written to {report_path}"
             )
         )
