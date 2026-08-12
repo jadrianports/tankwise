@@ -267,7 +267,7 @@ class Command(BaseCommand):
         self._print_probe_selection(results, adopted_rung)
         self._print_disclaimer()
 
-    def _measure_cell(self, row, repeats):
+    def _measure_cell(self, row, repeats, trust_margin=Decimal(0)):
         slug = row["slug"]
         tank_range_mi = row["tank_range_mi"]
         loader = row["loader"]
@@ -312,6 +312,21 @@ class Command(BaseCommand):
         # `Decimal(0)` keeps this D-22 baseline command's own behaviour
         # provably unchanged -- it measures dispatch admission, not the
         # trust margin's effect.
+        #
+        # [AMENDED 2026-08-13, Phase 24] `trust_margin` is now passed as a
+        # variable reference (`trust_margin=trust_margin`, the method's own
+        # new parameter) at both solve() call sites below, not the literal
+        # `Decimal(0)` the paragraph above describes -- that sentence is
+        # therefore no longer literally true of the parameterized path.
+        # This stays gate-safe: `SolveTrustMarginKwargGateTest` walks the
+        # AST checking only that a `trust_margin=` keyword is present at
+        # each solve() call, never that its value is a literal, so a
+        # variable reference satisfies it exactly as the literal did. This
+        # command's own behaviour still stays unmoved -- the parameter
+        # defaults to `Decimal(0)` and the sole caller at
+        # `results = [self._measure_cell(row, repeats) for row in grid]`
+        # passes no `trust_margin`, so every figure this command pins is
+        # unchanged.
         solve_kwargs = dict(
             tank_range_mi=tank_range_mi,
             mpg=mpg,
@@ -330,7 +345,7 @@ class Command(BaseCommand):
                     route.total_route_mi,
                     deadline=None,
                     penalty=PENALTY,
-                    trust_margin=Decimal(0),
+                    trust_margin=trust_margin,
                     **solve_kwargs,
                 )
                 elapsed = Decimal(str(time.perf_counter() - started))
@@ -361,7 +376,7 @@ class Command(BaseCommand):
                 raw_candidates,
                 route.total_route_mi,
                 penalty=PENALTY,
-                trust_margin=Decimal(0),
+                trust_margin=trust_margin,
                 **solve_kwargs,
             )
             elapsed = Decimal(str(time.perf_counter() - started))
