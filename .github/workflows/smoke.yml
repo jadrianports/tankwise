@@ -160,6 +160,34 @@ name: Smoke test (post-deploy)
 # request-latency ceiling could be asserted here without risking exactly
 # the false alarm this section exists to avoid.
 #
+# THE SAME RULE NOW GOVERNS THE DEPLOY-WAIT STEP (added 2026-08-17). The
+# paragraph above was written about latency, but its reasoning is not
+# specific to latency: NO step in this job may go red for a condition that
+# is not a property of the code under test, because a red check on the
+# commit is exactly what `render.yaml`'s `autoDeployTrigger: checksPass`
+# reads. "The deploy has not landed yet" is such a condition -- and it is
+# worse than the latency case, because that step is WAITING ON the very
+# deploy its own failure would block. The wait step therefore publishes a
+# `deploy_live` step output instead of exiting non-zero, and every step
+# after it is gated on `deploy_live == 'true'`.
+#
+# THIS IS NOT A WEAKENING OF SECTION 2. The four matrix assertions remain
+# FATAL exactly as before whenever they run. What changed is that they no
+# longer run at all against a container whose commit was never confirmed --
+# closing, rather than opening, the "green against the OLD build" hole
+# section 7 names. A skipped assertion is visibly skipped in the run
+# summary; a passed one against the wrong container is not.
+#
+# THE WITNESS (do not delete -- this is why `exit 1` must not come back):
+# `61536a5` was pushed to main 2026-08-12 22:03 and CI went green at 22:08.
+# Two `workflow_run` firings (22:12, 22:17) each waited the full 10 minutes
+# for a deploy Render had not finished, went red, and thereby permanently
+# blocked `checksPass` from ever starting it. Production stayed pinned on
+# `4ef3c87` -- eight commits stale -- while the daily `schedule` trigger
+# re-cemented the same failure every morning for four consecutive days
+# (08-13, 08-14, 08-15, 08-16). Nothing was wrong with the build: the whole
+# diff was offline measurement commands, their tests, and a workflow file.
+#
 # ---------------------------------------------------------------------------
 # 7. THE TRIGGER, WITH ITS LIMITATION STATED HONESTLY
 # ---------------------------------------------------------------------------
@@ -191,7 +219,22 @@ name: Smoke test (post-deploy)
 # `schedule` trigger is the backstop that makes this check EVENTUALLY
 # reliable even if a given `workflow_run` firing loses that race. `workflow_
 # dispatch` is included so a human (or this project's own operator) can
-# force a run on demand. Also carried forward: `keep-warm.yml`'s own caveat
+# force a run on demand.
+#
+# CORRECTION 2026-08-17 -- THE BACKSTOP CLAIM ABOVE WAS FALSE AS WRITTEN.
+# It assumed Render's deploy proceeds independently of this workflow, so a
+# later scheduled run would eventually find the new build live. Under
+# `autoDeployTrigger: checksPass` it does not: a `workflow_run` firing that
+# lost the race went RED, and that red check blocked the deploy, so every
+# subsequent scheduled run polled a build that could never arrive and went
+# red for the same reason. The backstop did not converge -- it latched. See
+# section 6B's witness for the four-day incident this produced.
+#
+# The backstop works now, and ONLY because the wait step no longer goes red
+# (section 6B). Losing the race now yields a green-but-skipped run that
+# leaves `checksPass` clear, Render deploys, and the next scheduled firing
+# genuinely asserts against the new build. Anyone restoring `exit 1` to that
+# step re-arms the latch and re-breaks this paragraph. Also carried forward: `keep-warm.yml`'s own caveat
 # that GitHub disables scheduled workflows after 60 days of repository
 # inactivity (it emails the repo owner first) -- after a quiet stretch, the
 # `schedule` trigger stops firing until someone re-enables it from the
@@ -304,10 +347,14 @@ jobs:
       # closes: a 502 asserted against mid-deploy, and a green run asserted
       # against the OLD container Render is still serving.
       #
-      # Fatal only on a genuine timeout. A build predating the `commit` field
+      # NEVER fatal -- see section 6B. A build predating the `commit` field
       # (null) cannot be matched, so that case degrades to the old
       # sleep-and-hope rather than blocking forever on an impossible compare.
+      # A genuine timeout publishes `deploy_live=false` and warns; every step
+      # below is gated on `deploy_live == 'true'`, so a run that never saw its
+      # own build asserts NOTHING rather than asserting against the old one.
       - name: Wait for the deploy under test to be live
+        id: wait
         env:
           EXPECTED_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
@@ -328,6 +375,7 @@ jobs:
             case "$LIVE" in
               "$EXPECTED_SHA")
                 echo "Deploy is live: /api/health reports ${LIVE}."
+                echo "deploy_live=true" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
               absent)
@@ -339,6 +387,12 @@ jobs:
               null)
                 echo "health reports commit: null -- RENDER_GIT_COMMIT is unset on this deploy. Cannot verify the build; falling back to a fixed settle-wait."
                 sleep 60
+                # Unchanged from the pre-2026-08-17 behaviour: the build cannot
+                # be identified, so this arm still asserts. It is the ONE path
+                # that runs the matrix without a confirmed commit, and it does
+                # so deliberately -- refusing to assert here would silently
+                # disable the whole gate against any build lacking the field.
+                echo "deploy_live=true" >> "$GITHUB_OUTPUT"
                 exit 0
                 ;;
               *)
@@ -347,8 +401,14 @@ jobs:
             esac
             sleep 15
           done
-          echo "::error::Deploy did not become live within 10 minutes (expected commit ${EXPECTED_SHA}). This is a DEPLOY problem, not a solver regression -- check Render before reading the assertions below."
-          exit 1
+          # NOT an error, and NOT `exit 1` -- see section 6B. Failing here paints
+          # a red check on the very commit `render.yaml`'s `autoDeployTrigger:
+          # checksPass` is evaluating, which blocks the deploy this step is
+          # waiting for and makes the condition permanent. Warn, publish
+          # `deploy_live=false`, and let every gated step below skip.
+          echo "::warning::Deploy did not become live within 10 minutes (expected commit ${EXPECTED_SHA}; /api/health last reported ${LIVE}). This is a DEPLOY condition, not a solver regression -- the assertions below are SKIPPED rather than run against the old container. Check Render, then re-run this workflow once the deploy lands."
+          echo "deploy_live=false" >> "$GITHUB_OUTPUT"
+          exit 0
 
       # Section 4 above: derives a fresh, run-unique `starting_fuel` value
       # in [0.970, 0.999] from `github.run_id`, quantized to the same 3
@@ -358,6 +418,7 @@ jobs:
       # once and shared via GITHUB_ENV so every later step in this job
       # reads the identical value.
       - name: Compute this run's cache-busting starting_fuel perturbation
+        if: steps.wait.outputs.deploy_live == 'true'
         run: |
           RUN_MOD=$(( GITHUB_RUN_ID % 30 ))
           STARTING_FUEL=$(awk -v m="$RUN_MOD" 'BEGIN { printf "%.3f", 0.970 + (m * 0.001) }')
@@ -378,6 +439,7 @@ jobs:
       # `vehicle` key, so the request both stays the API-default profile
       # AND reliably misses the cache.
       - name: "Assert: Los Angeles -> New York City"
+        if: steps.wait.outputs.deploy_live == 'true'
         run: |
           BODY_FILE=$(mktemp)
           HEADER_FILE=$(mktemp)
@@ -419,6 +481,7 @@ jobs:
           sleep 4
 
       - name: "Assert: Dallas -> Seattle (demo chip, coordinates)"
+        if: steps.wait.outputs.deploy_live == 'true'
         run: |
           BODY_FILE=$(mktemp)
           HEADER_FILE=$(mktemp)
@@ -458,6 +521,7 @@ jobs:
           sleep 4
 
       - name: "Assert: Los Angeles -> Denver -> Chicago (multi-stop)"
+        if: steps.wait.outputs.deploy_live == 'true'
         run: |
           BODY_FILE=$(mktemp)
           HEADER_FILE=$(mktemp)
@@ -509,6 +573,7 @@ jobs:
       # `_endpoint_token` -- an `a:` address token vs a `c:` coordinate
       # token), matching the literal input `18-VERIFICATION.md` issued.
       - name: "Assert: Dallas, TX -> Seattle, WA (ROADMAP criterion 1's exact worked example, addresses)"
+        if: steps.wait.outputs.deploy_live == 'true'
         run: |
           BODY_FILE=$(mktemp)
           HEADER_FILE=$(mktemp)
