@@ -354,6 +354,72 @@ class ClassifyRemovalsFourClassReconciliationTests(SimpleTestCase):
             "penalty_dominated=1 (opis_id 3, dominated by opis_id 2)",
         )
 
+    def test_no_op_prune_fires_the_margin_blocked_attribution_gate(self):
+        """Phase 25 gap closure G2, Task 3 (D-06 no-op direction). Guard 3
+        (the per-retention attribution gate) has never had a test -- this
+        closes that hole. `prune(x) -> x`: BOTH stations are RETAINED
+        (nothing removed). opis_id 2 (real-priced, pricier) is one a
+        price-only reading would have removed (opis_id 1 is cheaper and
+        co-located), so it is counted margin-blocked -- but its only
+        qualifying dominator, opis_id 1, is REAL-priced, so no condition-3
+        provenance blocker exists to explain the retention, and the gate
+        must fire. A retention floor (e.g. asserting margin_blocked <= N)
+        would pass this input silently; only an attribution gate catches
+        it.
+        """
+        cheap_real = _candidate(opis_id=1, price="2.00", position=0)
+        pricier_real = _candidate(opis_id=2, price="3.00", position=0)
+        ordered = [cheap_real, pricier_real]
+        retained = [cheap_real, pricier_real]  # no-op prune: nothing removed
+
+        with self.assertRaises(CommandError) as ctx:
+            classify_removals(
+                ordered, retained, tank_range_mi=TANK_RANGE_MI, total_route_mi=TOTAL_ROUTE_MI
+            )
+
+        self.assertIn("could not individually attribute", str(ctx.exception))
+        self.assertIn(str(pricier_real.opis_id), str(ctx.exception))
+
+    def test_overlap_term_is_zero_when_no_penalty_dominated_removal_is_price_only_removable(self):
+        """Phase 25 gap closure G2, Task 3 (conditionality anchor). Reuses
+        `test_penalty_dominated_class_reachable_in_isolation`'s exact
+        corpus: the removed station has no earlier cheaper-or-equal
+        covering station at all (its only earlier station is PRICIER), so
+        `_would_be_removed_under_price_only` is False for it and it
+        cannot be a member of the overlap set. With the overlap term
+        empty, the corrected equality collapses to its pre-correction
+        form exactly -- pinning that the new term is a counted set
+        membership CONDITIONAL on a real property, not an unconditional
+        slack allowance that would make the equality satisfiable by
+        construction regardless of input.
+        """
+        pricier_but_good_enough = _candidate(opis_id=1, price="3.30", position=0)
+        cheap_not_worth_the_stop = _candidate(opis_id=2, price="3.00", position=100)
+        ordered = [pricier_but_good_enough, cheap_not_worth_the_stop]
+        retained = [pricier_but_good_enough]
+
+        self.assertFalse(
+            _would_be_removed_under_price_only(
+                cheap_not_worth_the_stop,
+                [pricier_but_good_enough],
+                tank_range_mi=TANK_RANGE_MI,
+                total_route_mi=TOTAL_ROUTE_MI,
+            ),
+            "witness setup error: the removed station must have NO earlier "
+            "cheaper-or-equal covering station, so it cannot be in the overlap set",
+        )
+
+        result = classify_removals(
+            ordered,
+            retained,
+            tank_range_mi=TANK_RANGE_MI,
+            total_route_mi=TOTAL_ROUTE_MI,
+            mpg=MPG,
+            penalty=PENALTY,
+        )
+
+        self.assertEqual(result, (0, 0, 0, 1))
+
     def test_classify_removals_never_calls_prune_dominated_candidates(self):
         """Mechanical proof of the independence claim the module docstring
         makes: patch `routing.services.prune.prune_dominated_candidates`
