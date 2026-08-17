@@ -892,9 +892,18 @@ def _collect_prune_inertness_violations(path):
 # new test-module call to `prune_dominated_candidates` (its own test
 # module mocks the seams instead of running a real sweep). 6 production,
 # 51 test, 57 total.
-PRUNE_CALL_SITE_PRODUCTION_COUNT = 6
+#
+# [Amended 2026-08-18, Phase 26 plan 26-02] Re-walked after plan 26-02
+# added `routing/management/commands/measure_heuristic_candidate_diff.py`.
+# Its `_measure_cell` function calls `prune_dominated_candidates` once
+# per cell (World B's SHIPPED, unstrengthened search set -- `mpg=`/
+# `penalty=` both omitted) -- one new production call site. Test count
+# untouched -- `test_heuristic_candidate_diff.py` calls the command
+# module's own `_measure_cell`/`_row_for_cell` helpers rather than
+# `prune_dominated_candidates` directly. 7 production, 51 test, 58 total.
+PRUNE_CALL_SITE_PRODUCTION_COUNT = 7
 PRUNE_CALL_SITE_TEST_COUNT = 51
-PRUNE_CALL_SITE_TOTAL_COUNT = 57
+PRUNE_CALL_SITE_TOTAL_COUNT = 58
 
 
 class PruneInertnessGateTest(SimpleTestCase):
