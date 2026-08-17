@@ -99,7 +99,100 @@ The rule ships zero tuned constants -- no distance window, no prefilter
 width, no empirical threshold of any kind. This is the surviving principle
 of the now-void old completeness argument, restated for this rule: the
 admission test reads only ``(pos_B, price_B)`` of one other station plus
-``T`` and ``L``, nothing more.
+``T`` and ``L``, nothing more. The penalty-domination condition below
+(Phase 25) reads two further caller-supplied quantities, ``mpg`` and
+``penalty`` -- not tuned constants of the rule, since neither is chosen by
+this module: both are threaded through from the same request-scoped
+values ``solver.solve()`` already receives, exactly as ``tank_range_mi``
+and ``total_route_mi`` already are.
+
+## Penalty domination (Phase 25 D-01, D-02)
+
+Active only when a caller supplies **both** ``mpg`` and ``penalty`` (see
+the parameter-tuple amendment under this module's public function below);
+with either omitted, this section does not apply and the three-condition
+rule above is the entire story -- byte-for-byte, on every input.
+
+**Station A is additionally removable if some station B, ranked strictly
+before A under the total order, whose supply interval covers A's exactly
+as condition 2 above requires (``pos_B == pos_A`` **OR** ``pos_B + T >=
+L`` -- the same geometry, not a new one; D-03 below shows no third
+geometric case exists), satisfies all of:**
+
+  4a. ``price_B >= price_A`` -- B is the pricier-or-equal alternative a
+      driver would use instead of making a special stop at A. (Phase 25's
+      own D-02 decision record states "cheaper-or-equal alternative" in
+      prose, but its own formula fixes the direction unambiguously the
+      other way: A is the cheaper station being bypassed, B the pricier
+      one whose reach already suffices. Recorded here, explicitly, so a
+      later reader does not re-derive the direction backwards.)
+  4b. ``(price_B - price_A) * tank_range_mi / mpg < penalty`` -- the
+      maximum fuel saving A can ever deliver over B is bounded above by
+      the price difference times a full tank's worth of gallons, because
+      one tank supplies at most ``tank_range_mi`` miles. Below the flat
+      per-stop charge, stopping at A can never pay for itself.
+  4c. ``margin_B <= margin_A`` in the exact provenance sense condition 3
+      above already defines -- reused, not re-derived: an estimate-priced
+      B may not bypass a real-priced A. No margin *parameter* is added;
+      this reads the same ``is_estimate_priced`` binary condition 3 reads.
+
+4a and 4b together are this phase's "not worth the stop" reading: A is a
+genuinely cheaper station, but the fuel dollars it can save over simply
+continuing to B -- which the shared geometry already guarantees is
+sufficient, alone, to finish the route -- are smaller than the flat
+per-stop charge, so a fixed-charge-minimizing plan would never choose to
+make the extra stop at A once that gap clears 4b's bound, regardless of
+how cheap A's own price actually is. This is the conceptual anchor
+already shipped in this codebase's own vocabulary:
+``routing.services.solver.PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP``,
+which today's greedy structurally cannot produce and today's DP can.
+
+Condition 4c is **load-bearing for soundness, not defensive** -- exactly
+like condition 3 above, and for the identical underlying reason: the
+objective charges a per-gallon trust margin on ``eia_regional_estimate``-
+priced stops (``trust_margin_for``, see "Soundness" below), so the TRUE
+saving A could ever deliver is computed on margin-adjusted prices, not
+raw ones -- while 4b's bound above is computed on **raw** prices only (no
+``trust_margin`` parameter is threaded through this rule at all; see the
+parameter-tuple amendment below). Enumerate the four provenance pairings
+for ``(A, B)`` to see why the raw-price bound is sound in three of them
+and unsound in exactly the fourth, which 4c forbids:
+
+  - **A real, B real.** Both margins are ``0``; the raw difference already
+    equals the margin-adjusted difference. The raw bound is exact.
+  - **A estimate, B estimate.** Both margins equal ``trust_margin``, so
+    the margin terms cancel in the difference. The raw bound is exact
+    again.
+  - **A estimate, B real.** ``margin_A = trust_margin``, ``margin_B = 0``.
+    The margin-adjusted difference is
+    ``(price_B - price_A) - trust_margin``, strictly **less** than the raw
+    difference whenever ``trust_margin > 0``. The raw bound *overstates*
+    the true saving here, so bounding the raw difference below ``penalty``
+    is still a sound, conservative test of the true (smaller) saving.
+  - **A real, B estimate -- the pairing condition 4c forbids.** The
+    margin-adjusted difference is
+    ``(price_B - price_A) + trust_margin``, strictly **greater** than the
+    raw difference whenever ``trust_margin > 0``. Here the raw bound
+    *understates* the true saving: a real-priced A can have a true saving
+    over an estimate-priced B that clears the penalty even though the
+    raw-price test alone says it does not, and removing A on the raw test
+    alone would be **unsound** -- exactly the failure 4c exists to
+    prevent.
+
+Because condition 4c is a provenance **binary**, never a margin dollar
+value, the rule needs no ``trust_margin`` parameter to enforce it -- this
+is precisely why D-04's two-parameter signature (``mpg``, ``penalty``) is
+*sufficient* for a sound rule, not merely convenient.
+
+**Reach-safety (D-05) restated for this condition.** Removing A here never
+manufactures infeasibility, for the same structural reason the three-
+condition rule above never does: B satisfies the identical geometric
+containment condition 2 already requires, so B is reachable everywhere A
+is and B's supply interval already contains A's entire supply interval.
+The "Feasibility corollary" section below is therefore unchanged by this
+condition -- it was never stated in terms of *why* a dominator's price
+qualifies, only in terms of the shared geometry, and this condition
+reuses that geometry exactly rather than inventing a new one.
 
 ## Soundness
 
@@ -167,6 +260,34 @@ applies at every ``trust_margin`` including zero. The inertness claim
 above therefore rests on the dataset holding zero estimate-priced rows,
 not on the margin itself being zero.
 
+**[Amended 2026-08-17, Phase 25] D-09(a): what changes about this
+inertness once the penalty-domination condition exists.** The paragraph
+above is restated here, not superseded -- it remains true exactly as
+written, for the three-condition rule with ``mpg``/``penalty`` omitted
+(the only rule that runs at zero estimate-priced rows in this codebase's
+own dataset today): condition 3 is provenance-shaped, not magnitude-
+shaped, so retained counts are provably identical at ``trust_margin = 0``
+and at the production ``$5.47`` for *that* rule.
+
+What genuinely changes is the *reason* the claim would hold for the
+Phase-25 rule, once a caller supplies both ``mpg`` and ``penalty``. Before
+this phase, the reason was structural and total: "the function takes no
+trust-margin argument at all," so there was nothing for the margin's
+dollar value to move. That reason no longer explains anything once the
+rule reads a dollar-valued ``penalty`` argument -- a dollar-valued
+argument existing at all is precisely the shape of thing that could, in
+principle, make retained counts margin-sensitive. The inertness survives
+regardless, but now for a narrower, *conditional* reason: condition 4c's
+provenance guard, together with the raw-price-is-an-upper-bound argument
+proved above for three of its four pairings. Drop 4c and this inertness
+would fail immediately -- the fourth (forbidden) pairing is exactly the
+counterfactual that demonstrates it, pinned as a permanent witness in
+``routing/tests/test_prune_soundness.py`` (see
+``PenaltyDominationMarginSensitivityWitnessTests``, added alongside this
+amendment). Provenance-shaped inertness that depends on a proviso is a
+different, weaker claim than unconditional structural inertness, and this
+note exists so a later reader does not conflate the two.
+
 This does **not** extend to two stations jointly covering ``A``: with a
 per-stop charge, splitting ``A``'s purchase across ``B1`` and ``B2`` costs
 ``2 * penalty + margin_B1 + margin_B2 + price_B1 * q1 + price_B2 * q2``,
@@ -201,6 +322,27 @@ multi-station covers are unsound or unreachable -- that is a different,
 harder question this phase does not answer (see "Soundness" above for
 exactly why a per-stop charge breaks the multi-station case, and why this
 phase declines to prove anything about it).
+
+**[Amended 2026-08-17, Phase 25] D-03: the claim above is widened, not
+narrowed.** The paragraph above already scoped itself correctly to
+single-station domination; what is new is the observation that its own
+containment argument is not merely the tightest case reachable by THIS
+module's two admission conditions -- it is the tightest case reachable by
+**any** cover of stations at positions ``<= pos_A``, single-station or
+not, under a purely geometric argument. For any such cover
+``{S_1, ..., S_k}``, the union of their supply intervals has right edge
+``min(max(pos_i) + T, L)``, because every ``supply(S_i)`` itself has right
+edge ``min(pos_i + T, L)`` and the maximum of those is achieved either at
+the cover's own farthest-right member or, once any single member already
+reaches ``L``, at ``L`` itself. That union edge reaches
+``min(pos_A + T, L)`` -- i.e. covers ``supply(A)`` in full -- if and only
+if some ``pos_i == pos_A`` (closing the gap by position) or some
+``pos_i + T >= L`` (closing it by already reaching FINISH): **exactly**
+condition 2's two branches, with no dependence on how many stations are in
+the cover. So no purely geometric strengthening exists on the backward
+side, for a cover of any size -- this is precisely why Phase 25's D-01
+introduces penalty-awareness (see "Penalty domination" above) rather than
+a wider geometric rule: geometry alone was already exhausted.
 
 A dominator that is itself later found removable is harmless, because
 containment is transitive: if ``B`` dominates ``A`` and ``B`` is itself
@@ -268,8 +410,49 @@ def _as_decimal(value):
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
+def _exact_sub(a, b):
+    """Exact ``a - b`` for two ``Decimal``s, bypassing whatever ambient
+    context precision (``decimal.getcontext().prec``, 28 significant
+    digits by default) happens to be active when this runs.
+
+    Duplicated from ``routing.services.dp._exact_sub`` rather than
+    imported -- that function is a private (leading-underscore), module-
+    internal helper of a sibling solver-boundary module, and importing a
+    private name across a module boundary is fragile in exactly the way
+    this module's own docstring elsewhere warns against. Both copies use
+    the identical "exact integer arithmetic over each operand's own
+    ``(sign, digits, exponent)`` triple" discipline; see ``dp.py``'s own
+    docstring for the full precision-loss story this technique fixes
+    (real committed corridor fixture positions routinely carry 28-29
+    significant digits, and plain ``Decimal.__sub__`` silently rounds a
+    difference that needs more precision than the ambient context allows).
+    Applied here to condition 4b's ``price_B - price_A`` difference, per
+    this project's standing rule that a hot-path ``Decimal`` difference on
+    the solver boundary never uses the plain operator.
+    """
+    a_sign, a_digits, a_exponent = a.as_tuple()
+    b_sign, b_digits, b_exponent = b.as_tuple()
+    exponent = min(a_exponent, b_exponent)
+
+    def _coefficient(sign, digits, digit_exponent):
+        value = 0
+        for digit in digits:
+            value = value * 10 + digit
+        if sign:
+            value = -value
+        return value * (10 ** (digit_exponent - exponent))
+
+    diff = _coefficient(a_sign, a_digits, a_exponent) - _coefficient(
+        b_sign, b_digits, b_exponent
+    )
+    sign = 1 if diff < 0 else 0
+    magnitude = -diff if sign else diff
+    digit_str = str(magnitude) if magnitude else "0"
+    return Decimal((sign, tuple(int(d) for d in digit_str), exponent))
+
+
 def prune_dominated_candidates(
-    candidates, *, tank_range_mi, total_route_mi
+    candidates, *, tank_range_mi, total_route_mi, mpg=None, penalty=None
 ) -> list[Candidate]:
     """Return the subset of ``candidates`` that survive the domination rule
     above, as a new list sorted by the total order
@@ -278,39 +461,74 @@ def prune_dominated_candidates(
     returned element is one of the input objects, never a reconstruction.
     An empty input returns an empty list.
 
-    Carries no ``penalty`` parameter and no undeclared knob of any kind --
-    the parameter tuple is exactly ``(candidates, tank_range_mi,
-    total_route_mi)`` -- and, per D-01, no ``trust_margin`` parameter
-    either: the margin, like the penalty, is never a prune parameter. It is
-    read off each candidate through ``routing.services.solver
-    .is_estimate_priced`` (condition 3 above), the module's single shared
-    decision-position provenance read.
+    Carries no undeclared knob of any kind beyond the two below.
+
+    [Amended 2026-08-17, Phase 25] D-04: the parameter-tuple claim above
+    ("the parameter tuple is exactly ``(candidates, tank_range_mi,
+    total_route_mi)``, and, per D-01, no ``trust_margin`` parameter
+    either") is superseded. The tuple is now
+    ``(candidates, tank_range_mi, total_route_mi, mpg, penalty)``.
+    ``mpg`` and ``penalty`` are keyword-only and both default to ``None``;
+    the "Penalty domination" section above activates only when **both**
+    are supplied, so every existing call site (``solve()`` included) that
+    omits them keeps compiling and keeps returning byte-identical output.
+    "No ``trust_margin`` parameter either" is still true -- and, per
+    condition 4c's proof above, it is now a **proved** property of the
+    rule (the raw-price bound is a genuine upper bound on the true saving
+    in three of the four provenance pairings, and the fourth is forbidden
+    outright) rather than merely an absence of a knob nobody added yet.
+    The trust margin is still read off each candidate only through
+    ``routing.services.solver.is_estimate_priced`` (conditions 3 and 4c),
+    the module's single shared decision-position provenance read.
 
     Implementation shape (a plain sort plus two linear passes, no tuned
-    constants): first keep only the candidates at each distinct position
-    that are not dominated by an already-retained candidate there under
-    both condition 1 (price) and condition 3 (provenance) -- this alone
-    resolves every co-located-pair case, because the total order already
-    places cheaper stations first among ties at a shared position, and an
-    estimate-priced candidate may be dominated by any cheaper-or-equal
-    retained candidate while a real-priced candidate may only be dominated
-    by a cheaper-or-equal retained *real-priced* one. Then, among the
-    survivors whose own supply interval reaches FINISH (``pos + T >= L``),
-    keep only the candidates not dominated by an earlier retained
-    tail-reaching candidate under the same two conditions -- a later such
-    station is removable exactly when an earlier, no-more-expensive,
-    non-dominated-by-provenance one is available, per condition 2's
-    ``pos_B + T >= L`` branch. Stations whose own interval does not reach
-    FINISH are never dominators under that branch (their own condition 2
-    fails), and any B that could remove one of them there would already
-    have to sit at or before it in position with `pos_B + T >= L`, which --
-    since B ranks first in the total order -- means B is at least as cheap
-    as, and no more provenance-restricted than, any co-located duplicate
-    already removed in the first pass; nothing is lost by resolving the two
-    passes in this order.
+    constants beyond the two caller-supplied quantities above): first keep
+    only the candidates at each distinct position that are not dominated
+    by an already-retained candidate there under both condition 1 (price)
+    and condition 3 (provenance) -- this alone resolves every co-located-
+    pair case, because the total order already places cheaper stations
+    first among ties at a shared position, and an estimate-priced
+    candidate may be dominated by any cheaper-or-equal retained candidate
+    while a real-priced candidate may only be dominated by a cheaper-or-
+    equal retained *real-priced* one. Then, among the survivors whose own
+    supply interval reaches FINISH (``pos + T >= L``), keep only the
+    candidates not dominated by an earlier retained tail-reaching
+    candidate under the same two conditions -- a later such station is
+    removable exactly when an earlier, no-more-expensive, non-dominated-
+    by-provenance one is available, per condition 2's ``pos_B + T >= L``
+    branch. Stations whose own interval does not reach FINISH are never
+    dominators under that branch (their own condition 2 fails), and any B
+    that could remove one of them there would already have to sit at or
+    before it in position with `pos_B + T >= L`, which -- since B ranks
+    first in the total order -- means B is at least as cheap as, and no
+    more provenance-restricted than, any co-located duplicate already
+    removed in the first pass; nothing is lost by resolving the two passes
+    in this order.
+
+    When ``mpg`` and ``penalty`` are both supplied, the second pass gains
+    one further check per tail-reaching candidate (condition 4, "Penalty
+    domination" above): a candidate not already removed by conditions 1-3
+    is additionally removed when the SAME running-minimum tracker that
+    condition 3's provenance rule already allows to dominate it (the
+    "real" tracker for a real-priced candidate, the "any" tracker for an
+    estimate-priced one) is close enough in price that the maximum
+    possible fuel saving over it is provably below ``penalty``. Since a
+    surviving candidate's price is, by construction, always strictly below
+    that tracker at the moment it is tested, the witness used is always an
+    actual, currently-retained tail-reaching station -- never a station
+    that is itself later removed in the same pass -- which is exactly
+    D-05's reach-safety requirement, satisfied by construction rather than
+    checked after the fact. No third pass and no additional tracker are
+    needed: the existing two running minima already carry the correct
+    witness for both conditions.
     """
     tank_range_mi = _as_decimal(tank_range_mi)
     total_route_mi = _as_decimal(total_route_mi)
+    if mpg is not None:
+        mpg = _as_decimal(mpg)
+    if penalty is not None:
+        penalty = _as_decimal(penalty)
+    penalty_domination_active = mpg is not None and penalty is not None
 
     ordered = sorted(
         candidates,
@@ -368,7 +586,9 @@ def prune_dominated_candidates(
     # one over retained tail-reaching real-priced candidates only
     # ("real"), since unlike pass 1's single-position scope, price is not
     # monotonic across positions and either minimum can be set by an
-    # earlier, geographically distant station.
+    # earlier, geographically distant station. When penalty domination is
+    # active (Phase 25, condition 4), the same two trackers also carry the
+    # witness for that check -- see the function docstring above.
     survivors = []
     running_min_price_any = None
     running_min_price_real = None
@@ -386,6 +606,24 @@ def prune_dominated_candidates(
                     running_min_price_real is not None
                     and candidate.price_per_gallon >= running_min_price_real
                 )
+
+            if not removed and penalty_domination_active:
+                # Condition 4 (Phase 25 D-01/D-02): "not worth the stop"
+                # penalty domination. witness_price is whichever tracker
+                # condition 3's own provenance rule already allows to
+                # dominate this candidate -- so `candidate` was not
+                # already removed above, meaning its price is strictly
+                # below witness_price already, and the gap computed below
+                # is always strictly positive here.
+                witness_price = (
+                    running_min_price_any if estimate_priced else running_min_price_real
+                )
+                if witness_price is not None:
+                    price_gap = _exact_sub(witness_price, candidate.price_per_gallon)
+                    max_saving = price_gap * tank_range_mi / mpg
+                    if max_saving < penalty:
+                        removed = True
+
             if removed:
                 continue
 
