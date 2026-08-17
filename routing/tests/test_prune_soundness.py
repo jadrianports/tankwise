@@ -2456,3 +2456,189 @@ class IdenticalPriceClusterPruneSoundnessTests(SimpleTestCase):
             f"{sorted(c.opis_id for c in result)!r}, expected "
             f"{sorted(c.opis_id for c in candidates)!r}.",
         )
+
+
+@dataclass(frozen=True)
+class PrunePenaltyDominationCorpusParams:
+    """The D-06 single source of truth for the penalty-domination
+    (condition 4) anti-vacuity corpus below, mirroring PruneCorpusParams/
+    PruneMixedCorpusParams/PruneClusterCorpusParams' precedent exactly:
+    every field fixed here, before the first retention count is ever
+    computed, and never revisited after seeing a result (D-14).
+
+    Each generated route carries exactly two stations at distinct
+    positions: an earlier, PRICIER station B at b_position_mi, and a
+    later, CHEAPER station A at b_position_mi + a_spacing_mi -- the
+    condition-4 shape (4a requires price_B >= price_A), the mirror image
+    of PruneClusterCorpusParams' equal-priced-dominator shape, where the
+    EARLIER station is the cheaper one. Both stations sit so that
+    pos_B + tank_range_mi >= total_route_mi holds for B, and since
+    pos_A > pos_B the same inequality holds a fortiori for A -- both are
+    tail-reaching, satisfying condition 2's geometry the way
+    PruneClusterCorpusParams' own "tail" placement does, so both are
+    eligible dominator/dominated candidates under prune_dominated_
+    candidates' pass 2.
+
+    Routes alternate, by index, between two price gaps applied to the
+    SAME geometry -- never a different tank_range_mi, total_route_mi or
+    position, so price is the only variable that decides the split:
+
+    * "clears the bar" (even index): the price gap (price_B - price_A) is
+      price_step_above_cents, chosen so max_saving = price_gap *
+      tank_range_mi / mpg sits far ABOVE penalty. Condition 4b's own
+      test (`max_saving < penalty`) is false, so A is not removed by
+      condition 4 -- and since A is cheaper than B, conditions 1-3 (which
+      require the dominator to be cheaper-or-equal) never apply either.
+      Both B and A survive: 2 retained.
+
+    * "fails the bar" (odd index): the price gap is
+      price_step_below_cents, chosen so max_saving sits far BELOW
+      penalty. Condition 4b's test is true, and 4a (price_B >= price_A)
+      and 4c (both stations real-priced, so margin_B == margin_A == 0)
+      both hold trivially, so A is removed by condition 4. Only B
+      survives: 1 retained.
+
+    Both gaps are chosen with a wide, unambiguous margin from `penalty`
+    (roughly 14.3x above and 1/7th below in the pinned instance below)
+    rather than sitting near the boundary -- the boundary itself is the
+    hand-built witness's job (the new test class's own Assertion 3), not
+    this corpus's.
+    """
+
+    seed: int
+    n_routes: int
+    b_position_mi: Decimal
+    a_spacing_mi: Decimal
+    tank_range_mi: Decimal
+    total_route_mi: Decimal
+    mpg: Decimal
+    penalty: Decimal
+    min_price_b_cents: int
+    max_price_b_cents: int
+    price_step_above_cents: int
+    price_step_below_cents: int
+
+
+# The D-06 single shared instance. seed is today's date, distinct from
+# every other corpus's seed in this module. n_routes=40 is even (an
+# exact 20/20 clears/fails split, so PRUNE_PENALTY_DOMINATION_RETENTION_
+# EXPECTATION below has no rounding ambiguity -- mirroring PRUNE_CLUSTER_
+# CORPUS_PARAMS.n_routes=40 exactly).
+#
+# tank_range_mi=500, total_route_mi=700, b_position_mi=250: identical to
+# PRUNE_CLUSTER_CORPUS_PARAMS' own "tail" placement (250 + 500 = 750 >=
+# 700), reused rather than re-derived -- both stations are tail-reaching
+# by the same already-verified arithmetic. a_spacing_mi=5 mirrors
+# PRUNE_CLUSTER_CORPUS_PARAMS.cluster_spacing_mi.
+#
+# mpg=1, penalty=Decimal("35") == PENALTY_ANCHORS[1], chosen deliberately
+# so the closed-form retention below (evaluated once, at this pinned
+# penalty) is directly comparable to the new test class's own
+# PENALTY_ANCHORS sweep (Task 2).
+#
+# price_step_above_cents=100 ($1.00): max_saving = 1.00 * 500 / 1 = $500,
+# ~14.3x penalty -- clears the bar by a wide margin.
+# price_step_below_cents=1 ($0.01): max_saving = 0.01 * 500 / 1 = $5,
+# 1/7 of penalty -- misses the bar by a wide margin.
+#
+# min/max_price_b_cents=300/500 vary only the RANDOMLY-DRAWN base price
+# of B per route (cosmetic variety, matching the other corpora's own
+# price-band draws) -- the GAP applied on top, and therefore max_saving,
+# is fixed by parity alone and never depends on the drawn base price.
+PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS = PrunePenaltyDominationCorpusParams(
+    seed=20260817,
+    n_routes=40,
+    b_position_mi=Decimal("250"),
+    a_spacing_mi=Decimal("5"),
+    tank_range_mi=Decimal("500"),
+    total_route_mi=Decimal("700"),
+    mpg=Decimal("1"),
+    penalty=Decimal("35"),
+    min_price_b_cents=300,
+    max_price_b_cents=500,
+    price_step_above_cents=100,
+    price_step_below_cents=1,
+)
+
+
+def build_penalty_domination_corpus(*, params=PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS):
+    """Deterministically build params.n_routes two-station routes, each a
+    (B, A) pair on the SAME fixed geometry, from a fresh
+    random.Random(params.seed) -- never the global random module, so two
+    consecutive calls return byte-identical corpora (proven by
+    test_build_penalty_domination_corpus_is_deterministic_across_two_calls
+    below), mirroring build_prune_corpus()/build_price_cluster_corpus()'s
+    own determinism precedent exactly.
+
+    Route index parity decides the price gap applied (see
+    PrunePenaltyDominationCorpusParams' own docstring for the full
+    argument): even index -> "clears the bar" (both retained), odd index
+    -> "fails the bar" (only B retained). B's own price is drawn once per
+    route from the pinned band; A's price is B's price minus the
+    parity-selected gap, never drawn independently, so the gap -- and
+    therefore max_saving -- is fixed by parity alone, not by the draw.
+    Both stations are real-priced (the default Candidate.price_source),
+    so condition 4c is trivially satisfied (margin_B == margin_A == 0)
+    and is never the reason either station survives or is removed here.
+    Returns a list of (candidates, clears_bar) tuples.
+    """
+    rng = random.Random(params.seed)
+
+    routes = []
+    for i in range(params.n_routes):
+        clears_bar = i % 2 == 0
+        step_cents = (
+            params.price_step_above_cents if clears_bar else params.price_step_below_cents
+        )
+
+        price_b_cents = rng.randint(params.min_price_b_cents, params.max_price_b_cents)
+        price_a_cents = price_b_cents - step_cents
+
+        b = Candidate(
+            name=f"PB{i}",
+            opis_id=i * 2,
+            price_per_gallon=Decimal(price_b_cents) / Decimal(100),
+            distance_from_start_mi=params.b_position_mi,
+        )
+        a = Candidate(
+            name=f"PA{i}",
+            opis_id=i * 2 + 1,
+            price_per_gallon=Decimal(price_a_cents) / Decimal(100),
+            distance_from_start_mi=params.b_position_mi + params.a_spacing_mi,
+        )
+        routes.append(([b, a], clears_bar))
+    return routes
+
+
+def _expected_penalty_domination_retention(params):
+    """Pure function of PrunePenaltyDominationCorpusParams, derived
+    directly from the domination rule in routing/services/prune.py
+    (conditions 4a, 4b and 4c) -- never measured. Half of params.n_routes
+    (the even-index, "clears the bar" routes) retain BOTH members: A is
+    cheaper than B, so conditions 1-3 (which require the dominator to be
+    cheaper-or-equal) never apply, and condition 4b's own test
+    (price_gap * tank_range_mi / mpg < penalty) is false by construction
+    for price_step_above_cents, so condition 4 does not remove A either.
+    The other half (odd-index, "fails the bar" routes) retain only B:
+    condition 4b's test is true by construction for
+    price_step_below_cents, and 4a (price_B >= price_A) and 4c (both
+    real-priced, margins equal) both hold trivially, so A is removed.
+    See PrunePenaltyDominationCorpusParams' own docstring for the full
+    argument this reduces to arithmetic.
+    """
+    n_clears = params.n_routes // 2
+    n_fails = params.n_routes - n_clears
+    return n_clears * 2 + n_fails * 1
+
+
+# Computed, not hand-typed, from PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS
+# above -- a floor expressed as "removed at least N" (PRUNE_REDUCTION_
+# FLOOR's own shape) would pass a no-op prune(x) -> x just as readily as
+# it would pass an over-pruning implementation that also strips a
+# clears-the-bar route down to one survivor; only an exact equality,
+# derived from the rule rather than measured from a run, catches both
+# directions at once -- exactly PRUNE_CLUSTER_RETENTION_EXPECTATION's own
+# argument, restated here for condition 4 rather than conditions 1-3.
+PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION = _expected_penalty_domination_retention(
+    PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS
+)
