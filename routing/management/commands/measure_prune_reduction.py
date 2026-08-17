@@ -58,6 +58,28 @@ rather than printing a table that quietly contradicts itself:
      over-prunes trips guards 2/3 above, a prune that under-prunes beyond
      what the margin justifies trips this one.
 
+[Amended 2026-08-17, Phase 25] Guards 2 and 4 are widened, not replaced,
+by a fourth `classify_removals()` bucket, `penalty_dominated` (D-08),
+reachable only when a caller supplies both `mpg` and `penalty` -- this
+command's own call site does not, so every table this command prints
+stays byte-for-byte reproducible. Guard 2 now also accepts a
+penalty-dominated dominator (condition 4, `prune.py`) as an explanation
+for a removal. Guard 4's equality is re-derived, not merely widened by a
+term: `margin_blocked` is, and remains, `price_only_removed_count -
+(co_located + tail)` -- the price-and-position-only reading's removals
+minus the geometric, margin-respecting removals alone. Because condition
+4's dominator is a PRICIER-or-equal alternative (the opposite direction
+from conditions 1-3's cheaper-or-equal one), `penalty_dominated` removals
+are, in general, NOT members of the price-only qualifying set at all --
+so `total_removed` (`co_located + tail + penalty_dominated`) is no longer
+interchangeable with `co_located + tail` in this equality once
+`penalty_dominated` is nonzero. The equality is therefore written as
+`margin_blocked_count == price_only_removal_count - actual_removal_count
++ penalty_dominated_count`, which reduces to the original three-class
+form exactly when `penalty_dominated_count == 0` (including every call
+this command's own default, inert path makes). See `classify_removals()`
+below for the full derivation.
+
 This report measures candidate-set reduction only and makes NO latency
 claim -- Phase 18 criterion 5's measured solver latency is where that is
 proven (D-24).
@@ -139,28 +161,110 @@ def _margin_blocking_dominator_exists(candidate, earlier, *, tank_range_mi, tota
     )
 
 
-def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
-    """Attribute every station removed by the prune to either a co-located
-    or a tail dominator, AND every margin-blocked RETENTION to a specific
-    estimate-priced dominator a price-only reading would have accepted --
-    all derived independently from `prune.py`'s own implementation,
-    straight off the rule's three admission conditions (D-01 added the
-    third, provenance-based one) rather than by inspecting the code.
+def _is_penalty_dominated(candidate, earlier, retained_ids, *, tank_range_mi, total_route_mi, mpg, penalty):
+    """[Amended 2026-08-17, Phase 25] Whether some RETAINED station ranked
+    earlier than `candidate` under the D-11 total order satisfies
+    `prune.py`'s penalty-domination conditions 4a-4c against it -- derived
+    from that module's own admission-condition PROSE ("Penalty domination
+    (Phase 25 D-01, D-02)"), never from its implementation body, and this
+    function never imports or calls `prune_dominated_candidates`:
+
+      4a. `price_B >= price_A` -- B is the pricier-or-equal alternative a
+          driver would use instead of a special stop at A (note the
+          direction: opposite conditions 1-3's cheaper-or-equal B).
+      4b. `(price_B - price_A) * tank_range_mi / mpg < penalty` -- the
+          maximum fuel saving A can ever deliver over B is provably below
+          the flat per-stop penalty.
+      4c. `margin_B <= margin_A`, condition 3's provenance binary, reused
+          unchanged: an estimate-priced B may not bypass a real-priced A.
+
+    against the SAME geometric covering condition 2 already requires
+    (`pos_B == pos_A` OR `pos_B + tank_range_mi >= total_route_mi`).
+
+    B is required to be a member of `retained_ids` -- unlike conditions
+    1-3's dominator search above, which accepts ANY earlier-ranked B
+    because transitivity guarantees an earlier RETAINED dominator exists
+    whenever any earlier one does (see `prune.py`'s "Maximality" section).
+    That transitivity argument is proved for conditions 1-3's
+    cheaper-or-equal chain; it is not re-derived here for condition 4's
+    pricier-or-equal, bound-by-penalty chain, so this predicate instead
+    mirrors `prune.py`'s own implementation SCOPE for its witness search
+    (its docstring: "the witness used is always an actual,
+    currently-retained tail-reaching station") without reading that
+    implementation's code to do so.
+
+    Reads only candidate fields (`price_per_gallon`, `distance_from_start_mi`,
+    `price_source`, via `is_estimate_priced`) plus the four caller-supplied
+    scalars.
+    """
+    for b in earlier:
+        if id(b) not in retained_ids:
+            continue
+        if b.price_per_gallon < candidate.price_per_gallon:
+            continue
+        if is_estimate_priced(b) and not is_estimate_priced(candidate):
+            continue
+        covers = (
+            b.distance_from_start_mi == candidate.distance_from_start_mi
+            or b.distance_from_start_mi + tank_range_mi >= total_route_mi
+        )
+        if not covers:
+            continue
+        price_gap = b.price_per_gallon - candidate.price_per_gallon
+        max_saving = price_gap * tank_range_mi / mpg
+        if max_saving < penalty:
+            return True
+    return False
+
+
+def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi, mpg=None, penalty=None):
+    """Attribute every station removed by the prune to a co-located, tail,
+    or penalty-dominated dominator, AND every margin-blocked RETENTION to
+    a specific estimate-priced dominator a price-only reading would have
+    accepted -- all derived independently from `prune.py`'s own
+    implementation, straight off the rule's admission conditions rather
+    than by inspecting the code.
 
     `ordered`: the full candidate list sorted by the D-11 total order
     `(distance_from_start_mi, price_per_gallon, opis_id)`. `retained`: the
     survivors `prune_dominated_candidates` returned for the same
     `tank_range_mi`/`total_route_mi` -- membership is determined by object
-    identity, since the prune returns input objects unchanged.
+    identity, since the prune returns input objects unchanged. `mpg` and
+    `penalty` are keyword-only and both default to `None`.
 
-    For each removed station A, this looks for an earlier-ranked station B
-    (earlier under the SAME total order) with `price_B <= price_A` AND
-    NOT (B is estimate-priced while A is real-priced) -- condition 3's
-    margin-aware qualifying set. Among all such B, A is classified
-    `co_located` when at least one shares A's exact position
-    (`pos_B == pos_A`) -- tested FIRST so the two buckets stay disjoint --
-    otherwise `tail` when at least one has
-    `pos_B + tank_range_mi >= total_route_mi`.
+    [Amended 2026-08-17, Phase 25] D-08: a fourth class, `penalty_dominated`,
+    is added alongside the original three (`co_located`, `tail`,
+    `margin_blocked`), reachable only when a caller supplies BOTH `mpg`
+    and `penalty`. With either omitted, behaviour is byte-for-byte what it
+    was before this amendment: `penalty_dominated` is always `0`, and the
+    first three returned tallies are unchanged on any input -- this keeps
+    the command's own default (inert) call, and every currently-published
+    figure it produces, reproducible.
+
+    **Superseded three-class wording, preserved:** "For each removed
+    station A, this looks for an earlier-ranked station B (earlier under
+    the SAME total order) with `price_B <= price_A` AND NOT (B is
+    estimate-priced while A is real-priced) -- condition 3's margin-aware
+    qualifying set. Among all such B, A is classified `co_located` when at
+    least one shares A's exact position (`pos_B == pos_A`) -- tested FIRST
+    so the two buckets stay disjoint -- otherwise `tail` when at least one
+    has `pos_B + tank_range_mi >= total_route_mi`."
+
+    **Four-class precedence (D-08), why it matters:** co-located, THEN
+    tail, THEN penalty-dominated. A removal explainable by a geometric
+    condition (co-located or tail) is attributed there FIRST;
+    `penalty_dominated` collects only removals that no geometric condition
+    explains. This ordering is not cosmetic -- without a stated
+    precedence, a removal satisfying both a geometric condition and the
+    penalty condition could be attributed to either bucket depending on
+    which check happened to run first, and a reconciliation that merely
+    sums to the right total while attributing individual removals
+    inconsistently is exactly the kind of false-positive-passing gate this
+    module exists to prevent. It is also structurally sound: a removed,
+    non-tail-reaching station can only ever be removed by the co-located,
+    price-based pass (`prune.py`'s pass 1 has no penalty check at all), so
+    checking the geometric buckets first never wrongly defers a removal
+    that penalty domination could also explain to the penalty bucket.
 
     Separately, for each RETAINED station A that a price-only reading
     (conditions 1 and 2 only, ignoring provenance) would have removed,
@@ -170,33 +274,59 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
     earlier-ranked, estimate-priced B satisfying the price-only
     conditions -- not merely counted.
 
-    Because the margin-aware qualifying set (used for the removal
-    attribution above) is a STRICT SUBSET of the price-only qualifying set
-    (D-03's extended closed-form equality), margin-aware removals are
-    themselves a subset of price-only removals, and their difference is
-    exactly the margin-blocked set: `margin_blocked_count ==
-    price_only_removal_count - actual_removal_count`. Adding this third
-    bucket without asserting that equality would re-open the
-    `prune(x) -> x` vacuity hole Phase 17 closed -- a prune that retained
-    everything would pass every OTHER check here with zero unexplained
-    removals and a passing sum, leaving nothing to say the third bucket
-    ever did anything; the equality closes that hole in both directions.
+    **The closed-form equality, RE-DERIVED for the four-class world
+    (D-08):** in the three-class world, the margin-aware qualifying set
+    (used for the co-located/tail attribution above) is a STRICT SUBSET of
+    the price-only qualifying set (D-03's extended closed-form equality),
+    so margin-aware removals were themselves a subset of price-only
+    removals, and their difference was exactly the margin-blocked set:
+    `margin_blocked_count == price_only_removal_count -
+    actual_removal_count`, where `actual_removal_count` and
+    `co_located + tail` were interchangeable because those were the only
+    two removal buckets that existed.
 
-    Returns `(co_located_count, tail_count, margin_blocked_count)`.
-    Raises `CommandError` if: any removal cannot be explained by either
-    the co-located or the tail bucket; the co-located and tail tallies do
-    not sum to the total number of removed stations; any margin-blocked
-    retention cannot be individually attributed to a specific
-    estimate-priced dominator; or `margin_blocked_count` does not equal
-    the price-only removal count minus the actual removal count. Any of
-    these means this independent reading of the rule disagrees with what
-    the prune actually did, and the report must stop rather than
-    mis-report.
+    That interchangeability breaks once `penalty_dominated` exists,
+    because condition 4's dominator is a PRICIER-or-equal B (4a) --
+    the OPPOSITE direction from conditions 1-3's cheaper-or-equal B -- so
+    a `penalty_dominated` removal is, in general, NOT a member of the
+    price-only qualifying set at all: the price-only reading has no
+    reason to have flagged it. `margin_blocked` is, and remains, defined
+    against the geometric, price-based removals alone
+    (`price_only_removal_count - (co_located + tail)`), NOT against
+    `total_removed` (`co_located + tail + penalty_dominated`). Substituting
+    `total_removed - penalty_dominated` for `co_located + tail` gives the
+    widened equality actually asserted below:
+    `margin_blocked_count == price_only_removal_count -
+    actual_removal_count + penalty_dominated_count`. This reduces to the
+    original three-class equality exactly when `penalty_dominated_count
+    == 0` (every call this command's own default path makes), and it
+    still closes the `prune(x) -> x` vacuity hole Phase 17 built: a prune
+    that retained everything would produce zero removals of every kind,
+    zero unexplained removals, and a passing sum, with nothing left to
+    say the third or fourth bucket ever did anything -- the equality
+    fails in both directions regardless of how many removal buckets exist.
+
+    Returns `(co_located_count, tail_count, margin_blocked_count,
+    penalty_dominated_count)` -- the first three positions preserved
+    byte-for-byte from the pre-amendment 3-tuple shape, `penalty_dominated
+    _count` appended last.
+
+    Raises `CommandError` if: any removal cannot be explained by a
+    co-located, tail, or (when active) penalty-dominated dominator; the
+    co-located, tail and penalty-dominated tallies do not sum to the total
+    number of removed stations; any margin-blocked retention cannot be
+    individually attributed to a specific estimate-priced dominator; or
+    `margin_blocked_count` does not equal the widened closed-form
+    equality above. Any of these means this independent reading of the
+    rule disagrees with what the prune actually did, and the report must
+    stop rather than mis-report.
     """
+    penalty_domination_requested = mpg is not None and penalty is not None
     retained_ids = {id(c) for c in retained}
 
     co_located = 0
     tail = 0
+    penalty_dominated = 0
     unexplained = []
     margin_blocked = 0
     margin_blocked_unexplained = []
@@ -232,14 +362,29 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
             co_located += 1
         elif any(b.distance_from_start_mi + tank_range_mi >= total_route_mi for b in qualifying):
             tail += 1
+        elif penalty_domination_requested and _is_penalty_dominated(
+            candidate,
+            earlier,
+            retained_ids,
+            tank_range_mi=tank_range_mi,
+            total_route_mi=total_route_mi,
+            mpg=mpg,
+            penalty=penalty,
+        ):
+            penalty_dominated += 1
         else:
             unexplained.append(candidate)
 
     if unexplained:
         opis_ids = [c.opis_id for c in unexplained]
+        dominator_classes = (
+            "a co-located, tail, or penalty-dominated dominator"
+            if penalty_domination_requested
+            else "either a co-located or a tail dominator"
+        )
         raise CommandError(
             f"classify_removals could not attribute {len(unexplained)} removal(s) "
-            f"(opis_id={opis_ids}) to either a co-located or a tail dominator -- "
+            f"(opis_id={opis_ids}) to {dominator_classes} -- "
             "the prune and an independent reading of its own stated rule disagree."
         )
 
@@ -254,23 +399,25 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi):
         )
 
     total_removed = len(ordered) - len(retained)
-    if co_located + tail != total_removed:
+    if co_located + tail + penalty_dominated != total_removed:
         raise CommandError(
-            f"classify_removals tallies (co_located={co_located}, tail={tail}) do not "
-            f"sum to the total number removed ({total_removed}) -- the prune and an "
-            "independent reading of its own stated rule disagree."
+            f"classify_removals tallies (co_located={co_located}, tail={tail}, "
+            f"penalty_dominated={penalty_dominated}) do not sum to the total number "
+            f"removed ({total_removed}) -- the prune and an independent reading of "
+            "its own stated rule disagree."
         )
 
-    expected_margin_blocked = price_only_removed_count - total_removed
+    expected_margin_blocked = price_only_removed_count - total_removed + penalty_dominated
     if margin_blocked != expected_margin_blocked:
         raise CommandError(
             f"margin_blocked_count ({margin_blocked}) does not equal the price-only "
             f"removal count ({price_only_removed_count}) minus the actual removal "
-            f"count ({total_removed}) -- the closed-form equality that catches "
+            f"count ({total_removed}) plus the penalty-dominated count "
+            f"({penalty_dominated}) -- the closed-form equality that catches "
             "over-pruning and under-pruning alike has failed."
         )
 
-    return co_located, tail, margin_blocked
+    return co_located, tail, margin_blocked, penalty_dominated
 
 
 def _station_provenance():
@@ -297,7 +444,12 @@ class Command(BaseCommand):
         "calls, works with no routing-provider token set. Must NOT run in "
         "CI -- the figures are evidence, not a pass/fail gate; "
         "PruneReductionGuardTests in routing/tests/test_prune_soundness.py "
-        "is the CI-enforcing guard that exists instead."
+        "is the CI-enforcing guard that exists instead. [Amended "
+        "2026-08-17, Phase 25] classify_removals() also supports a fourth, "
+        "penalty-dominated attribution class (D-08), but this command's "
+        "own call site does not pass mpg= or penalty= -- the "
+        "strengthened-rule path is OFF by default, so every table this "
+        "command prints stays byte-for-byte reproducible."
     )
 
     def add_arguments(self, parser):
@@ -408,7 +560,12 @@ class Command(BaseCommand):
                     tank_range_mi=tank_range_mi,
                     total_route_mi=route.total_route_mi,
                 )
-                co_located, tail, margin_blocked = classify_removals(
+                # mpg= and penalty= are intentionally omitted (D-08): this
+                # command's own default path stays inert to the
+                # penalty-dominated class (always 0, hence discarded as
+                # `_penalty_dominated`), so every figure it has ever
+                # published stays byte-for-byte reproducible.
+                co_located, tail, margin_blocked, _penalty_dominated = classify_removals(
                     ordered,
                     retained,
                     tank_range_mi=tank_range_mi,
