@@ -1246,3 +1246,116 @@ class VerdictSweepGuardTests(SimpleTestCase):
         ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
             command._measure_one_repeat(cell, 0, len(LIVE_PROBE_CACHE_BUST_LADDER))
         self.assertNotIn(sentinel, out.getvalue())
+
+    # --- Task 2: per-cell-relative cache-bust ----------------------------
+
+    def test_legacy_cell_produces_absolute_ladder_values_in_order(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        cell = dict(LIVE_PROBE_CELLS[0])  # carries no base_starting_fuel
+        seen_fuels = []
+
+        def fake_post(url, **kwargs):
+            seen_fuels.append(Decimal(kwargs["json"]["vehicle"]["starting_fuel"]))
+            return self._fake_route_response()  # genuine miss -- no retry
+
+        ladder_rungs = len(LIVE_PROBE_CACHE_BUST_LADDER)
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            command._measure_one_repeat(cell, 0, ladder_rungs)
+            command._measure_one_repeat(cell, 1, ladder_rungs)
+
+        self.assertEqual(
+            seen_fuels, [LIVE_PROBE_CACHE_BUST_LADDER[0], LIVE_PROBE_CACHE_BUST_LADDER[1]]
+        )
+
+    def test_corridor_verdict_cell_produces_four_distinct_relative_values_below_base(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        cell = self._corridor_verdict_cell()
+        seen_fuels = []
+
+        def fake_post(url, **kwargs):
+            seen_fuels.append(Decimal(kwargs["json"]["vehicle"]["starting_fuel"]))
+            return self._fake_route_response(stages="cache;dur=1.0")  # always a cache hit
+
+        ladder_rungs = len(VERDICT_PROBE_CACHE_BUST_FRACTIONS)
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            for repeat_index in range(VERDICT_PROBE_REPEATS):
+                command._measure_one_repeat(
+                    cell, repeat_index, ladder_rungs, ladder=VERDICT_PROBE_CACHE_BUST_FRACTIONS
+                )
+
+        self.assertEqual(len(set(seen_fuels)), 4)
+        for value in seen_fuels:
+            self.assertLess(value, cell["base_starting_fuel"])
+            self.assertLessEqual(value, Decimal("0.6"))
+
+    def test_demo_verdict_cell_produces_four_distinct_values_around_base_one(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        cell = self._demo_verdict_cell()
+        seen_fuels = []
+
+        def fake_post(url, **kwargs):
+            seen_fuels.append(Decimal(kwargs["json"]["vehicle"]["starting_fuel"]))
+            return self._fake_route_response(stages="cache;dur=1.0")  # always a cache hit
+
+        ladder_rungs = len(VERDICT_PROBE_CACHE_BUST_FRACTIONS)
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            for repeat_index in range(VERDICT_PROBE_REPEATS):
+                command._measure_one_repeat(
+                    cell, repeat_index, ladder_rungs, ladder=VERDICT_PROBE_CACHE_BUST_FRACTIONS
+                )
+
+        self.assertEqual(len(set(seen_fuels)), 4)
+        for value in seen_fuels:
+            self.assertLess(value, Decimal(1))
+            self.assertGreater(value, Decimal("0.9"))
+
+    def test_retry_fires_at_most_once_on_a_forced_double_cache_hit(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        cell = self._corridor_verdict_cell()
+        call_count = {"n": 0}
+
+        def fake_post(url, **kwargs):
+            call_count["n"] += 1
+            return self._fake_route_response(stages="cache;dur=1.0")  # always a cache hit
+
+        ladder_rungs = len(VERDICT_PROBE_CACHE_BUST_FRACTIONS)
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            row, attempts = command._measure_one_repeat(
+                cell, 0, ladder_rungs, ladder=VERDICT_PROBE_CACHE_BUST_FRACTIONS
+            )
+
+        self.assertEqual(attempts, 2)
+        self.assertEqual(call_count["n"], 2)
+        self.assertTrue(row.cache_hit)

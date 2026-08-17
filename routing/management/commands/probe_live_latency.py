@@ -76,6 +76,7 @@ from routing.tests.test_live_latency_probe import (
     LIVE_PROBE_REQUEST_TIMEOUT_SECONDS,
     LIVE_PROBE_WAKE_TIMEOUT_SECONDS,
     RECOVERY_PROBE_CELLS,
+    relative_cache_bust_starting_fuel,
 )
 
 
@@ -380,13 +381,28 @@ class Command(BaseCommand):
         self._print_request_accounting(requests_issued, implied_count)
         self._print_disclaimer()
 
-    def _measure_one_repeat(self, cell, repeat_index, ladder_rungs):
+    def _measure_one_repeat(self, cell, repeat_index, ladder_rungs, *, ladder=LIVE_PROBE_CACHE_BUST_LADDER):
         """Issue at most two attempts for one (cell, repeat): the primary
-        attempt at `LIVE_PROBE_CACHE_BUST_LADDER[repeat_index]`, and -- if
-        and only if that attempt is a cache hit -- exactly ONE retry at
-        the next ladder rung. Never more than one retry, per the module
-        docstring's own rule; a still-cache-hit second attempt is
-        recorded as a cache-hit row, never re-retried."""
+        attempt at `ladder[repeat_index]`, and -- if and only if that
+        attempt is a cache hit -- exactly ONE retry at the next ladder
+        rung. Never more than one retry, per the module docstring's own
+        rule; a still-cache-hit second attempt is recorded as a cache-hit
+        row, never re-retried.
+
+        `ladder` defaults to the legacy absolute `LIVE_PROBE_CACHE_BUST_
+        LADDER`, so both legacy sweeps' call sites (`_run_sweep`,
+        `_run_recovery_sweep`) keep working with no argument change.
+
+        Dual interpretation of `ladder[rung_index]`, keyed on the CELL,
+        never on a mode flag (RESEARCH.md Pitfall 2): when `cell` carries
+        `base_starting_fuel`, the rung is treated as a FRACTION fed into
+        `relative_cache_bust_starting_fuel(base, rung)`, perturbing
+        around that cell's own pinned vehicle -- the shape
+        `VERDICT_PROBE_CACHE_BUST_FRACTIONS` needs. When `cell` carries
+        no `base_starting_fuel` (every `LIVE_PROBE_CELLS`/
+        `RECOVERY_PROBE_CELLS` entry), the rung is used directly as the
+        absolute `starting_fuel` value, byte-identical to this method's
+        pre-Phase-26 behaviour."""
         attempts = 0
         row = None
         for attempt_num in range(2):
@@ -394,7 +410,12 @@ class Command(BaseCommand):
             if rung_index >= ladder_rungs:
                 break
             time.sleep(LIVE_PROBE_INTER_REQUEST_SECONDS)
-            ladder_value = LIVE_PROBE_CACHE_BUST_LADDER[rung_index]
+            rung = ladder[rung_index]
+            base_starting_fuel = cell.get("base_starting_fuel")
+            if base_starting_fuel is not None:
+                ladder_value = relative_cache_bust_starting_fuel(base_starting_fuel, rung)
+            else:
+                ladder_value = rung
             vehicle = dict(cell["vehicle"])
             vehicle["starting_fuel"] = str(ladder_value)
             (
