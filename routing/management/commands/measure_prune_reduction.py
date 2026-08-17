@@ -80,6 +80,42 @@ form exactly when `penalty_dominated_count == 0` (including every call
 this command's own default, inert path makes). See `classify_removals()`
 below for the full derivation.
 
+[Amended 2026-08-17, Phase 25 gap closure G2] The paragraph above's claim
+that `penalty_dominated` removals are, in general, "NOT members of the
+price-only qualifying set at all" is FALSE, and is preserved verbatim
+above per this project's amend-in-place convention rather than rewritten.
+Confirmed on real committed corridor geometry, not merely argued in the
+abstract (25-07-SUMMARY.md Task 1): on
+`sacramento_ca-salt_lake_city_ut`@1050mi, removed candidate opis_id 3585
+(real-priced, $3.499/gal, position 221.15mi) is a member of BOTH sets --
+the price-only reading flags it because of opis_id 1301118989 (an
+earlier, cheaper-or-equal, estimate-priced covering station, $3.469/gal,
+position 3.86mi) that condition 3 blocks from actually dominating it (A
+is real-priced), while its only margin-respecting explanation is
+condition 4's PRICIER-or-equal witness, opis_id 67158 (retained,
+real-priced, $3.539/gal, position 133.18mi, maximum fuel saving
+$0.04 * 1050mi / 10mpg = $4.20, well under the $35 penalty). The
+mechanism: condition 3 blocks an estimate-priced station from dominating
+a real-priced one, so a removed real-priced candidate can have an
+earlier estimate-priced cheaper-or-equal covering station (which the
+price-only reading, ignoring provenance entirely, does flag) while its
+only margin-respecting explanation is condition 4's pricier-or-equal
+witness -- and such a candidate is counted in BOTH
+`price_only_removed_count` AND `penalty_dominated`. The equality is
+corrected by an independently-tallied new term,
+`penalty_dominated_and_price_only` -- a count of exactly this set
+membership, incremented once per removal inside the existing
+penalty-domination classification branch, guarded by the same
+`price_only_would_remove` boolean already computed for that candidate.
+The corrected equality is: `margin_blocked_count ==
+price_only_removal_count - actual_removal_count + penalty_dominated_count
+- penalty_dominated_and_price_only_count`, which reduces to this
+amendment's own three-term form exactly when
+`penalty_dominated_and_price_only_count == 0` -- true whenever no
+`penalty_dominated` removal is also price-only removable (Test B,
+`routing/tests/test_measure_prune_reduction.py`). See
+`classify_removals()` below for the full re-derivation.
+
 This report measures candidate-set reduction only and makes NO latency
 claim -- Phase 18 criterion 5's measured solver latency is where that is
 proven (D-24).
@@ -306,6 +342,42 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi, mpg=N
     say the third or fourth bucket ever did anything -- the equality
     fails in both directions regardless of how many removal buckets exist.
 
+    [Amended 2026-08-17, Phase 25 gap closure G2] The paragraph above is
+    preserved verbatim, per this project's amend-in-place convention, but
+    its claim that a `penalty_dominated` removal is "in general, NOT a
+    member of the price-only qualifying set at all" is FALSE. Confirmed
+    on real committed corridor geometry (25-07-SUMMARY.md Task 1,
+    `sacramento_ca-salt_lake_city_ut`@1050mi, opis_id 3585): condition 3
+    blocks an estimate-priced station from dominating a real-priced one,
+    so a removed real-priced candidate can have an earlier estimate-priced
+    cheaper-or-equal covering station -- which the price-only reading,
+    ignoring provenance entirely, DOES flag -- while its only
+    margin-respecting explanation is condition 4's pricier-or-equal
+    witness. Such a candidate is a member of BOTH sets simultaneously.
+
+    The corrected derivation is the exact partition it always was: the
+    price-only removal set decomposes, with no remainder, into (i)
+    margin-blocked RETENTIONS, (ii) `co_located` removals, (iii) `tail`
+    removals, and (iv) removals that are `penalty_dominated` AND ALSO
+    price-only removable -- the new `penalty_dominated_and_price_only`
+    tally. Rearranging that partition for `margin_blocked` gives the
+    corrected line: `margin_blocked_count == price_only_removal_count -
+    actual_removal_count + penalty_dominated_count -
+    penalty_dominated_and_price_only_count`.
+
+    What remains substantive and falsifiable in this identity: every
+    `co_located` and every `tail` removal is ALSO price-only removable,
+    because the margin-aware qualifying set (conditions 1-3) is a subset
+    of the price-only qualifying set (conditions 1-2 only) -- containment
+    that breaks, and the equality with it, the moment either predicate is
+    changed. The new term is likewise substantive, not a slack allowance:
+    it is a counted set membership computed from the same two predicates
+    (`_would_be_removed_under_price_only`, `_is_penalty_dominated`) the
+    function already computes for every candidate, and it is provably 0
+    whenever no `penalty_dominated` removal is price-only removable --
+    Task 3's conditionality anchor test (`routing/tests/
+    test_measure_prune_reduction.py`) pins exactly that case.
+
     Returns `(co_located_count, tail_count, margin_blocked_count,
     penalty_dominated_count)` -- the first three positions preserved
     byte-for-byte from the pre-amendment 3-tuple shape, `penalty_dominated
@@ -327,6 +399,7 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi, mpg=N
     co_located = 0
     tail = 0
     penalty_dominated = 0
+    penalty_dominated_and_price_only = 0
     unexplained = []
     margin_blocked = 0
     margin_blocked_unexplained = []
@@ -372,6 +445,8 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi, mpg=N
             penalty=penalty,
         ):
             penalty_dominated += 1
+            if price_only_would_remove:
+                penalty_dominated_and_price_only += 1
         else:
             unexplained.append(candidate)
 
@@ -407,14 +482,20 @@ def classify_removals(ordered, retained, *, tank_range_mi, total_route_mi, mpg=N
             "its own stated rule disagree."
         )
 
-    expected_margin_blocked = price_only_removed_count - total_removed + penalty_dominated
+    expected_margin_blocked = (
+        price_only_removed_count
+        - total_removed
+        + penalty_dominated
+        - penalty_dominated_and_price_only
+    )
     if margin_blocked != expected_margin_blocked:
         raise CommandError(
             f"margin_blocked_count ({margin_blocked}) does not equal the price-only "
             f"removal count ({price_only_removed_count}) minus the actual removal "
             f"count ({total_removed}) plus the penalty-dominated count "
-            f"({penalty_dominated}) -- the closed-form equality that catches "
-            "over-pruning and under-pruning alike has failed."
+            f"({penalty_dominated}) minus the penalty-dominated-and-price-only "
+            f"count ({penalty_dominated_and_price_only}) -- the closed-form "
+            "equality that catches over-pruning and under-pruning alike has failed."
         )
 
     return co_located, tail, margin_blocked, penalty_dominated

@@ -23,6 +23,7 @@ from django.test import SimpleTestCase
 
 from routing.management.commands.measure_prune_reduction import (
     _is_penalty_dominated,
+    _would_be_removed_under_price_only,
     classify_removals,
 )
 from routing.services import Candidate
@@ -287,6 +288,71 @@ class ClassifyRemovalsFourClassReconciliationTests(SimpleTestCase):
             )
 
         self.assertIn("do not sum to the total number removed", str(ctx.exception))
+
+    def test_penalty_dominated_removal_can_also_be_price_only_removable(self):
+        """Phase 25 gap closure G2. Confirmed on real committed corridor
+        geometry (`sacramento_ca-salt_lake_city_ut`@1050mi, opis_id 3585,
+        25-07-SUMMARY.md Task 1) that a `penalty_dominated` removal CAN
+        also be a member of the price-only qualifying set -- the shipped
+        equality's disjointness assumption is false. This is a
+        hand-built, small-scale witness of that same mechanism: an
+        ESTIMATE-priced station (opis_id 1) is a cheaper-or-equal covering
+        dominator the price-only reading accepts for opis_id 3, but
+        condition 3 blocks it from dominating opis_id 3 (real-priced) --
+        opis_id 3's only margin-respecting explanation is condition 4's
+        pricier-or-equal witness, the REAL-priced opis_id 2.
+
+        TANK_RANGE_MI == TOTAL_ROUTE_MI == 1000 (class-shared), so every
+        station's own supply interval trivially reaches FINISH.
+        """
+        estimate_cheap = _candidate(opis_id=1, price="3.00", position=0, estimate=True)
+        real_pricier = _candidate(opis_id=2, price="3.30", position=0)
+        real_removed = _candidate(opis_id=3, price="3.00", position=100)
+        ordered = sorted(
+            [estimate_cheap, real_pricier, real_removed],
+            key=lambda c: (c.distance_from_start_mi, c.price_per_gallon, c.opis_id),
+        )
+        retained = [estimate_cheap, real_pricier]
+
+        # Witness setup check: the corpus must be a genuine overlap
+        # witness -- both predicates independently True on opis_id 3 --
+        # not an assumption.
+        earlier = [c for c in ordered if c is not real_removed]
+        self.assertTrue(
+            _would_be_removed_under_price_only(
+                real_removed, earlier, tank_range_mi=TANK_RANGE_MI, total_route_mi=TOTAL_ROUTE_MI
+            ),
+            "witness setup error: opis_id 3 must be price-only removable",
+        )
+        self.assertTrue(
+            _is_penalty_dominated(
+                real_removed,
+                earlier,
+                {id(estimate_cheap), id(real_pricier)},
+                tank_range_mi=TANK_RANGE_MI,
+                total_route_mi=TOTAL_ROUTE_MI,
+                mpg=MPG,
+                penalty=PENALTY,
+            ),
+            "witness setup error: opis_id 3 must be penalty_dominated",
+        )
+
+        result = classify_removals(
+            ordered,
+            retained,
+            tank_range_mi=TANK_RANGE_MI,
+            total_route_mi=TOTAL_ROUTE_MI,
+            mpg=MPG,
+            penalty=PENALTY,
+        )
+
+        self.assertEqual(
+            result,
+            (0, 0, 1, 1),
+            "corrected equality expected: co_located=0, tail=0, margin_blocked=1 "
+            "(opis_id 2, blocked by opis_id 1's estimate-priced dominance), "
+            "penalty_dominated=1 (opis_id 3, dominated by opis_id 2)",
+        )
 
     def test_classify_removals_never_calls_prune_dominated_candidates(self):
         """Mechanical proof of the independence claim the module docstring
