@@ -1359,3 +1359,206 @@ class VerdictSweepGuardTests(SimpleTestCase):
         self.assertEqual(attempts, 2)
         self.assertEqual(call_count["n"], 2)
         self.assertTrue(row.cache_hit)
+
+    def test_legacy_sweep_methods_signatures_unchanged_at_their_call_sites(self):
+        """Structural pin: `_run_sweep`/`_run_recovery_sweep` must still
+        call `_measure_one_repeat` with exactly the pre-Phase-26 three
+        positional arguments, never passing `ladder=` themselves -- the
+        one thing that makes the legacy absolute-ladder branch trigger
+        by default rather than by an explicit override."""
+        import ast
+        import inspect
+
+        from routing.management.commands import probe_live_latency
+
+        source = inspect.getsource(probe_live_latency)
+        tree = ast.parse(source)
+        call_sites = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_measure_one_repeat"
+        ]
+        # _run_sweep, _run_recovery_sweep, and _run_verdict_sweep each
+        # call it exactly once -- three call sites total.
+        self.assertEqual(len(call_sites), 3)
+        legacy_call_sites = [c for c in call_sites if not c.keywords]
+        self.assertEqual(len(legacy_call_sites), 2)
+        for call in legacy_call_sites:
+            self.assertEqual(len(call.args), 3)
+
+    # --- Task 3: the --verdict sweep -------------------------------------
+
+    def test_verdict_and_recovery_are_mutually_exclusive(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("probe_live_latency", "--verdict", "--recovery")
+
+    def test_verdict_and_anomaly_are_mutually_exclusive(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("probe_live_latency", "--verdict", "--anomaly")
+
+    def test_enforce_budget_default_ceiling_is_still_live_probe_max_requests(self):
+        import io
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        command._enforce_budget(LIVE_PROBE_MAX_REQUESTS, "test")  # must not raise
+        with self.assertRaises(CommandError):
+            command._enforce_budget(LIVE_PROBE_MAX_REQUESTS + 1, "test")
+
+    def test_verdict_table_header_states_disagreement_is_expected(self):
+        import io
+
+        from routing.management.commands.probe_live_latency import Command, ProbeRow
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        row = ProbeRow(
+            cell_label="X",
+            repeat_index=0,
+            ladder_value=Decimal("0.5"),
+            status_code=200,
+            wall_time_s=1.0,
+            stages_ms={"solver": 5.0, "total": 10.0},
+            censored=False,
+            cache_hit=False,
+            solver_strategy="exact_dp",
+            offline_admitted=True,
+        )
+        command._print_verdict_table([row])
+        output = out.getvalue()
+        self.assertIn("side by side and never reconciled", output)
+        self.assertIn("expected", output.lower())
+        self.assertIn("DispatchAdmissionManifestTests", output)
+
+    def test_build_verdict_input_rows_carry_exactly_the_documented_keys(self):
+        import io
+
+        from routing.management.commands.probe_live_latency import Command, ProbeRow
+
+        command = Command(stdout=io.StringIO())
+        rows = [
+            ProbeRow(
+                cell_label=cell["label"],
+                repeat_index=0,
+                ladder_value=Decimal("0.5"),
+                status_code=200,
+                wall_time_s=1.0,
+                stages_ms={"solver": 5.0},
+                censored=False,
+                cache_hit=False,
+                solver_strategy="exact_dp",
+                slug=cell["slug"],
+                tank_range_mi=cell["tank_range_mi"],
+                offline_admitted=cell["offline_admitted"],
+            )
+            for cell in VERDICT_PROBE_CELLS
+        ]
+        verdict_rows, floor_rows = command._build_verdict_input(rows)
+
+        self.assertEqual(len(verdict_rows), 26)
+        self.assertEqual(len(floor_rows), 26)
+        expected_verdict_keys = {
+            "slug",
+            "tank_range_mi",
+            "shipped_policy_strategy",
+            "worst_of_repeats_solver_strategy",
+            "worst_of_repeats_total_response_seconds",
+        }
+        expected_floor_keys = {
+            "slug",
+            "tank_range_mi",
+            "confirmed_warm",
+            "repeats",
+            "all_repeats_genuine_cache_miss",
+            "reported_figure_kind",
+        }
+        for row in verdict_rows:
+            self.assertEqual(set(row.keys()), expected_verdict_keys)
+        for row in floor_rows:
+            self.assertEqual(set(row.keys()), expected_floor_keys)
+            self.assertEqual(row["reported_figure_kind"], "worst")
+
+    def test_verdict_sweep_all_clean_prints_both_arm_columns_and_reaches_verdict(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+
+        def fake_wake(self_):
+            self_._confirmed_commit_sha = "deadbeef1234"
+            return 0.01
+
+        def fake_post(url, **kwargs):
+            return self._fake_route_response(
+                solver_strategy="exact_dp",
+                fuel_stops=[{"opis_id": 1}],
+                total_cost="42.00",
+                price_index_status="current",
+            )
+
+        with mock.patch.object(Command, "_wake", fake_wake), mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            verdict = command._run_verdict_sweep()
+
+        output = out.getvalue()
+        self.assertIn("26-CELL VERDICT TABLE", output)
+        self.assertIn("offline_arm=", output)
+        self.assertIn("live_arm=", output)
+        self.assertIn("D-12 MEASUREMENT-FLOOR FACTS", output)
+        self.assertIn("confirmed deployed commit SHA: deadbeef1234", output)
+        self.assertIn("DISPATCH VERDICT:", output)
+        self.assertIn(verdict, ("RECOVERED", "NOT RECOVERED"))
+
+    def test_verdict_sweep_one_cache_hit_only_cell_raises_and_names_it(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        bad_cell = VERDICT_PROBE_CELLS[0]
+
+        def fake_wake(self_):
+            self_._confirmed_commit_sha = "deadbeef1234"
+            return 0.01
+
+        def fake_post(url, **kwargs):
+            body = kwargs["json"]
+            if body["start"] == bad_cell["start"] and body["finish"] == bad_cell["finish"]:
+                return self._fake_route_response(stages="cache;dur=1.0")  # never a genuine miss
+            return self._fake_route_response(
+                solver_strategy="exact_dp",
+                fuel_stops=[{"opis_id": 1}],
+                total_cost="10.00",
+                price_index_status="current",
+            )
+
+        with mock.patch.object(Command, "_wake", fake_wake), mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            side_effect=fake_post,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            with self.assertRaises(CommandError):
+                command._run_verdict_sweep()
+
+        output = out.getvalue()
+        self.assertIn(bad_cell["slug"], output)
+        self.assertNotIn("DISPATCH VERDICT:", output)

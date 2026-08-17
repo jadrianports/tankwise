@@ -15,7 +15,7 @@ per-IP `ROUTE_THROTTLE_SUSTAINED_RATE=200/day` throttle -- exactly why its
 budget is enforced in code (`LIVE_PROBE_MAX_REQUESTS`, checked BEFORE a
 single request is issued) rather than trusted to whoever runs it.
 
-Two modes, one shared protocol (wake -- now also confirming the deployed
+Four modes, one shared protocol (wake -- now confirming the deployed
 commit SHA before trusting anything below it, D-12 fact 1 -- then
 measure, never print a response body):
 
@@ -25,6 +25,12 @@ measure, never print a response body):
     (`ANOMALY_REQUEST`) and apply the falsification branch pinned in
     `test_live_latency_probe.py`'s module docstring, printing exactly one
     of two verdicts (CONFIRMED / REFUTED -- UNEXPLAINED).
+  - `--recovery`: sweep `RECOVERY_PROBE_CELLS` and apply D-18's
+    measurement floor and `recovery_verdict`.
+  - `--verdict` (Phase 26 D-11/D-12/D-13): sweep the full 26-cell
+    `VERDICT_PROBE_CELLS` matrix, printing each cell's pinned OFFLINE
+    admission beside its LIVE observed arm (never reconciled), then the
+    same D-18-style measurement floor and headline verdict.
 
 `--expect-commit <sha>` overrides the default expected commit (the local
 `git rev-parse HEAD`) for every mode -- the wake step now hard-fails,
@@ -58,6 +64,7 @@ import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from routing.services.solver import SolverStrategy
 from routing.tests.test_dispatch_recovery import (
     RESPONSE_BAR_SECONDS,
     measurement_floor_violations,
@@ -76,6 +83,11 @@ from routing.tests.test_live_latency_probe import (
     LIVE_PROBE_REQUEST_TIMEOUT_SECONDS,
     LIVE_PROBE_WAKE_TIMEOUT_SECONDS,
     RECOVERY_PROBE_CELLS,
+    VERDICT_PROBE_CACHE_BUST_FRACTIONS,
+    VERDICT_PROBE_CELLS,
+    VERDICT_PROBE_MAX_REQUESTS,
+    VERDICT_PROBE_REPEATS,
+    VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_REPEAT,
     relative_cache_bust_starting_fuel,
 )
 
@@ -182,6 +194,19 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--verdict",
+            action="store_true",
+            help=(
+                "Sweep VERDICT_PROBE_CELLS (the full 26-cell D-11 dispatch "
+                "verdict matrix) at VERDICT_PROBE_REPEATS repeats, print "
+                "each cell's pinned OFFLINE admission beside its LIVE "
+                "observed arm, then the D-12 measurement-floor violations "
+                "and the headline verdict. Exits non-zero if any "
+                "measurement-floor violation stands -- no verdict may be "
+                "declared over a dirty floor."
+            ),
+        )
+        parser.add_argument(
             "--expect-commit",
             default=None,
             help=(
@@ -193,12 +218,19 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         self._expect_commit = options.get("expect_commit")
-        if options["anomaly"] and options["recovery"]:
-            raise CommandError("--anomaly and --recovery are mutually exclusive.")
+        modes_selected = sum(
+            [bool(options["anomaly"]), bool(options["recovery"]), bool(options["verdict"])]
+        )
+        if modes_selected > 1:
+            raise CommandError(
+                "--anomaly, --recovery, and --verdict are mutually exclusive."
+            )
         if options["anomaly"]:
             self._run_anomaly()
         elif options["recovery"]:
             self._run_recovery_sweep()
+        elif options["verdict"]:
+            self._run_verdict_sweep()
         else:
             self._run_sweep()
 
@@ -727,6 +759,206 @@ class Command(BaseCommand):
         verdict_rows = []
         floor_rows = []
         for cell in RECOVERY_PROBE_CELLS:
+            cell_rows = [r for r in rows if r.cell_label == cell["label"]]
+            genuine = [r for r in cell_rows if r.is_genuine_miss]
+            all_genuine = bool(cell_rows) and all(r.is_genuine_miss for r in cell_rows)
+
+            if genuine:
+                worst_row = max(genuine, key=lambda r: r.wall_time_s)
+                worst_total_s = Decimal(str(worst_row.wall_time_s))
+                worst_strategy = worst_row.solver_strategy
+            else:
+                worst_total_s = Decimal(RESPONSE_BAR_SECONDS) * Decimal(1000)
+                worst_strategy = None
+
+            verdict_rows.append(
+                {
+                    "slug": cell["slug"],
+                    "tank_range_mi": cell["tank_range_mi"],
+                    "shipped_policy_strategy": cell["pre_phase_shipped_arm"],
+                    "worst_of_repeats_solver_strategy": worst_strategy,
+                    "worst_of_repeats_total_response_seconds": worst_total_s,
+                }
+            )
+            floor_rows.append(
+                {
+                    "slug": cell["slug"],
+                    "tank_range_mi": cell["tank_range_mi"],
+                    "confirmed_warm": True,  # this sweep always calls _wake() first
+                    "repeats": len(cell_rows),
+                    "all_repeats_genuine_cache_miss": all_genuine,
+                    "reported_figure_kind": "worst",
+                }
+            )
+        return verdict_rows, floor_rows
+
+    # --- verdict sweep (--verdict, D-11/D-12/D-13) -----------------------
+
+    def _run_verdict_sweep(self):
+        """Sweep `VERDICT_PROBE_CELLS` -- the full 26-cell D-11 dispatch
+        verdict matrix -- reusing `_wake`/`_measure_one_repeat`/
+        `measurement_floor_violations`/`recovery_verdict` entirely,
+        mirroring `_run_recovery_sweep`'s structure. D-12 fact (3) (no
+        measured row is ever a cold-start row) needs no new tracking
+        here: `_wake()` gates the whole sweep before the measurement loop
+        below issues a single request, the exact same "always True
+        because `_wake()` ran" pattern `_build_recovery_verdict_input`
+        already relies on. Exits non-zero while any measurement-floor
+        violation stands; no verdict may be declared over a dirty floor.
+        """
+        ladder_rungs = len(VERDICT_PROBE_CACHE_BUST_FRACTIONS)
+        implied_count = (
+            len(VERDICT_PROBE_CELLS)
+            * VERDICT_PROBE_REPEATS
+            * VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_REPEAT
+            + 1
+        )
+        self._enforce_budget(implied_count, "verdict sweep", ceiling=VERDICT_PROBE_MAX_REQUESTS)
+        self.stdout.write(
+            f"VERDICT SWEEP -- Budget check: implied worst-case "
+            f"requests={implied_count} <= VERDICT_PROBE_MAX_REQUESTS="
+            f"{VERDICT_PROBE_MAX_REQUESTS}. Proceeding against "
+            f"{LIVE_PROBE_BASE_URL}."
+        )
+        self.stdout.write("")
+
+        self._wake()
+        requests_issued = 1
+
+        rows = []
+        for cell in VERDICT_PROBE_CELLS:
+            for repeat_index in range(VERDICT_PROBE_REPEATS):
+                row, attempts = self._measure_one_repeat(
+                    cell, repeat_index, ladder_rungs, ladder=VERDICT_PROBE_CACHE_BUST_FRACTIONS
+                )
+                requests_issued += attempts
+                rows.append(row)
+
+        self._print_verdict_table(rows)
+        self._print_d12_facts(rows)
+        self._print_request_accounting(requests_issued, implied_count)
+
+        verdict_rows, floor_rows = self._build_verdict_input(rows)
+
+        self.stdout.write(self.style.WARNING("MEASUREMENT-FLOOR VIOLATIONS:"))
+        violations = measurement_floor_violations(floor_rows)
+        if violations:
+            for violation in violations:
+                self.stdout.write(f"    {violation}")
+        else:
+            self.stdout.write("    (none)")
+        self.stdout.write("")
+
+        if violations:
+            self.stdout.write(
+                self.style.ERROR(
+                    "NO VERDICT MAY BE DECLARED: at least one measurement-"
+                    "floor violation stands above. Re-run against a "
+                    "confirmed-warm instance with every repeat a genuine "
+                    "cache miss rather than accepting this reading."
+                )
+            )
+            raise CommandError(
+                "Measurement floor violated -- see MEASUREMENT-FLOOR "
+                "VIOLATIONS above. No verdict declared."
+            )
+
+        verdict = recovery_verdict(verdict_rows)
+        self.stdout.write(self.style.SUCCESS(f"DISPATCH VERDICT: {verdict}"))
+        return verdict
+
+    def _print_verdict_table(self, rows):
+        """Per-cell table: the pinned OFFLINE admission and the LIVE
+        observed arm printed SIDE BY SIDE, never reconciled (D-13) --
+        plus solver-stage ms, wall time, stop count, total cost,
+        price_index_status, cache-hit/censored flags, and a `DISAGREES`
+        marker where the two arm columns differ."""
+        self.stdout.write(self.style.SUCCESS("26-CELL VERDICT TABLE:"))
+        self.stdout.write(
+            "    NOTE: the OFFLINE and LIVE arm columns below are printed "
+            "side by side and never reconciled (D-13). Disagreement is "
+            "EXPECTED, not a defect -- DispatchAdmissionManifestTests' own "
+            "docstring states it deliberately does not assert live "
+            "strategy, because an admitted cell can still breach the "
+            "2.8s deadline on a slow box and fall back to the heuristic."
+        )
+        by_cell = {}
+        for row in rows:
+            by_cell.setdefault(row.cell_label, []).append(row)
+        for label, cell_rows in by_cell.items():
+            offline_admitted = cell_rows[0].offline_admitted
+            offline_arm = (
+                SolverStrategy.EXACT_DP
+                if offline_admitted
+                else SolverStrategy.PENALTY_AWARE_HEURISTIC
+            )
+            self.stdout.write(f"    {label} (offline_arm={offline_arm}):")
+            for row in cell_rows:
+                solver_ms = row.stages_ms.get("solver")
+                total_ms = row.stages_ms.get("total")
+                marker = (
+                    "CENSORED"
+                    if row.censored
+                    else "CACHE-HIT (no latency figure)"
+                    if row.cache_hit
+                    else "GENUINE MISS"
+                )
+                disagrees = (
+                    (not row.censored)
+                    and (not row.cache_hit)
+                    and row.solver_strategy is not None
+                    and row.solver_strategy != offline_arm
+                )
+                self.stdout.write(
+                    f"        repeat={row.repeat_index} status={row.status_code} "
+                    f"wall={row.wall_time_s:.2f}s solver_stage_ms={solver_ms} "
+                    f"total_stage_ms={total_ms} live_arm={row.solver_strategy} "
+                    f"stop_count={row.stop_count} total_cost={row.total_cost} "
+                    f"price_index_status={row.price_index_status} "
+                    f"cache_hit={row.cache_hit} censored={row.censored} -- "
+                    f"{marker}" + (" -- DISAGREES" if disagrees else "")
+                )
+        self.stdout.write("")
+
+    def _print_d12_facts(self, rows):
+        """D-12's four facts, printed loudly: (1) the confirmed deployed
+        SHA `_wake()` already verified before a single row above was
+        measured; (2) the genuine-cache-miss count out of the attempted
+        total; (3) the statement that a wake preceded every measured
+        request (structural, not per-row tracked -- see `_run_verdict_
+        sweep`'s own docstring); (4) the distinct `price_index_status`
+        values observed."""
+        self.stdout.write(self.style.SUCCESS("D-12 MEASUREMENT-FLOOR FACTS:"))
+        genuine = [r for r in rows if r.is_genuine_miss]
+        price_statuses = sorted(
+            {r.price_index_status for r in rows if r.price_index_status is not None}
+        )
+        self.stdout.write(
+            f"    (1) confirmed deployed commit SHA: "
+            f"{getattr(self, '_confirmed_commit_sha', None)}"
+        )
+        self.stdout.write(
+            f"    (2) genuine cache misses: {len(genuine)} of {len(rows)} attempted rows"
+        )
+        self.stdout.write(
+            "    (3) a wake preceded every measured request in this sweep "
+            "-- the whole sweep is gated on one successful _wake() call "
+            "before the measurement loop begins, so no row above is ever "
+            "a cold-start row."
+        )
+        self.stdout.write(f"    (4) distinct price_index_status values observed: {price_statuses}")
+        self.stdout.write("")
+
+    def _build_verdict_input(self, rows):
+        """Reduce this sweep's raw `ProbeRow`s (one per attempt) into the
+        one-row-per-cell shapes `recovery_verdict`/`measurement_floor_
+        violations` require -- worst-of-repeats over GENUINE cache misses
+        only, exactly as `_build_recovery_verdict_input` already reduces
+        `RECOVERY_PROBE_CELLS`' rows. `reported_figure_kind` is fixed at
+        `"worst"` on every row."""
+        verdict_rows = []
+        floor_rows = []
+        for cell in VERDICT_PROBE_CELLS:
             cell_rows = [r for r in rows if r.cell_label == cell["label"]]
             genuine = [r for r in cell_rows if r.is_genuine_miss]
             all_genuine = bool(cell_rows) and all(r.is_genuine_miss for r in cell_rows)
