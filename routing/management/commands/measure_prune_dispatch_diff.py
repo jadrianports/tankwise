@@ -49,6 +49,21 @@ have chosen on an otherwise-unchanged cell is a correctness bug, not an
 optimization, and that check raises `CommandError` rather than merely
 reporting a number.
 
+[Amended 2026-08-18, Phase 25 gap closure G1] The paragraph above
+(preserved verbatim) overstates this check's coverage. `solve()` runs the
+penalty-aware heuristic over the FULL unpruned candidate list, never over
+the pruned search set (`solver.py:555-565`, `533-554`), while this
+harness's own two-world swap (`measure_dispatch_grid.py:396-397`) hands
+that arm a genuinely different input in each world -- so a cell whose
+compared plan came from the heuristic in both worlds cannot have its
+identity meaningfully checked by this method at all, whatever its arm or
+timed-strategy agreement. `_identity_check_exclusion_reason` is now the
+single source of truth for which cells this check actually covers (the
+exact-arm subset of the grid, not every arm-unchanged cell); see its
+docstring and `_check_plan_identity`'s own amendment for the full
+citation and the report's own `## Cells excluded from the plan-identity
+gate` section for the per-cell accounting.
+
 This plan (25-05) does not run the full 26-cell sweep -- plan 25-06 does,
 against this committed, tested command rather than one still being edited
 mid-measurement.
@@ -67,6 +82,7 @@ from routing.management.commands.measure_dispatch_grid import (
 from routing.management.commands.measure_prune_reduction import classify_removals
 from routing.services import corridor, dp
 from routing.services.prune import prune_dominated_candidates
+from routing.services.solver import SolverStrategy
 from routing.services.station_csv_paths import reseed_all
 from routing.tests.test_corridor_fixtures import factor_lookup_for_basis
 from routing.tests.test_dispatch_recovery import DEMOTED_CELL_COUNT, plateau_verdict
@@ -259,6 +275,96 @@ def diff_cell_results(before_results, after_results):
     return diffs
 
 
+def _identity_check_exclusion_reason(diff):
+    """The single shared definition of which cells the plan-identity gate
+    (`_check_plan_identity`) checks, and which cells the excluded-cells
+    report section (`_render_unchecked_cells_section`) names instead.
+    Returns `None` when the cell IS checked, or a short human-readable
+    reason string when it is not. Both call sites must obtain their
+    exclusion decision from THIS function -- never by re-deriving
+    exclusion from the underlying fields -- so the gate and the report can
+    never disagree about which cells were checked (T-25-37).
+
+    Exactly five branches, in this order, and no others:
+
+    1. either world is censored -- there is no plan to compare.
+    2. `admitted_at_current_budget` differs between worlds -- the dispatch
+       arm changed, exactly the recovery this sweep exists to find;
+       applying the identity check here would forbid the very thing being
+       measured.
+    3. `timed_strategy` differs between worlds -- pre-existing filter.
+       This field is wall-clock dependent: a deadline breach in one world
+       only (`dp.DeadlineExceededError`, `solver.py:533-554`) demotes
+       that world's strategy without the other world moving, a timing
+       artifact of this measurement run, not a property of the prune
+       rule.
+    4. [Amended 2026-08-18, Phase 25 gap closure G1] both worlds'
+       `untimed_strategy` is `SolverStrategy.PENALTY_AWARE_HEURISTIC`.
+       Keys on `untimed_strategy`, not `timed_strategy`, because the
+       compared plan fields (`total_cost`, `stop_opis_ids`) are read off
+       the UNTIMED plan (`measure_dispatch_grid.py`'s
+       `result.total_cost = untimed_plan.total_cost` /
+       `result.stop_opis_ids = tuple(stop.opis_id for stop in
+       untimed_plan.stops)`) -- `untimed_strategy` is the field that
+       names the arm which actually produced the plan being compared.
+       `solve()` runs the penalty-aware heuristic over the FULL unpruned
+       `candidates` list and NEVER over the pruned `search_set`
+       (`solver.py:555-565`, the over-budget branch, and `533-554`, the
+       deadline-breach fallback; both cite the module's own comment at
+       `539-540` stating this explicitly). This harness swaps that very
+       argument between worlds (`measure_dispatch_grid.py:396-397`,
+       `solve_candidates = search_set if strengthened_prune else
+       raw_candidates`) -- so a differing plan on a cell where both
+       worlds dispatch to the heuristic is the expected consequence of
+       the measurement path, not evidence about the prune rule. Order
+       matters: this branch sits before branch 5, because on a
+       heuristic-arm cell the honest statement is that identity is
+       UNVERIFIABLE by this method, which is strictly stronger than
+       saying a bounded movement was expected.
+    5. [Amended 2026-08-17, Phase 25] the after-world attribution shows
+       `penalty_dominated > 0` -- the existing D-01/D-02 bounded-regret
+       carve-out; see `_check_plan_identity`'s own docstring for the full
+       citation.
+    """
+    before, after = diff.before, diff.after
+    if before.censored or after.censored:
+        return "one or both worlds are censored -- there is no plan to compare"
+    if before.admitted_at_current_budget != after.admitted_at_current_budget:
+        return (
+            "admitted_at_current_budget differs between worlds -- the "
+            "dispatch arm changed, exactly the recovery this sweep exists "
+            "to find"
+        )
+    if before.timed_strategy != after.timed_strategy:
+        return (
+            "timed_strategy differs between worlds -- this field is "
+            "wall-clock dependent, so a deadline breach in one world only "
+            "will produce it"
+        )
+    if (
+        before.untimed_strategy == SolverStrategy.PENALTY_AWARE_HEURISTIC
+        and after.untimed_strategy == SolverStrategy.PENALTY_AWARE_HEURISTIC
+    ):
+        return (
+            "both worlds' untimed_strategy is the penalty-aware heuristic "
+            "-- solve() runs that arm over the FULL unpruned candidate "
+            "list, never over the pruned search set, while this harness "
+            "swaps that very argument between worlds, so a differing plan "
+            "is the expected consequence of the measurement path, not "
+            "evidence about the prune rule; identity is UNVERIFIABLE here "
+            "by this method"
+        )
+    if diff.penalty_dominated > 0:
+        return (
+            "the after-world attribution shows penalty_dominated="
+            f"{diff.penalty_dominated} -- prune.py's own 'Bound, "
+            "precisely' derivation proves this condition carries bounded, "
+            "nonzero regret strictly under penalty, so a cost movement "
+            "here is expected, proven behaviour"
+        )
+    return None
+
+
 def _check_plan_identity(diffs):
     """ROADMAP criterion 4's gate -- the one genuine pass/fail check this
     command owns. For every cell where BOTH worlds are measurable (neither
@@ -295,20 +401,67 @@ def _check_plan_identity(diffs):
     which can also move from conditions 1-3 without breaking identity;
     the attribution tally is the precise signal).
 
+    [Amended 2026-08-18, Phase 25 gap closure G1] Also exempts any cell
+    whose `untimed_strategy` is `SolverStrategy.PENALTY_AWARE_HEURISTIC`
+    in BOTH worlds. `solve()` runs that arm over the FULL unpruned
+    `candidates` list, never over the pruned `search_set` -- both the
+    over-budget branch (`solver.py:555-565`) and the deadline-breach
+    fallback (`solver.py:533-554`) pass `candidates`, and the module's
+    own comment at `solver.py:539-540` states this explicitly ("over the
+    FULL unpruned `candidates` (not `search_set`)"). This harness swaps
+    that very argument between worlds (`measure_dispatch_grid.py:396-397`:
+    `solve_candidates = search_set if strengthened_prune else
+    raw_candidates`) -- so on `dallas_tx-seattle_wa`@1050mi the two
+    worlds hand the heuristic 243 versus 71 candidates, a 172-candidate
+    difference. A different plan is therefore the expected consequence of
+    the measurement path, not evidence about the prune rule. The
+    competing ordering hypothesis was tested and ELIMINATED: `prune.py`'s
+    survivor sort key (`distance_from_start_mi`, `price_per_gallon`,
+    `opis_id`, `prune.py:583-586`) is byte-identical to `solver.py`'s own
+    `total_order_key` (`solver.py:499-503`), so ordering is not the
+    explanation. Two corroborating facts: the strengthened rule removed
+    nothing on that cell (`kept` 71 -> 71, `estimate` unchanged at
+    117,895), and a rule that removed nothing cannot have removed a
+    station the solver would have chosen; and the after-world plan is
+    cheaper ($467.63/2 stops < $500.04/3 stops), whereas an unsound
+    removal makes plans worse, not better.
+
+    This branch keys on `untimed_strategy`, not `timed_strategy`, because
+    the compared fields (`total_cost`, `stop_opis_ids`) are read off the
+    UNTIMED plan, so `untimed_strategy` is the field naming the arm that
+    actually produced the plan being compared. It sits before the
+    penalty-domination exemption above in `_identity_check_exclusion_
+    reason`'s branch order, because on a heuristic-arm cell the honest
+    statement is that identity is UNVERIFIABLE by this method, strictly
+    stronger than saying a bounded movement was expected.
+
+    Scope of this correction: it affects only the plan, cost and stop
+    columns of cells on the heuristic arm, and only their cross-world
+    comparability. It does NOT touch `raw_candidates`, `kept`, `estimate`
+    or `admitted_at_current_budget`, all computed from `search_set`
+    before dispatch -- the `PLATEAU` verdict and PRUN-04's measurement
+    are unaffected. What this narrowing costs: plan identity cannot be
+    checked on heuristic-arm cells by this method at all, so criterion
+    4's coverage is the exact-arm subset only. A full-coverage identity
+    check would require a harness that feeds the heuristic the same
+    candidate list in both worlds -- out of scope here, and Phase 26's to
+    own if it wants it.
+
+    Both exemptions above are now reached through one shared helper,
+    `_identity_check_exclusion_reason`, so this gate and the report's own
+    `## Cells excluded from the plan-identity gate` section can never
+    disagree about which cells were checked (T-25-37). All wording above
+    this block is preserved unmodified, per this project's amend-in-place
+    convention.
+
     Collects every violation and raises ONE `CommandError` naming each
     violating cell with both costs and both stop tuples, rather than
     stopping at the first."""
     violations = []
     for d in diffs:
+        if _identity_check_exclusion_reason(d) is not None:
+            continue
         before, after = d.before, d.after
-        if before.censored or after.censored:
-            continue
-        if before.admitted_at_current_budget != after.admitted_at_current_budget:
-            continue
-        if before.timed_strategy != after.timed_strategy:
-            continue
-        if d.penalty_dominated > 0:
-            continue
         if before.total_cost != after.total_cost or before.stop_opis_ids != after.stop_opis_ids:
             violations.append(
                 f"{d.slug} @{d.tank_range_mi}mi: total_cost "
@@ -440,6 +593,21 @@ def _render_measurement_basis_section(production_trust_margin):
             "a rendered table."
         ),
         (
+            "- [Amended 2026-08-18, Phase 25 gap closure G1] Plan identity "
+            "is NOT checkable on heuristic-arm cells by this method at "
+            "all: the heuristic arm receives the FULL unpruned candidate "
+            "list, never the pruned search set, while this harness swaps "
+            "that very argument between worlds, so a differing plan on a "
+            "cell where both worlds dispatch to the heuristic is an "
+            "artifact of the measurement path, not evidence about the "
+            "prune rule. Criterion 4's coverage is therefore the EXACT-ARM "
+            "subset of the grid only -- see the report's own "
+            "'Cells excluded from the plan-identity gate' section for the "
+            "per-cell accounting. This is additive to the bullet above, "
+            "which still states this report's production-trust-margin "
+            "basis unchanged."
+        ),
+        (
             "- Fidelity deviation (Task 1, plan 25-05): in production, "
             "solve() runs dp.preflight_gap_check over the UNPRUNED "
             "candidate list, then prunes afterwards. This report's after "
@@ -454,6 +622,58 @@ def _render_measurement_basis_section(production_trust_margin):
         ),
         "",
     ]
+
+
+def _render_unchecked_cells_section(diffs):
+    """`## Cells excluded from the plan-identity gate` -- the renderer
+    half of `_identity_check_exclusion_reason`'s single shared definition
+    (T-25-37). Decides exclusion ONLY by calling that helper per cell and
+    branching on whether the returned value is `None`; never re-derives
+    exclusion from any of the underlying diff/result fields the helper
+    itself reads, and never composes its own reason string -- the
+    helper's returned string is what gets printed. A cell skipped by the
+    gate and a cell listed here are the same cell by construction, because
+    one function decided both; that is what stops a narrowed guard from
+    silently becoming a disarmed one.
+
+    Every excluded cell's before/after total_cost, stops and stop_opis_ids
+    are printed alongside its reason, so its divergence stays on the page
+    instead of disappearing with the gate. The checked/excluded counts are
+    derived from the same per-cell helper calls and the length of `diffs`
+    -- never a hardcoded cell count."""
+    excluded = []
+    checked_count = 0
+    for d in diffs:
+        reason = _identity_check_exclusion_reason(d)
+        if reason is None:
+            checked_count += 1
+        else:
+            excluded.append((d, reason))
+
+    lines = ["## Cells excluded from the plan-identity gate", ""]
+    lines.append(
+        f"- Checked {checked_count} of {len(diffs)} cell(s); excluded "
+        f"{len(excluded)}."
+    )
+    lines.append(
+        "- Exclusion means this method did not check the cell -- never "
+        "that it was verified clean."
+    )
+    if not excluded:
+        lines.append("(no exclusions)")
+    else:
+        for d, reason in excluded:
+            lines.append(
+                f"- {d.slug} @{d.tank_range_mi}mi: {reason} (total_cost "
+                f"{_field_display(d.before, 'total_cost')}->"
+                f"{_field_display(d.after, 'total_cost')}, stops "
+                f"{_field_display(d.before, 'stops')}->"
+                f"{_field_display(d.after, 'stops')}, stop_opis_ids "
+                f"{_field_display(d.before, 'stop_opis_ids')}->"
+                f"{_field_display(d.after, 'stop_opis_ids')})"
+            )
+    lines.append("")
+    return lines
 
 
 def _render_summary_sections(diffs):
@@ -582,6 +802,8 @@ def render_report(*, production_trust_margin, diffs):
     lines += _render_changed_section("Censorship transitions", censorship_transitions)
     lines += _render_changed_section("Other movements (cost/stops/etc.)", other_movements)
 
+    lines += _render_unchecked_cells_section(diffs)
+
     lines += _render_summary_sections(diffs)
 
     return "\n".join(lines)
@@ -608,7 +830,16 @@ class Command(BaseCommand):
         "exempted from that identity check by design -- prune.py's own "
         "'Bound, precisely' derivation proves that condition carries "
         "bounded, nonzero regret, so a cost movement there is expected, "
-        "not a bug."
+        "not a bug. [Amended 2026-08-18, Phase 25 gap closure G1] Cells "
+        "where BOTH worlds dispatch to the penalty-aware heuristic are "
+        "ALSO exempted from the identity check -- that arm receives the "
+        "full unpruned candidate list while this harness swaps that "
+        "argument between worlds, so identity is unverifiable there by "
+        "this method, not merely expected to move within a bound. "
+        "Criterion 4's coverage is therefore the exact-arm subset of the "
+        "grid; every excluded cell is named, with its reason and its "
+        "observed movement, in the report's own 'Cells excluded from the "
+        "plan-identity gate' section."
     )
 
     def handle(self, *args, **options):
