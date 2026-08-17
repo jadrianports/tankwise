@@ -872,9 +872,18 @@ def _collect_prune_inertness_violations(path):
 # `test_dispatch_predictor.py`, `test_dp_differential.py`,
 # `test_dp_real_corridor_regression.py`, `test_dp_deadline.py`,
 # `test_heuristic.py`).
+#
+# [Amended 2026-08-17, plan 25-03] Re-walked after plan 25-03 added
+# `PenaltyDominationSoundnessTests` to `test_prune_soundness.py` -- its
+# oracle-differential assertion, its closed-form-retention assertion, and
+# its permanent boundary witness each call `prune_dominated_candidates`
+# once, for 3 new test call sites (test_prune_soundness.py's own AST
+# call-node count rises from 37 to 40 in this same walk; the file-count
+# above still names 7 files, unchanged). Production count is untouched --
+# this plan adds no production code. 51 test, 56 total.
 PRUNE_CALL_SITE_PRODUCTION_COUNT = 5
-PRUNE_CALL_SITE_TEST_COUNT = 48
-PRUNE_CALL_SITE_TOTAL_COUNT = 53
+PRUNE_CALL_SITE_TEST_COUNT = 51
+PRUNE_CALL_SITE_TOTAL_COUNT = 56
 
 
 class PruneInertnessGateTest(SimpleTestCase):
