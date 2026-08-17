@@ -603,6 +603,147 @@ def band_dispatch_decision(estimate, *, band_ceiling):
 
 
 # ---------------------------------------------------------------------------
+# Phase 25 D-12 -- FREE_TIER_MEMORY_MB, RENDER_WEB_CONCURRENCY,
+# BAND_CEILING_RSS_FRACTION, derive_band_ceiling()
+#
+# Pinned 2026-08-17 (plan 25-01), BEFORE a single peak-RSS figure exists.
+# Phase 25 pins the derivation rule and the fraction; Phase 26 takes the
+# measurement.
+#
+# FREE_TIER_MEMORY_MB / RENDER_WEB_CONCURRENCY -- render.yaml:107-110
+# (WEB_CONCURRENCY = 2 gunicorn workers on Render free's 512 MB instance),
+# with that file's own comment stating both are measurement-backed against
+# Render free's 512 MB limit.
+FREE_TIER_MEMORY_MB = 512
+RENDER_WEB_CONCURRENCY = 2
+
+# BAND_CEILING_RSS_FRACTION -- derived, not asserted: RENDER_WEB_CONCURRENCY
+# = 2 gunicorn workers share the 512 MB instance, so one worker's entire
+# share is exactly half the ceiling, and a band whose worst-case memory a
+# SINGLE worker cannot fit inside its own share is not shippable regardless
+# of what the other worker is doing at the time. This fraction is a
+# pre-declared bound, pinned before a single peak-RSS figure existed.
+BAND_CEILING_RSS_FRACTION = Decimal("0.50")
+
+
+def derive_band_ceiling(rss_rows):
+    """Derive BAND_CEILING (Phase 25 D-12) from a peak-RSS ladder measured
+    on deployed hardware.
+
+    Phase 25 pins this rule; Phase 26 takes the measurement. The RSS figure
+    is expected out-of-band via resource.getrusage, surfaced through
+    ServerTiming.record() -- the same shape dp_deadline_breach already
+    uses -- never by wrapping a .stage() block, since RSS is not a
+    duration.
+
+    `rss_rows`: iterable of dicts, each carrying at least:
+      - "rung": int, a member of DP_TRANSITION_BUDGET_LADDER (may be None,
+        the ladder's no-gate sentinel)
+      - "peak_rss_mb": Decimal, the measured peak resident-set-size delta
+        during one genuine DP attempt at that rung
+
+    Returns the HIGHEST rung whose
+    `peak_rss_mb * ROUTE_ALTERNATIVES_FANOUT <= FREE_TIER_MEMORY_MB *
+    BAND_CEILING_RSS_FRACTION`, falling back to dp.DP_TRANSITION_BUDGET when
+    no rung qualifies. Raises ValueError on a `None` rung -- the ladder's
+    no-gate sentinel cannot itself be a memory-bounded ceiling -- and on a
+    `rung` that is not otherwise a member of DP_TRANSITION_BUDGET_LADDER.
+    """
+    budget_limit = FREE_TIER_MEMORY_MB * BAND_CEILING_RSS_FRACTION
+    qualifying_rungs = []
+    for row in rss_rows:
+        rung = row["rung"]
+        if rung is None:
+            raise ValueError(
+                "rung=None (DP_TRANSITION_BUDGET_LADDER's no-gate sentinel) "
+                "cannot be a memory-bounded ceiling"
+            )
+        if rung not in DP_TRANSITION_BUDGET_LADDER:
+            raise ValueError(
+                f"rung {rung!r} is not a member of DP_TRANSITION_BUDGET_LADDER"
+            )
+        if row["peak_rss_mb"] * ROUTE_ALTERNATIVES_FANOUT <= budget_limit:
+            qualifying_rungs.append(rung)
+    if not qualifying_rungs:
+        return dp.DP_TRANSITION_BUDGET
+    return max(qualifying_rungs)
+
+
+# ---------------------------------------------------------------------------
+# Phase 25 D-16 / D-17 -- DEMOTION_GUARD_PROBE_REPEATS,
+# demotion_guard_outcome_bound(), demotion_guard_rewrite_qualifies()
+#
+# Pinned 2026-08-17 (plan 25-01), BEFORE any live probe against
+# tankwise.onrender.com is issued for this phase.
+#
+# DEMOTION_GUARD_PROBE_REPEATS -- Phase 25 D-16. The guard this bar could
+# license rewriting (test_solver_dispatch.DispatchDemotionGuardTests) rests
+# on dp.py:814-819's record of dallas_tx-seattle_wa@500mi (API-default
+# vehicle) reproducing HTTP 500 5/5 at 30.5-35.7s live, pre-hotfix. The
+# rewrite bar is therefore exactly as many clean live repeats as there were
+# failures -- evidence of EQUAL weight, not lighter. Offline evidence does
+# not qualify at any repeat count: this project has measured the
+# workstation-to-live factor at 4.31x-105.98x (18-11's own capture,
+# test_live_latency_probe.py) and explicitly recorded that the factor is
+# NOT a constant.
+DEMOTION_GUARD_PROBE_REPEATS = 5
+
+
+def demotion_guard_outcome_bound(row):
+    """Apply Phase 25 D-17's arm-agnostic outcome bound to one live-probe
+    row.
+
+    This asserts the property the demotion guard actually exists to
+    protect -- the live HTTP 500 -- rather than the strategy-label proxy it
+    currently asserts. It reads no strategy/arm/solver_strategy key at
+    all, so a row carrying one is accepted and ignored; this is the point,
+    not an oversight -- it cannot flake on deadline straddle, which is
+    exactly what broke the 130,000 rung's own measurement (breached 2/3,
+    completed 1/3 on the same cell, same hardware).
+
+    `row`: dict carrying at least "status_code" (int) and
+    "solver_stage_seconds" (Decimal).
+
+    Returns True only when `row["status_code"] == 200` and
+    `row["solver_stage_seconds"] <= RESPONSE_BAR_SECONDS`.
+    """
+    return row["status_code"] == 200 and row["solver_stage_seconds"] <= RESPONSE_BAR_SECONDS
+
+
+def demotion_guard_rewrite_qualifies(live_rows):
+    """Apply Phase 25 D-16's full evidence bar for rewriting
+    DispatchDemotionGuardTests.
+
+    This is the ENTIRE evidence bar -- pinned in Phase 25, before any probe
+    ran. Per Phase 25 D-15, Phase 25 itself changes no guard whatever the
+    26-cell sweep finds; the reconciliation belongs to Phase 26, on
+    deployed evidence.
+
+    `live_rows`: iterable of dicts, each carrying at least "source" (str),
+    "host" (str), "cache_miss" (bool), "status_code" (int) and
+    "solver_stage_seconds" (Decimal).
+
+    Returns True only when ALL of the following hold:
+      - there are exactly DEMOTION_GUARD_PROBE_REPEATS rows
+      - every row has row["source"] == "live"
+      - every row has row["host"] == "tankwise.onrender.com"
+      - every row has row["cache_miss"] is True
+      - demotion_guard_outcome_bound(row) is True for every row
+    Returns False otherwise.
+    """
+    live_rows = list(live_rows)
+    if len(live_rows) != DEMOTION_GUARD_PROBE_REPEATS:
+        return False
+    return all(
+        row["source"] == "live"
+        and row["host"] == "tankwise.onrender.com"
+        and row["cache_miss"] is True
+        and demotion_guard_outcome_bound(row)
+        for row in live_rows
+    )
+
+
+# ---------------------------------------------------------------------------
 # Permanent anti-vacuity guard (Task 2)
 # ---------------------------------------------------------------------------
 
