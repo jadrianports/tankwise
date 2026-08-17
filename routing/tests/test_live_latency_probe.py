@@ -949,3 +949,300 @@ class VerdictProbeMatrixGuardTests(SimpleTestCase):
 
     def test_legacy_live_probe_max_requests_is_still_20(self):
         self.assertEqual(LIVE_PROBE_MAX_REQUESTS, 20)
+
+
+class VerdictSweepGuardTests(SimpleTestCase):
+    """Anti-vacuity guard for `probe_live_latency.py`'s Phase 26 D-12/D-13
+    extensions (plan 26-04): the SHA-confirming wake, the widened
+    `ProbeRow` fields, the per-cell-relative cache-bust branch on
+    `_measure_one_repeat`, and the `--verdict` sweep itself. EVERY test
+    below mocks the HTTP layer (`requests.get`/`requests.post`) and
+    `time.sleep` -- this class issues ZERO live requests, per this
+    plan's own scope fence (Round 1 runs in plan 26-05).
+
+    `routing.management.commands.probe_live_latency` is imported LOCALLY
+    inside each test method rather than at this module's top level, for
+    the same reason `LiveLatencyProbeGuardTests` above already documents:
+    that command module imports pinned constants FROM this module at ITS
+    own top level, so a top-level import back into it here would be
+    circular.
+    """
+
+    # --- shared fakes -----------------------------------------------
+
+    @staticmethod
+    def _fake_health_response(status_code=200, commit="deadbeef1234"):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.status_code = status_code
+        response.json.return_value = {"status": "ok", "commit": commit}
+        return response
+
+    @staticmethod
+    def _fake_route_response(
+        status_code=200,
+        stages="solver;dur=5.0, total;dur=10.0",
+        solver_strategy="exact_dp",
+        price_index_status="current",
+        fuel_stops=None,
+        total_cost="123.45",
+        json_data=None,
+        json_raises=False,
+    ):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.status_code = status_code
+        response.headers = {"Server-Timing": stages}
+        if json_raises:
+            response.json.side_effect = ValueError("bad json")
+        elif json_data is not None:
+            response.json.return_value = json_data
+        else:
+            response.json.return_value = {
+                "solver_strategy": solver_strategy,
+                "price_index_status": price_index_status,
+                "total_cost": total_cost,
+                "fuel_stops": fuel_stops if fuel_stops is not None else [{"opis_id": 1}],
+                "map_url": "https://api.mapbox.com/directions/v5/mapbox/driving/...?access_token=pk.NOT_A_SENTINEL",
+            }
+        return response
+
+    @staticmethod
+    def _corridor_verdict_cell():
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        return next(c for c in VERDICT_PROBE_CELLS if c["slug"] not in demo_slugs)
+
+    @staticmethod
+    def _demo_verdict_cell():
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        return next(c for c in VERDICT_PROBE_CELLS if c["slug"] in demo_slugs)
+
+    # --- Task 1: SHA-confirming wake + widened ProbeRow fields -----------
+
+    def test_matching_commit_confirms_and_prints_the_sha(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        command._expect_commit = "deadbeef1234"
+        response = self._fake_health_response(commit="deadbeef1234")
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.get",
+            return_value=response,
+        ):
+            elapsed = command._wake()
+
+        self.assertIsInstance(elapsed, float)
+        self.assertEqual(command._confirmed_commit_sha, "deadbeef1234")
+        self.assertIn("commit=deadbeef1234", out.getvalue())
+
+    def test_mismatched_commit_raises_naming_both_shas(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        command._expect_commit = "expectedsha0001"
+        response = self._fake_health_response(commit="deployedsha9999")
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.get",
+            return_value=response,
+        ):
+            with self.assertRaises(CommandError) as ctx:
+                command._wake()
+
+        message = str(ctx.exception)
+        self.assertIn("expectedsha0001", message)
+        self.assertIn("deployedsha9999", message)
+
+    def test_missing_commit_field_raises(self):
+        import io
+        from unittest import mock
+        from unittest.mock import MagicMock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        command._expect_commit = "whatever"
+        response = MagicMock()
+        response.status_code = 200
+        response.json.return_value = {"status": "ok"}  # no "commit" key
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.get",
+            return_value=response,
+        ):
+            with self.assertRaises(CommandError):
+                command._wake()
+
+    def test_no_expect_commit_and_unresolvable_local_head_raises(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        response = self._fake_health_response(commit="deployedsha9999")
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.get",
+            return_value=response,
+        ), mock.patch.object(Command, "_local_head_sha", return_value=None):
+            with self.assertRaises(CommandError):
+                command._wake()
+
+    def test_local_head_sha_matches_git_rev_parse_head(self):
+        import io
+        import subprocess
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        expected = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+        self.assertEqual(command._local_head_sha(), expected)
+
+    def test_local_head_sha_returns_none_when_git_unavailable(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.subprocess.run",
+            side_effect=FileNotFoundError,
+        ):
+            self.assertIsNone(command._local_head_sha())
+
+    def test_post_route_200_populates_price_index_status_stop_count_total_cost(self):
+        import io
+
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        response = self._fake_route_response(
+            fuel_stops=[{"opis_id": 1}, {"opis_id": 2}],
+            total_cost="199.50",
+            price_index_status="stale",
+        )
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            return_value=response,
+        ):
+            result = command._post_route(
+                "32.7767,-96.7970", "47.6062,-122.3321", {"mpg": "10"}
+            )
+        (
+            status,
+            _elapsed,
+            _stages,
+            _strategy,
+            error,
+            price_index_status,
+            stop_count,
+            total_cost,
+        ) = result
+        self.assertEqual(status, 200)
+        self.assertIsNone(error)
+        self.assertEqual(price_index_status, "stale")
+        self.assertEqual(stop_count, 2)
+        self.assertEqual(total_cost, "199.50")
+
+    def test_post_route_malformed_body_leaves_new_fields_none_without_raising(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        response = self._fake_route_response(json_raises=True)
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            return_value=response,
+        ):
+            result = command._post_route(
+                "32.7767,-96.7970", "47.6062,-122.3321", {"mpg": "10"}
+            )
+        (
+            status,
+            _elapsed,
+            _stages,
+            strategy,
+            error,
+            price_index_status,
+            stop_count,
+            total_cost,
+        ) = result
+        self.assertEqual(status, 200)
+        self.assertIsNone(error)
+        self.assertIsNone(strategy)
+        self.assertIsNone(price_index_status)
+        self.assertIsNone(stop_count)
+        self.assertIsNone(total_cost)
+
+    def test_is_genuine_miss_definition_unaffected_by_the_new_fields(self):
+        from routing.management.commands.probe_live_latency import ProbeRow
+
+        row = ProbeRow(
+            cell_label="x",
+            repeat_index=0,
+            ladder_value=Decimal("0.5"),
+            status_code=200,
+            wall_time_s=1.0,
+            stages_ms={"solver": 5.0},
+            censored=False,
+            cache_hit=False,
+            price_index_status="current",
+            stop_count=2,
+            total_cost="10.00",
+            slug="x",
+            tank_range_mi=Decimal(500),
+            offline_admitted=True,
+        )
+        self.assertTrue(row.is_genuine_miss)
+
+    def test_no_response_body_reaches_stdout(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        sentinel = "pk.SENTINEL_TOKEN_MUST_NOT_APPEAR"
+        response = self._fake_route_response(
+            json_data={
+                "solver_strategy": "exact_dp",
+                "price_index_status": "current",
+                "total_cost": "10.00",
+                "fuel_stops": [],
+                "map_url": f"https://api.mapbox.com/directions/...?access_token={sentinel}",
+            }
+        )
+        cell = {
+            "slug": "x",
+            "label": "X",
+            "start": "0,0",
+            "finish": "1,1",
+            "vehicle": {"mpg": "10", "tank_range_mi": "500", "starting_fuel": "1"},
+        }
+        with mock.patch(
+            "routing.management.commands.probe_live_latency.requests.post",
+            return_value=response,
+        ), mock.patch("routing.management.commands.probe_live_latency.time.sleep"):
+            command._measure_one_repeat(cell, 0, len(LIVE_PROBE_CACHE_BUST_LADDER))
+        self.assertNotIn(sentinel, out.getvalue())

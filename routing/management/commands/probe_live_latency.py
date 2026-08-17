@@ -15,8 +15,9 @@ per-IP `ROUTE_THROTTLE_SUSTAINED_RATE=200/day` throttle -- exactly why its
 budget is enforced in code (`LIVE_PROBE_MAX_REQUESTS`, checked BEFORE a
 single request is issued) rather than trusted to whoever runs it.
 
-Two modes, one shared protocol (wake, then measure, never print a response
-body):
+Two modes, one shared protocol (wake -- now also confirming the deployed
+commit SHA before trusting anything below it, D-12 fact 1 -- then
+measure, never print a response body):
 
   - Default: sweep `LIVE_PROBE_CELLS`, `LIVE_PROBE_REPEATS` times each,
     busting the cache per repeat via `LIVE_PROBE_CACHE_BUST_LADDER`.
@@ -25,11 +26,18 @@ body):
     `test_live_latency_probe.py`'s module docstring, printing exactly one
     of two verdicts (CONFIRMED / REFUTED -- UNEXPLAINED).
 
+`--expect-commit <sha>` overrides the default expected commit (the local
+`git rev-parse HEAD`) for every mode -- the wake step now hard-fails,
+naming both SHAs, if the deployed build does not match. An unconfirmable
+build (missing/null `commit` field) is treated the same way: no
+measurement below it may be trusted.
+
 Response bodies never reach stdout: a `/api/route` response carries the
 Mapbox `pk.` token in `map_url` (the same hygiene rule
 `.github/workflows/keep-warm.yml` already establishes for its own warm
 POSTs) -- only status, wall time and parsed `Server-Timing` stage
-durations are ever printed.
+durations (plus, since Phase 26, `price_index_status`/stop count/
+`total_cost`, all named fields, never the raw body) are ever printed.
 
 **Scope disclaimer, stated plainly.** This command measures ONE deployed
 instance on ONE plan tier at ONE moment, on cells the CURRENT dispatch
@@ -41,6 +49,7 @@ are reported as unmeasurable-by-this-probe, with the already-recorded
 censored evidence (the pre-hotfix HTTP 500s, `18-VERIFICATION.md`) cited
 instead of ever being estimated.
 """
+import subprocess
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -119,6 +128,20 @@ class ProbeRow:
     # `stages_ms` dict every other stage duration is read from, never from
     # a second request or the response body.
     breach: bool = False
+    # --- Phase 26 D-12/D-14 additions -----------------------------------
+    # price_index_status/stop_count/total_cost are read from the SAME 200
+    # response body `_post_route` already parses for `solver_strategy`,
+    # defensively -- `None` on any malformed/non-dict body, never a raise.
+    # slug/tank_range_mi/offline_admitted are copied straight off the
+    # cell dict a row was measured for, so a verdict reduction can read a
+    # row's own cell identity directly rather than re-deriving it from
+    # `cell_label` via a second lookup.
+    price_index_status: str | None = None
+    stop_count: int | None = None
+    total_cost: str | None = None
+    slug: str | None = None
+    tank_range_mi: Decimal | None = None
+    offline_admitted: bool | None = None
 
     @property
     def is_genuine_miss(self):
@@ -157,8 +180,18 @@ class Command(BaseCommand):
                 "is cleared."
             ),
         )
+        parser.add_argument(
+            "--expect-commit",
+            default=None,
+            help=(
+                "The deployed commit SHA the wake step must confirm before "
+                "any measurement below is trusted (D-12 fact 1). Defaults "
+                "to the local `git rev-parse HEAD` when omitted."
+            ),
+        )
 
     def handle(self, *args, **options):
+        self._expect_commit = options.get("expect_commit")
         if options["anomaly"] and options["recovery"]:
             raise CommandError("--anomaly and --recovery are mutually exclusive.")
         if options["anomaly"]:
@@ -170,17 +203,36 @@ class Command(BaseCommand):
 
     # --- shared plumbing -----------------------------------------------
 
-    def _enforce_budget(self, implied_count, context):
-        if implied_count > LIVE_PROBE_MAX_REQUESTS:
+    def _enforce_budget(self, implied_count, context, ceiling=LIVE_PROBE_MAX_REQUESTS):
+        if implied_count > ceiling:
             raise CommandError(
                 f"Refusing to run ({context}): implied request count "
-                f"{implied_count} exceeds LIVE_PROBE_MAX_REQUESTS="
-                f"{LIVE_PROBE_MAX_REQUESTS}. This is a planning error the "
-                "operator must resolve -- narrow the matrix or "
-                "deliberately raise the pinned budget in "
-                "test_live_latency_probe.py. This command does not "
-                "silently trim the matrix to fit."
+                f"{implied_count} exceeds the pinned ceiling={ceiling}. "
+                "This is a planning error the operator must resolve -- "
+                "narrow the matrix or deliberately raise the pinned "
+                "budget in test_live_latency_probe.py. This command does "
+                "not silently trim the matrix to fit."
             )
+
+    def _local_head_sha(self):
+        """Resolve the local `git rev-parse HEAD` SHA -- the default
+        `--expect-commit` value when the operator does not supply one
+        explicitly. Returns `None` (never raises) when git is unavailable
+        or the command fails for any reason -- `_wake` treats a `None`
+        here the same as a missing `--expect-commit`: an unconfirmable
+        build, hard failure."""
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=10,
+            )
+        except (subprocess.SubprocessError, OSError):
+            return None
+        sha = result.stdout.strip()
+        return sha or None
 
     def _wake(self):
         url = f"{LIVE_PROBE_BASE_URL}/api/health"
@@ -195,16 +247,53 @@ class Command(BaseCommand):
                 "to the solver)."
             )
         elapsed = time.perf_counter() - started
-        self.stdout.write(
-            f"WAKE: status={response.status_code} elapsed={elapsed:.2f}s "
-            f"(budget={LIVE_PROBE_WAKE_TIMEOUT_SECONDS}s)"
-        )
         if response.status_code != 200:
+            self.stdout.write(
+                f"WAKE: status={response.status_code} elapsed={elapsed:.2f}s "
+                f"(budget={LIVE_PROBE_WAKE_TIMEOUT_SECONDS}s)"
+            )
             raise CommandError(
                 f"Wake returned non-200 status {response.status_code}. "
                 "Aborting -- cannot proceed without a confirmed-warm "
                 "service."
             )
+
+        # D-12 fact (1): confirm the deployed build is the build under
+        # test BEFORE any measurement below is trusted. quick task
+        # 260817-37n closed after production sat eight commits stale for
+        # four days -- this is a hard failure, never a comment.
+        expected_sha = getattr(self, "_expect_commit", None) or self._local_head_sha()
+        if not expected_sha:
+            raise CommandError(
+                "Cannot confirm the deployed build: no --expect-commit "
+                "was given and the local HEAD SHA could not be resolved "
+                "(git unavailable?). Aborting -- D-12 fact (1) requires a "
+                "confirmed build before any measurement is trusted."
+            )
+        try:
+            body = response.json()
+        except ValueError:
+            body = {}
+        deployed_sha = body.get("commit") if isinstance(body, dict) else None
+        if not deployed_sha:
+            raise CommandError(
+                f"Deployed build's health response carries no 'commit' "
+                f"field (body={body!r}). Aborting -- an unconfirmable "
+                "build is not a confirmed one."
+            )
+        if deployed_sha != expected_sha:
+            raise CommandError(
+                f"Deployed commit {deployed_sha!r} does not match "
+                f"expected {expected_sha!r} -- no measurement below can "
+                "be trusted because the deployed build is not the build "
+                "under test."
+            )
+        self._confirmed_commit_sha = deployed_sha
+
+        self.stdout.write(
+            f"WAKE: status={response.status_code} elapsed={elapsed:.2f}s "
+            f"(budget={LIVE_PROBE_WAKE_TIMEOUT_SECONDS}s) commit={deployed_sha}"
+        )
         return elapsed
 
     def _post_route(self, start, finish, vehicle, waypoints=()):
@@ -225,20 +314,41 @@ class Command(BaseCommand):
             )
         except requests.Timeout:
             elapsed = time.perf_counter() - started
-            return None, elapsed, {}, None, "client_timeout"
+            return None, elapsed, {}, None, "client_timeout", None, None, None
         except requests.RequestException as exc:
             elapsed = time.perf_counter() - started
-            return None, elapsed, {}, None, repr(exc)
+            return None, elapsed, {}, None, repr(exc), None, None, None
 
         elapsed = time.perf_counter() - started
         stages = parse_server_timing(response.headers.get("Server-Timing", ""))
         solver_strategy = None
+        price_index_status = None
+        stop_count = None
+        total_cost = None
         if response.status_code == 200:
             try:
-                solver_strategy = response.json().get("solver_strategy")
+                data = response.json()
             except ValueError:
-                solver_strategy = None
-        return response.status_code, elapsed, stages, solver_strategy, None
+                data = None
+            if isinstance(data, dict):
+                solver_strategy = data.get("solver_strategy")
+                price_index_status = data.get("price_index_status")
+                total_cost = data.get("total_cost")
+                fuel_stops = data.get("fuel_stops")
+                if isinstance(fuel_stops, list):
+                    stop_count = len(fuel_stops)
+        # Never printed: a 200 body carries the Mapbox `pk.` token in
+        # `map_url` -- only the named fields above are ever extracted.
+        return (
+            response.status_code,
+            elapsed,
+            stages,
+            solver_strategy,
+            None,
+            price_index_status,
+            stop_count,
+            total_cost,
+        )
 
     # --- main sweep -------------------------------------------------------
 
@@ -287,7 +397,16 @@ class Command(BaseCommand):
             ladder_value = LIVE_PROBE_CACHE_BUST_LADDER[rung_index]
             vehicle = dict(cell["vehicle"])
             vehicle["starting_fuel"] = str(ladder_value)
-            status, elapsed, stages, strategy, error = self._post_route(
+            (
+                status,
+                elapsed,
+                stages,
+                strategy,
+                error,
+                price_index_status,
+                stop_count,
+                total_cost,
+            ) = self._post_route(
                 cell["start"], cell["finish"], vehicle, waypoints=cell.get("waypoints", ())
             )
             attempts += 1
@@ -312,13 +431,21 @@ class Command(BaseCommand):
                 error=error,
                 attempts_made=attempts,
                 breach=breach,
+                price_index_status=price_index_status,
+                stop_count=stop_count,
+                total_cost=total_cost,
+                slug=cell.get("slug"),
+                tank_range_mi=cell.get("tank_range_mi"),
+                offline_admitted=cell.get("offline_admitted"),
             )
             self.stdout.write(
                 f"    {cell['label']} repeat={repeat_index} "
                 f"attempt={attempt_num} starting_fuel={ladder_value}: "
                 f"status={status} elapsed={elapsed:.2f}s stages_ms={stages} "
                 f"cache_hit={cache_hit} censored={censored} "
-                f"strategy={strategy} breach={breach} error={error}"
+                f"strategy={strategy} breach={breach} "
+                f"stop_count={stop_count} total_cost={total_cost} "
+                f"price_index_status={price_index_status} error={error}"
             )
             if not cache_hit:
                 break
@@ -620,10 +747,12 @@ class Command(BaseCommand):
 
         self._wake()
         time.sleep(LIVE_PROBE_INTER_REQUEST_SECONDS)
-        status, elapsed, stages, strategy, error = self._post_route(
-            ANOMALY_REQUEST["start"],
-            ANOMALY_REQUEST["finish"],
-            ANOMALY_REQUEST["vehicle"],
+        status, elapsed, stages, strategy, error, _price_index_status, _stop_count, _total_cost = (
+            self._post_route(
+                ANOMALY_REQUEST["start"],
+                ANOMALY_REQUEST["finish"],
+                ANOMALY_REQUEST["vehicle"],
+            )
         )
         solver_ms = stages.get("solver")
 
