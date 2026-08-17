@@ -726,3 +726,38 @@ adjacent rather than dispatch-related) measured a real added cost:
 dataset on every container boot, materially higher than the milestone's
 own "milliseconds" prediction — still well inside Render's 15-minute
 health-check cancel window, but a real, recorded cost, not an estimate.
+
+**11. The penalty-aware heuristic is fed the full unpruned candidate list,
+never the domination prune's search set — measured, not shipped (added
+2026-08-18, Phase 26, D-16/D-17).** `solve()`'s own two heuristic call sites
+(`routing/services/solver.py:544-552`, the deadline-breach fallback, and
+`:557-565`, the over-budget branch) both pass the function's original, full
+`candidates` argument, never the pruned `search_set` the exact DP itself
+searches — the module's own comment states this explicitly. A two-worlds
+harness (`measure_heuristic_candidate_diff`, bypassing `solve()` entirely
+since it cannot vary what the heuristic receives) measured what feeding the
+heuristic the shipped, unstrengthened prune's search set instead would do,
+on all 14 currently-demoted `ADMISSION_MANIFEST` cells, at the production
+penalty ($35) and trust margin ($5.47): **12 of 14 cells BETTER on the
+objective (`total_cost + $35 × stops`), 0 WORSE, 2 SAME — a net objective
+delta of -$361.24 across all 14 cells.** No cell moved the wrong direction;
+if one had, it would be named here regardless. Two results directly
+corroborate limitation-adjacent Phase 25 figures measured with two variables
+moved at once: `dallas_tx-seattle_wa`@1050mi (3 stops/$500.04 → 2 stops/
+$467.63, byte-identical) and `demo_la_ca-new_york_ny`@1050mi, the LA → NYC
+demo chip (3 stops/$787.84 → 2 stops/$763.57, same direction, different
+magnitude). Full per-cell table:
+`.planning/phases/26-dispatch-verdict-deliberate-re-pin/26-HEURISTIC-CANDIDATE-DIFF.md`.
+
+**This measured, positive result does not ship.** `prune.py`'s own soundness
+proof (reach-safety, the supply-interval cover, the bounded-regret derivation)
+is scoped to the exact fixed-charge DP's optimal-solution space; the
+penalty-aware heuristic is a single forward pass with no backtracking and no
+lookahead beyond one tank's own reach, and carries no optimality proof of its
+own. A positive result on 14 measured cells is evidence, not a soundness
+proof for the arm — shipping would need genuine soundness reasoning this
+phase does not have and did not attempt to manufacture. `solve()` and
+`routing/services/prune.py` are both unmodified by this measurement; the
+finding is also tracked as a pending todo
+(`.planning/todos/pending/heuristic-fed-unpruned-candidate-list.md`) naming
+what shipping it would actually require.
