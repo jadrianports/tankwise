@@ -774,6 +774,16 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
          code introduces (`dp.DP_TRANSITION_BUDGET`,
          `dp._DEADLINE_CHECK_STRIDE`) must be members of their
          corresponding ladder here, so an off-ladder value cannot ship.
+
+    [Amended 2026-08-17, Phase 25] Superseded, not accurate -- the class
+    now also guards five more rules pinned in Phase 25 (D-10, D-11, D-12,
+    D-16, D-17): PLATEAU_TRIGGER_MIN_RECOVERED_CELLS/`plateau_verdict()`,
+    `band_dispatch_decision()`, BAND_CEILING_RSS_FRACTION/
+    `derive_band_ceiling()`, DEMOTION_GUARD_PROBE_REPEATS/
+    `demotion_guard_rewrite_qualifies()`, and
+    `demotion_guard_outcome_bound()` -- eleven rules in total, none of
+    which is degenerate. The sentence above is preserved verbatim, per
+    this project's amend-in-place convention.
     """
 
     # -- 1. Well-formedness --------------------------------------------
@@ -825,6 +835,27 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
             "LIVE_PROBE_MAX_CELLS must stay inside the existing live-probe "
             "request budget, not just this module's own arithmetic",
         )
+
+    def test_phase_25_plateau_trigger_is_well_formed(self):
+        self.assertIsInstance(PLATEAU_TRIGGER_MIN_RECOVERED_CELLS, int)
+        self.assertGreater(PLATEAU_TRIGGER_MIN_RECOVERED_CELLS, 0)
+        self.assertLess(PLATEAU_TRIGGER_MIN_RECOVERED_CELLS, DEMOTED_CELL_COUNT)
+
+    def test_phase_25_band_ceiling_rss_fraction_is_well_formed(self):
+        self.assertIsInstance(BAND_CEILING_RSS_FRACTION, Decimal)
+        self.assertGreater(BAND_CEILING_RSS_FRACTION, Decimal(0))
+        self.assertLess(BAND_CEILING_RSS_FRACTION, Decimal(1))
+
+    def test_phase_25_demotion_guard_probe_repeats_is_well_formed(self):
+        self.assertIsInstance(DEMOTION_GUARD_PROBE_REPEATS, int)
+        self.assertGreaterEqual(DEMOTION_GUARD_PROBE_REPEATS, 1)
+
+    def test_phase_25_band_labels_are_distinct_non_empty_strings(self):
+        labels = (BAND_EXACT_DP_DIRECT, BAND_EXACT_DP_ATTEMPT, BAND_HEURISTIC_NO_ATTEMPT)
+        for label in labels:
+            self.assertIsInstance(label, str)
+            self.assertTrue(label)
+        self.assertEqual(len(set(labels)), 3, "the three band labels must be distinct")
 
     # -- 2. Non-constancy (the anti-vacuity half) -----------------------
 
@@ -961,6 +992,120 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
         not_worst_of_repeats = dict(compliant_row, reported_figure_kind="mean")
         self.assertTrue(measurement_floor_violations([not_worst_of_repeats]))
 
+    def test_phase_25_plateau_verdict_is_not_constant_in_either_direction(self):
+        def _demoted_rows(recovered_count):
+            rows = []
+            for i in range(DEMOTED_CELL_COUNT):
+                estimate = 10_000 if i < recovered_count else 999_999
+                rows.append(
+                    {
+                        "slug": f"cell-{i}",
+                        "tank_range_mi": Decimal(500),
+                        "was_demoted": True,
+                        "estimate": estimate,
+                    }
+                )
+            return rows
+
+        self.assertEqual(
+            plateau_verdict(_demoted_rows(2)),
+            "PLATEAU",
+            "fewer than PLATEAU_TRIGGER_MIN_RECOVERED_CELLS recovered "
+            "cells must declare PLATEAU",
+        )
+        self.assertEqual(
+            plateau_verdict(_demoted_rows(3)),
+            "NO_PLATEAU",
+            "at least PLATEAU_TRIGGER_MIN_RECOVERED_CELLS recovered cells "
+            "must declare NO_PLATEAU",
+        )
+
+    def test_phase_25_band_dispatch_decision_reaches_all_three_labels(self):
+        ceiling = 200_000
+        self.assertEqual(
+            band_dispatch_decision(dp.DP_TRANSITION_BUDGET - 1, band_ceiling=ceiling),
+            BAND_EXACT_DP_DIRECT,
+            "a constant-returning implementation fails at least two of "
+            "these three cases",
+        )
+        self.assertEqual(
+            band_dispatch_decision(dp.DP_TRANSITION_BUDGET + 1, band_ceiling=ceiling),
+            BAND_EXACT_DP_ATTEMPT,
+        )
+        self.assertEqual(
+            band_dispatch_decision(ceiling + 1, band_ceiling=ceiling),
+            BAND_HEURISTIC_NO_ATTEMPT,
+        )
+
+    def test_phase_25_derive_band_ceiling_is_not_constant_in_either_direction(self):
+        all_over_budget = [
+            {"rung": rung, "peak_rss_mb": Decimal(1000)}
+            for rung in DP_TRANSITION_BUDGET_LADDER
+            if rung is not None
+        ]
+        self.assertEqual(
+            derive_band_ceiling(all_over_budget),
+            dp.DP_TRANSITION_BUDGET,
+            "a ladder where every rung's own RSS exceeds the budget must "
+            "fall back to the baseline",
+        )
+
+        one_comfortable_rung = [
+            {"rung": dp.DP_TRANSITION_BUDGET, "peak_rss_mb": Decimal(1000)},
+            {"rung": 70_000, "peak_rss_mb": Decimal(1)},
+        ]
+        self.assertGreater(
+            derive_band_ceiling(one_comfortable_rung),
+            dp.DP_TRANSITION_BUDGET,
+            "a ladder with one comfortable higher rung must adopt "
+            "strictly above the baseline",
+        )
+
+    def test_phase_25_demotion_guard_rewrite_qualifies_is_not_constant_in_either_direction(
+        self,
+    ):
+        clean_row = {
+            "source": "live",
+            "host": "tankwise.onrender.com",
+            "cache_miss": True,
+            "status_code": 200,
+            "solver_stage_seconds": Decimal(1),
+        }
+        clean_rows = [dict(clean_row) for _ in range(DEMOTION_GUARD_PROBE_REPEATS)]
+        self.assertTrue(
+            demotion_guard_rewrite_qualifies(clean_rows),
+            "DEMOTION_GUARD_PROBE_REPEATS clean live rows must qualify",
+        )
+
+        slow_rows = [dict(clean_row) for _ in range(DEMOTION_GUARD_PROBE_REPEATS)]
+        slow_rows[0] = dict(
+            slow_rows[0], solver_stage_seconds=RESPONSE_BAR_SECONDS + 1
+        )
+        self.assertFalse(
+            demotion_guard_rewrite_qualifies(slow_rows),
+            "one row over RESPONSE_BAR_SECONDS must not qualify",
+        )
+
+    def test_phase_25_demotion_guard_outcome_bound_reads_both_axes(self):
+        fast_ok = {"status_code": 200, "solver_stage_seconds": Decimal(1)}
+        self.assertTrue(demotion_guard_outcome_bound(fast_ok))
+
+        failed = {"status_code": 500, "solver_stage_seconds": Decimal(1)}
+        self.assertFalse(
+            demotion_guard_outcome_bound(failed),
+            "a 500 must fail regardless of how fast it was",
+        )
+
+        slow_but_ok_status = {
+            "status_code": 200,
+            "solver_stage_seconds": RESPONSE_BAR_SECONDS + 1,
+        }
+        self.assertFalse(
+            demotion_guard_outcome_bound(slow_but_ok_status),
+            "a 200 that breaches RESPONSE_BAR_SECONDS must fail -- "
+            "neither input axis may be ignored",
+        )
+
     # -- 3. Derivation ----------------------------------------------------
 
     def test_derive_dp_deadline_seconds_is_strictly_decreasing_positive_and_bounded(self):
@@ -1000,6 +1145,37 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             derive_dp_deadline_seconds(Decimal("20"))
 
+    def test_phase_25_derive_band_ceiling_is_monotone_and_validates_rung(self):
+        lower_rss_rows = [{"rung": 70_000, "peak_rss_mb": Decimal(1)}]
+        higher_rss_rows = [{"rung": 70_000, "peak_rss_mb": Decimal(200)}]
+        self.assertGreaterEqual(
+            derive_band_ceiling(lower_rss_rows),
+            derive_band_ceiling(higher_rss_rows),
+            "lowering every row's peak_rss_mb must never lower the "
+            "returned ceiling",
+        )
+
+        with self.assertRaises(ValueError):
+            derive_band_ceiling([{"rung": 65_000, "peak_rss_mb": Decimal(1)}])
+
+        with self.assertRaises(ValueError):
+            derive_band_ceiling([{"rung": None, "peak_rss_mb": Decimal(1)}])
+
+    def test_phase_25_demotion_guard_outcome_bound_is_arm_blind(self):
+        exact_dp_row = {
+            "status_code": 200,
+            "solver_stage_seconds": Decimal(1),
+            "solver_strategy": "exact_dp",
+        }
+        heuristic_row = dict(exact_dp_row, solver_strategy="penalty_aware_heuristic")
+        self.assertEqual(
+            demotion_guard_outcome_bound(exact_dp_row),
+            demotion_guard_outcome_bound(heuristic_row),
+            "the arm/strategy field must never change the outcome -- "
+            "this is what makes Phase 25 D-17's arm-agnosticism checkable "
+            "rather than claimed",
+        )
+
     # -- 4. Cross-module coupling ------------------------------------------
 
     def test_dp_transition_budget_is_a_member_of_the_ladder(self):
@@ -1021,4 +1197,39 @@ class PinnedRecoveryRuleGuardTests(SimpleTestCase):
             DEADLINE_CHECK_STRIDE_LADDER,
             "an off-ladder dp._DEADLINE_CHECK_STRIDE value must not be "
             "shippable unnoticed",
+        )
+
+    def test_phase_25_derive_band_ceiling_no_qualifying_rung_falls_back_to_transition_budget(
+        self,
+    ):
+        all_over_budget = [
+            {"rung": rung, "peak_rss_mb": Decimal(1000)}
+            for rung in DP_TRANSITION_BUDGET_LADDER
+            if rung is not None
+        ]
+        self.assertEqual(
+            derive_band_ceiling(all_over_budget),
+            dp.DP_TRANSITION_BUDGET,
+            "the no-qualifying-rung fallback must equal "
+            "dp.DP_TRANSITION_BUDGET exactly",
+        )
+
+    def test_phase_25_derive_band_ceiling_accepts_every_non_none_ladder_rung(self):
+        for rung in DP_TRANSITION_BUDGET_LADDER:
+            if rung is None:
+                continue
+            derive_band_ceiling([{"rung": rung, "peak_rss_mb": Decimal(1)}])
+
+    def test_phase_25_demoted_cell_count_matches_admission_manifest(self):
+        from routing.tests.test_solver_dispatch import ADMISSION_MANIFEST
+
+        false_count = sum(
+            1 for admitted in ADMISSION_MANIFEST.values() if admitted is False
+        )
+        self.assertEqual(
+            DEMOTED_CELL_COUNT,
+            false_count,
+            "DEMOTED_CELL_COUNT must track ADMISSION_MANIFEST's own False "
+            "count, imported live, so a manifest re-pin in a later phase "
+            "cannot leave this denominator silently stale",
         )
