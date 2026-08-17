@@ -35,6 +35,7 @@ def _result(
     kept=5,
     estimate=100,
     admitted_at_current_budget=True,
+    untimed_strategy="exact_dp",
     timed_strategy="exact_dp",
     stops=2,
     total_cost=Decimal("123.45"),
@@ -42,6 +43,10 @@ def _result(
     censored=False,
     censored_reason="",
 ):
+    """`untimed_strategy` defaults to the exact-DP arm string, mirroring
+    `timed_strategy`'s existing default -- additive, so every pre-existing
+    fixture becomes an explicit exact-arm cell rather than an implicit
+    one; no existing assertion's grounds move."""
     return CellResult(
         slug=slug,
         tank_range_mi=tank_range_mi,
@@ -50,6 +55,7 @@ def _result(
         kept=kept,
         estimate=estimate,
         admitted_at_current_budget=admitted_at_current_budget,
+        untimed_strategy=untimed_strategy,
         timed_strategy=timed_strategy,
         stops=stops,
         total_cost=total_cost,
@@ -98,6 +104,7 @@ def _make_26_diffs(recovered_slugs=()):
             tank_range_mi=tank,
             estimate=100 if was_admitted else 999_999,
             admitted_at_current_budget=was_admitted,
+            untimed_strategy="exact_dp" if was_admitted else "penalty_aware_heuristic",
             timed_strategy="exact_dp" if was_admitted else "penalty_aware_heuristic",
         )
         recovered = (slug, tank_int) in recovered_slugs
@@ -107,6 +114,7 @@ def _make_26_diffs(recovered_slugs=()):
             tank_range_mi=tank,
             estimate=100 if after_admitted else 999_999,
             admitted_at_current_budget=after_admitted,
+            untimed_strategy="exact_dp" if after_admitted else "penalty_aware_heuristic",
             timed_strategy="exact_dp" if after_admitted else "penalty_aware_heuristic",
         )
         diffs.append(cmd_module.CellDiff(slug=slug, tank_range_mi=tank, before=before, after=after))
@@ -171,6 +179,7 @@ def _manifest_sweep_side_effect(grid_command, repeats, *, trust_margin, strength
             tank_range_mi=Decimal(tank),
             estimate=100 if was_admitted else 999_999,
             admitted_at_current_budget=was_admitted,
+            untimed_strategy="exact_dp" if was_admitted else "penalty_aware_heuristic",
             timed_strategy="exact_dp" if was_admitted else "penalty_aware_heuristic",
         )
         for (slug, tank), was_admitted in ADMISSION_MANIFEST.items()
@@ -269,6 +278,32 @@ class RenderReportMeasurementBasisTests(SimpleTestCase):
             "that is the specific drift this test exists to catch",
         )
 
+    def test_basis_section_states_the_heuristic_arm_identity_limitation(self):
+        """[Amended 2026-08-18, Phase 25 gap closure G1] Pins the
+        correction into the rendered artifact itself, so a reader of the
+        report -- who may never open the source -- cannot take criterion
+        4 as having full coverage."""
+        report = cmd_module.render_report(
+            production_trust_margin=Decimal("5.47"), diffs=_make_26_diffs()
+        )
+        section = self._basis_section(report)
+        self.assertIn(
+            "Plan identity is NOT checkable on heuristic-arm cells by "
+            "this method",
+            section,
+        )
+        self.assertIn(
+            "the heuristic arm receives the FULL unpruned candidate "
+            "list, never the pruned search set, while this harness swaps "
+            "that very argument between worlds",
+            section,
+        )
+        self.assertIn("EXACT-ARM subset of the grid", section)
+        # Additive, not a replacement -- the pre-existing production-
+        # trust-margin claim from test_basis_section_names_the_margin_
+        # value must still be present.
+        self.assertIn("5.47", section)
+
 
 # ---------------------------------------------------------------------------
 # 5. Criterion 4's gate fires (cost differs; stop identity differs).
@@ -350,6 +385,339 @@ class CheckPlanIdentityGateTests(SimpleTestCase):
             cmd_module._check_plan_identity([exempt, violating])
         self.assertIn("nashville_tn-buffalo_ny", str(ctx.exception))
         self.assertNotIn("houston_tx-chicago_il", str(ctx.exception))
+
+    def test_gate_does_not_fire_when_both_worlds_ran_the_heuristic_arm(self):
+        """[Amended 2026-08-18, Phase 25 gap closure G1] solve() runs the
+        penalty-aware heuristic over the FULL unpruned candidate list,
+        never over the pruned search_set -- both the over-budget branch
+        and the deadline-breach fallback pass `candidates`
+        (solver.py:555-565, 533-554). This harness swaps that very
+        argument between worlds (measure_dispatch_grid.py:396-397), so on
+        a cell where both worlds land on the heuristic arm the two worlds
+        fed it genuinely different inputs -- dallas_tx-seattle_wa@1050mi's
+        exact shape (243 vs. 71 candidates). A differing plan there is the
+        expected consequence of the measurement path, not evidence about
+        the prune rule."""
+        d = _diff(
+            slug="dallas_tx-seattle_wa",
+            tank_range_mi=Decimal("1050"),
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("500.04"),
+                stop_opis_ids=(1, 2, 3),
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("467.63"),
+                stop_opis_ids=(1, 9),
+            ),
+            penalty_dominated=0,
+        )
+        cmd_module._check_plan_identity([d])  # must not raise
+
+    def test_gate_still_fires_on_an_exact_arm_divergence_alongside_a_heuristic_arm_cell(self):
+        """Non-vacuity: proves the new heuristic-arm exclusion narrowed
+        the gate's domain rather than disarming it -- a genuine exact-arm
+        violation must still raise even in the presence of an excluded
+        heuristic-arm cell in the same run."""
+        heuristic_cell = _diff(
+            slug="dallas_tx-seattle_wa",
+            tank_range_mi=Decimal("1050"),
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("500.04"),
+                stop_opis_ids=(1, 2, 3),
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("467.63"),
+                stop_opis_ids=(1, 9),
+            ),
+            penalty_dominated=0,
+        )
+        exact_arm_cell = _diff(
+            slug="nashville_tn-buffalo_ny",
+            before_kwargs=dict(total_cost=Decimal("10.00"), stop_opis_ids=(5,)),
+            after_kwargs=dict(total_cost=Decimal("11.00"), stop_opis_ids=(5,)),
+            penalty_dominated=0,
+        )
+        with self.assertRaises(CommandError) as ctx:
+            cmd_module._check_plan_identity([heuristic_cell, exact_arm_cell])
+        self.assertIn("nashville_tn-buffalo_ny", str(ctx.exception))
+        self.assertNotIn("dallas_tx-seattle_wa", str(ctx.exception))
+
+    def test_exclusion_reason_is_none_exactly_when_the_gate_checks_the_cell(self):
+        """Pins `_identity_check_exclusion_reason` as the single shared
+        definition both the gate and the excluded-cells report section
+        read -- covers all five exclusion branches plus one genuinely-
+        checked cell, and asserts the five reasons are distinct."""
+        censored = _diff(
+            slug="censored-cell",
+            before_kwargs=dict(censored=True, censored_reason="x"),
+        )
+        arm_changed = _diff(
+            slug="arm-changed",
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=True,
+                untimed_strategy="exact_dp",
+                timed_strategy="exact_dp",
+            ),
+        )
+        timed_strategy_diverged = _diff(
+            slug="timed-diverged",
+            before_kwargs=dict(untimed_strategy="exact_dp", timed_strategy="exact_dp"),
+            after_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="penalty_aware_heuristic"
+            ),
+        )
+        both_heuristic = _diff(
+            slug="both-heuristic",
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+            ),
+        )
+        penalty_dominated_cell = _diff(
+            slug="penalty-dominated",
+            before_kwargs=dict(untimed_strategy="exact_dp", timed_strategy="exact_dp"),
+            after_kwargs=dict(untimed_strategy="exact_dp", timed_strategy="exact_dp"),
+            penalty_dominated=1,
+        )
+        genuinely_checked_cell = _diff(
+            slug="genuinely-checked",
+            before_kwargs=dict(untimed_strategy="exact_dp", timed_strategy="exact_dp"),
+            after_kwargs=dict(untimed_strategy="exact_dp", timed_strategy="exact_dp"),
+            penalty_dominated=0,
+        )
+        excluded = [
+            censored,
+            arm_changed,
+            timed_strategy_diverged,
+            both_heuristic,
+            penalty_dominated_cell,
+        ]
+
+        reasons = [cmd_module._identity_check_exclusion_reason(d) for d in excluded]
+        for reason in reasons:
+            self.assertIsNotNone(reason)
+        self.assertEqual(len(set(reasons)), 5, "all five reasons must be distinct")
+        self.assertIsNone(
+            cmd_module._identity_check_exclusion_reason(genuinely_checked_cell)
+        )
+
+    def test_gate_and_report_agree_on_which_cells_were_checked(self):
+        """Anti-drift: the only test exercising both call sites against
+        the same input. Neither
+        test_exclusion_reason_is_none_exactly_when_the_gate_checks_the_cell
+        (which pins the helper's own return values) nor
+        test_unchecked_cells_section_names_every_excluded_cell_with_its_
+        reason_and_movement (which pins that the section prints an
+        excluded cell) would fail if the renderer stopped calling the
+        helper and re-derived exclusion from the fields itself -- that
+        regression would still pass both of those tests, yet let a cell
+        be skipped by the gate and never appear in the excluded-cells
+        report, silently converting a narrowed guard into a disarmed one.
+        This test builds one diff list covering all five exclusion
+        branches plus a genuinely-checked cell, gives every excluded cell
+        a total_cost that differs between worlds (so each would be a gate
+        violation were it not excluded), and asserts the GATE's checked
+        set (read off the raised CommandError's own message) and the
+        REPORT's checked set (cells the excluded-cells section does NOT
+        list) are cell-by-cell identical."""
+        censored = _diff(
+            slug="censored-cell",
+            before_kwargs=dict(censored=True, censored_reason="x", total_cost=Decimal("1.00")),
+            after_kwargs=dict(total_cost=Decimal("2.00")),
+        )
+        arm_changed = _diff(
+            slug="arm-changed",
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("1.00"),
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=True,
+                untimed_strategy="exact_dp",
+                timed_strategy="exact_dp",
+                total_cost=Decimal("2.00"),
+            ),
+        )
+        timed_strategy_diverged = _diff(
+            slug="timed-diverged",
+            before_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="exact_dp", total_cost=Decimal("1.00")
+            ),
+            after_kwargs=dict(
+                untimed_strategy="exact_dp",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("2.00"),
+            ),
+        )
+        both_heuristic = _diff(
+            slug="both-heuristic",
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("1.00"),
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("2.00"),
+            ),
+        )
+        penalty_dominated_cell = _diff(
+            slug="penalty-dominated",
+            before_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="exact_dp", total_cost=Decimal("1.00")
+            ),
+            after_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="exact_dp", total_cost=Decimal("2.00")
+            ),
+            penalty_dominated=1,
+        )
+        genuinely_checked_cell = _diff(
+            slug="genuinely-checked",
+            before_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="exact_dp", total_cost=Decimal("1.00")
+            ),
+            after_kwargs=dict(
+                untimed_strategy="exact_dp", timed_strategy="exact_dp", total_cost=Decimal("2.00")
+            ),
+            penalty_dominated=0,
+        )
+
+        diffs = [
+            censored,
+            arm_changed,
+            timed_strategy_diverged,
+            both_heuristic,
+            penalty_dominated_cell,
+            genuinely_checked_cell,
+        ]
+        all_slugs = {d.slug for d in diffs}
+
+        with self.assertRaises(CommandError) as ctx:
+            cmd_module._check_plan_identity(diffs)
+        message = str(ctx.exception)
+        gate_checked_slugs = {slug for slug in all_slugs if slug in message}
+        self.assertEqual(gate_checked_slugs, {"genuinely-checked"})
+
+        section = "\n".join(cmd_module._render_unchecked_cells_section(diffs))
+        report_checked_slugs = {slug for slug in all_slugs if slug not in section}
+
+        self.assertEqual(gate_checked_slugs, report_checked_slugs)
+        gate_excluded_slugs = all_slugs - gate_checked_slugs
+        self.assertEqual(gate_checked_slugs | gate_excluded_slugs, all_slugs)
+        self.assertEqual(gate_checked_slugs & gate_excluded_slugs, set())
+        self.assertIn("Checked 1 of 6 cell(s); excluded 5.", section)
+
+
+# ---------------------------------------------------------------------------
+# The excluded-cells report section is the visible half of the narrowing --
+# the gate no longer speaks for these cells, so the report must.
+# ---------------------------------------------------------------------------
+class RenderUncheckedCellsSectionTests(SimpleTestCase):
+    def test_unchecked_cells_section_names_every_excluded_cell_with_its_reason_and_movement(
+        self,
+    ):
+        heuristic_excluded = _diff(
+            slug="dallas_tx-seattle_wa",
+            tank_range_mi=Decimal("1050"),
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("500.04"),
+                stops=3,
+                stop_opis_ids=(1, 2, 3),
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+                total_cost=Decimal("467.63"),
+                stops=2,
+                stop_opis_ids=(1, 9),
+            ),
+        )
+        admission_excluded = _diff(
+            slug="atlanta_ga-denver_co",
+            tank_range_mi=Decimal("500"),
+            before_kwargs=dict(
+                admitted_at_current_budget=False,
+                untimed_strategy="penalty_aware_heuristic",
+                timed_strategy="penalty_aware_heuristic",
+            ),
+            after_kwargs=dict(
+                admitted_at_current_budget=True,
+                untimed_strategy="exact_dp",
+                timed_strategy="exact_dp",
+            ),
+        )
+        genuinely_checked_cell = _diff(
+            slug="houston_tx-chicago_il",
+            tank_range_mi=Decimal("1050"),
+            before_kwargs=dict(
+                untimed_strategy="exact_dp",
+                timed_strategy="exact_dp",
+                total_cost=Decimal("99.00"),
+                stop_opis_ids=(1,),
+            ),
+            after_kwargs=dict(
+                untimed_strategy="exact_dp",
+                timed_strategy="exact_dp",
+                total_cost=Decimal("99.00"),
+                stop_opis_ids=(1,),
+            ),
+        )
+
+        section = "\n".join(
+            cmd_module._render_unchecked_cells_section(
+                [heuristic_excluded, admission_excluded, genuinely_checked_cell]
+            )
+        )
+
+        self.assertIn("## Cells excluded from the plan-identity gate", section)
+        self.assertIn("dallas_tx-seattle_wa", section)
+        self.assertIn("1050", section)
+        self.assertIn(
+            "solve() runs that arm over the FULL unpruned candidate", section
+        )
+        self.assertIn("$500.04", section)
+        self.assertIn("$467.63", section)
+        self.assertIn("3->2", section)
+        self.assertIn("(1, 2, 3)->(1, 9)", section)
+        self.assertIn("atlanta_ga-denver_co", section)
+        self.assertIn("dispatch arm changed", section)
+        self.assertIn("Checked 1 of 3 cell(s); excluded 2.", section)
+        self.assertNotIn("houston_tx-chicago_il", section)
+        self.assertIn(
+            "Exclusion means this method did not check the cell", section
+        )
 
 
 # ---------------------------------------------------------------------------
