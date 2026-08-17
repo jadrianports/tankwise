@@ -469,6 +469,140 @@ def measurement_floor_violations(live_rows):
 
 
 # ---------------------------------------------------------------------------
+# Phase 25 D-10 -- DEMOTED_CELL_COUNT, PLATEAU_TRIGGER_MIN_RECOVERED_CELLS,
+# plateau_verdict()
+#
+# Pinned 2026-08-17 (plan 25-01), BEFORE any Phase 25 measurement exists --
+# before the strengthened domination rule in routing/services/prune.py is
+# even written, and before a single cell's post-prune estimate is computed.
+# This is a DIFFERENT decision family from the bare `D-NN` labels above,
+# which all belong to phase 18.1 -- every citation in this section and the
+# three that follow it is qualified `Phase 25 D-NN` so the two label
+# families never merge (25-RESEARCH.md Correction #6).
+#
+# DEMOTED_CELL_COUNT -- the count of ADMISSION_MANIFEST
+# (test_solver_dispatch.py:568) cells currently on penalty_aware_heuristic
+# (False in the manifest). 14, counted directly off the manifest as
+# committed 2026-08-08 (plan 22-14). The pre-Phase-22 figure of 11 is NOT
+# the denominator here -- Phase 22's Overture gap-fill import flipped three
+# additional cells onto the heuristic side
+# (san_diego_ca-jacksonville_fl@1050mi, sacramento_ca-salt_lake_city_ut@500mi,
+# demo_la_ca-denver_co-chicago_il@1050mi -- 25-RESEARCH.md SS C1).
+DEMOTED_CELL_COUNT = 14
+
+# PLATEAU_TRIGGER_MIN_RECOVERED_CELLS -- Phase 25 D-10. The plateau is
+# declared when FEWER than this many of the 14 currently-demoted cells fall
+# at or under dp.DP_TRANSITION_BUDGET after the strengthened prune. Grounded
+# on 25-CONTEXT.md's own pre-measurement estimate-cut arithmetic (the
+# <specifics> table -- estimate_transition_count scales roughly cubically
+# with candidate density, so halving candidates divides the estimate by
+# about 8):
+#   dallas_tx-seattle_wa@500        needs a 1.24x estimate cut  (~8% of candidates)
+#   dallas_tx-seattle_wa@1050       needs a 2.4x estimate cut   (~26%)
+#   atlanta_ga-denver_co@500        needs a 3.0x estimate cut   (~31%)
+#   miami_fl-boston_ma@500          needs a 3.7x estimate cut   (~35%)
+# A rule achieving a plausible 20-40% candidate cut therefore lands somewhere
+# in the 2-to-5 recovered-cell range; 3 sits inside that range rather than at
+# either end.
+#
+# This is a DIFFERENT question from 18.1-01's RECOVERY_MIN_CELLS = 1 (this
+# module, above): that floor asks whether time-boxed dispatch recovered ANY
+# cell at all against a single live spot-check.
+# PLATEAU_TRIGGER_MIN_RECOVERED_CELLS asks whether the strengthened prune
+# went far enough, across the WHOLE 14-cell demoted set measured offline, to
+# make the deadline-based band fallback (Phase 25 D-11) unnecessary.
+PLATEAU_TRIGGER_MIN_RECOVERED_CELLS = 3
+
+
+def plateau_verdict(after_rows):
+    """Apply Phase 25 D-10's plateau verdict to the strengthened prune's
+    26-cell sweep.
+
+    `after_rows`: iterable of dicts, each carrying at least:
+      - "slug": corridor slug (str)
+      - "tank_range_mi": Decimal
+      - "was_demoted": bool -- this cell's PRE-Phase-25 admission state
+        (True if it was on penalty_aware_heuristic before the strengthened
+        rule ran)
+      - "estimate": int -- the strengthened rule's post-prune estimate
+
+    Counts rows where `was_demoted` is True and
+    `estimate <= dp.DP_TRANSITION_BUDGET`. Returns the string "PLATEAU" when
+    that count is strictly less than PLATEAU_TRIGGER_MIN_RECOVERED_CELLS,
+    otherwise "NO_PLATEAU". Raises ValueError when the number of
+    `was_demoted` rows is not exactly DEMOTED_CELL_COUNT -- a partial sweep
+    must never be able to manufacture a plateau verdict.
+
+    "PLATEAU" means the deadline-based band fallback (Phase 25 D-11) is the
+    path forward. This is a pre-declared verdict, pinned before a single
+    post-prune estimate exists -- not a judgement call at the moment of
+    truth.
+    """
+    after_rows = list(after_rows)
+    demoted_rows = [row for row in after_rows if row["was_demoted"]]
+    if len(demoted_rows) != DEMOTED_CELL_COUNT:
+        raise ValueError(
+            f"plateau_verdict requires exactly {DEMOTED_CELL_COUNT} "
+            f"was_demoted=True rows (the full pre-Phase-25 demoted set), "
+            f"got {len(demoted_rows)} -- a partial sweep must never be able "
+            "to manufacture a plateau verdict"
+        )
+    recovered_count = sum(
+        1 for row in demoted_rows if row["estimate"] <= dp.DP_TRANSITION_BUDGET
+    )
+    return (
+        "PLATEAU"
+        if recovered_count < PLATEAU_TRIGGER_MIN_RECOVERED_CELLS
+        else "NO_PLATEAU"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 25 D-11 -- BAND_EXACT_DP_DIRECT, BAND_EXACT_DP_ATTEMPT,
+# BAND_HEURISTIC_NO_ATTEMPT, band_dispatch_decision()
+#
+# Pinned 2026-08-17 (plan 25-01), BEFORE any Phase 25 measurement exists.
+# D-11 widens the dispatch gate from a single threshold to a band: cells
+# with estimate in `(dp.DP_TRANSITION_BUDGET, BAND_CEILING]` are ATTEMPTED
+# under the DP_DEADLINE_SECONDS deadline rather than dispatched straight to
+# the heuristic -- the estimate proxy stops deciding the answer and starts
+# deciding only whether to try.
+BAND_EXACT_DP_DIRECT = "exact_dp_direct"
+BAND_EXACT_DP_ATTEMPT = "exact_dp_banded_attempt"
+BAND_HEURISTIC_NO_ATTEMPT = "heuristic_no_attempt"
+
+
+def band_dispatch_decision(estimate, *, band_ceiling):
+    """Apply Phase 25 D-11's three-valued band policy to one cell's
+    estimate.
+
+    A hard ceiling survives alongside the wall-clock deadline because the
+    deadline caps TIME, not MEMORY: nothing bounds what a multi-million-
+    transition DP allocates inside the deadline on a 512 MB Render
+    instance, and ROUTE_ALTERNATIVES_FANOUT = 3 (this module, above) means
+    up to three attempts can be paid for within a single request.
+
+    Returns BAND_EXACT_DP_DIRECT when `estimate <= dp.DP_TRANSITION_BUDGET`;
+    BAND_EXACT_DP_ATTEMPT when
+    `dp.DP_TRANSITION_BUDGET < estimate <= band_ceiling`; otherwise
+    BAND_HEURISTIC_NO_ATTEMPT. Raises ValueError when
+    `band_ceiling < dp.DP_TRANSITION_BUDGET` -- a ceiling below the budget
+    is not a band at all.
+    """
+    if band_ceiling < dp.DP_TRANSITION_BUDGET:
+        raise ValueError(
+            f"band_ceiling ({band_ceiling}) must be at least "
+            f"dp.DP_TRANSITION_BUDGET ({dp.DP_TRANSITION_BUDGET}) -- a "
+            "ceiling below the budget is not a band at all"
+        )
+    if estimate <= dp.DP_TRANSITION_BUDGET:
+        return BAND_EXACT_DP_DIRECT
+    if estimate <= band_ceiling:
+        return BAND_EXACT_DP_ATTEMPT
+    return BAND_HEURISTIC_NO_ATTEMPT
+
+
+# ---------------------------------------------------------------------------
 # Permanent anti-vacuity guard (Task 2)
 # ---------------------------------------------------------------------------
 
