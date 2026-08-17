@@ -1281,12 +1281,25 @@ class PrunePenaltyInvarianceTests(SimpleTestCase):
                 f"unpruned solves at penalty={penalty}; {context}",
             )
             if unpruned_plan is not None:
-                self.assertLessEqual(
+                # Condition 4's own bound is on REGRET, not on exact
+                # preservation: prune.py's "Bound, precisely" paragraph
+                # proves the strengthened path can raise the true optimum
+                # by up to (but strictly less than) `penalty` itself -- a
+                # weaker guarantee than conditions 1-3's exact
+                # substitution, discovered by this very property finding a
+                # counterexample at penalty=0.16 that cleared COST_TOLERANCE
+                # (0.0001) while staying safely under the true bound. The
+                # tolerance here is `penalty + COST_TOLERANCE`: at
+                # `penalty=Decimal(0)` this reduces to plain COST_TOLERANCE
+                # (matching D-07(b)'s exact reduction anchor); at any
+                # positive penalty it checks the actual proved bound rather
+                # than the much tighter exactness conditions 1-3 alone earn.
+                self.assertLess(
                     abs(unpruned_plan.objective - pruned_plan.objective),
-                    COST_TOLERANCE,
+                    penalty + COST_TOLERANCE,
                     f"pruned objective ({pruned_plan.objective}) differs "
                     f"from the unpruned objective "
-                    f"({unpruned_plan.objective}) beyond COST_TOLERANCE "
+                    f"({unpruned_plan.objective}) by penalty or more "
                     f"at penalty={penalty}; {context}",
                 )
 
@@ -1316,83 +1329,93 @@ class PenaltyDominationMarginSensitivityWitnessTests(SimpleTestCase):
     SPECIFIC, reproducible counterexample, not a property over a
     distribution.
 
-    On one hand-built two-station input (a pricier, estimate-priced B at
-    an earlier tail-reaching position, and a cheaper, real-priced A at a
-    later tail-reaching position, both directly reachable from START so
-    neither is a mandatory waypoint for the other): a PRICE-ONLY reading of
-    condition 4b (ignoring condition 4c's provenance guard entirely) would
-    remove A, because the raw price gap, scaled by a full tank, clears the
-    penalty bar. But removing A is NOT actually safe at the production
-    trust margin (`ADOPTED_MARGIN_USD`) -- with A gone, the fixed-charge
-    oracle's own optimum is forced onto B, which is estimate-priced and so
-    pays `ADOPTED_MARGIN_USD` on top of a higher raw price, raising the
-    true optimum by well over COST_TOLERANCE. The shipped rule does NOT
-    make this mistake: condition 4c forbids exactly this pairing (B
-    estimate, A real), so `prune_dominated_candidates` retains both
-    stations. Together, these two facts are D-09's paired proof in test
-    form: the "retained counts do not move with the margin's dollar value"
-    claim survives for the shipped rule, but only because of condition 4c
-    -- and this witness is what shows the claim would be FALSE without it.
+    Three hand-built stations on a 1000 mi route with a 450 mi tank: a
+    cheap, real-priced, MANDATORY gateway D at 400 mi (within the initial
+    tank range, so every plan needs it or an equivalent); a pricier,
+    estimate-priced B at 600 mi; and a cheaper, real-priced A at 650 mi.
+    Both B and A sit beyond the 450 mi initial range (condition 4d's
+    starting-fuel guard, below) and are each individually tail-reaching
+    (600/650 + 450 >= 1000), so D is unconditionally required regardless of
+    which of B/A gets used for the route's remaining leg -- this is what
+    makes the "extra stop is never worth it" argument genuinely apply here,
+    unlike a naive two-station design where the cheap station could be
+    reached directly from START (see condition 4d's own counterfactual).
+
+    A PRICE-ONLY reading of condition 4b (ignoring condition 4c's
+    provenance guard entirely) would remove A, because the raw price gap
+    between B and A, scaled by a full tank, clears the penalty bar. But
+    removing A is NOT actually safe at the production trust margin
+    (`ADOPTED_MARGIN_USD`) -- with A gone, the fixed-charge oracle's own
+    optimum is forced onto B, which is estimate-priced and so pays
+    `ADOPTED_MARGIN_USD` on top of a higher raw price, raising the true
+    optimum by well over COST_TOLERANCE. The shipped rule does NOT make
+    this mistake: condition 4c forbids exactly this pairing (B estimate, A
+    real), so `prune_dominated_candidates` retains all three stations.
+    Together, these two facts are D-09's paired proof in test form: the
+    "retained counts do not move with the margin's dollar value" claim
+    survives for the shipped rule, but only because of condition 4c -- and
+    this witness is what shows the claim would be FALSE without it.
     """
 
-    def test_naive_price_only_reading_would_remove_the_real_priced_station(self):
-        tank_range_mi = Decimal("700")
-        total_route_mi = Decimal("1000")
-        mpg = Decimal("6.5")
-        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
+    TANK_RANGE_MI = Decimal("450")
+    TOTAL_ROUTE_MI = Decimal("1000")
+    MPG = Decimal("6.5")
+    PENALTY = PENALTY_ANCHORS[1]  # Decimal("35")
+    STARTING_FUEL = Decimal("1")
 
-        alt_pricier_estimate = _candidate(
-            opis_id=1, price="3.60", position=300
-        )
+    def _stations(self):
+        gateway_mandatory_real = _candidate(opis_id=3, price="3.00", position=400)
         alt_pricier_estimate = replace(
-            alt_pricier_estimate, price_source=ESTIMATE_PRICE_SOURCE
+            _candidate(opis_id=1, price="3.60", position=600),
+            price_source=ESTIMATE_PRICE_SOURCE,
         )
         cheap_real = _candidate(opis_id=2, price="3.50", position=650)
+        return gateway_mandatory_real, alt_pricier_estimate, cheap_real
+
+    def test_naive_price_only_reading_would_remove_the_real_priced_station(self):
+        _gateway, alt_pricier_estimate, cheap_real = self._stations()
 
         raw_price_gap = alt_pricier_estimate.price_per_gallon - cheap_real.price_per_gallon
-        raw_bound = raw_price_gap * tank_range_mi / mpg
+        raw_bound = raw_price_gap * self.TANK_RANGE_MI / self.MPG
         self.assertLess(
             raw_bound,
-            penalty,
+            self.PENALTY,
             "witness setup error: the raw price-only bound must clear the "
             "penalty bar (a naive reading must want to remove the cheap "
             "real-priced station) for this to be a meaningful counterfactual",
+        )
+        self.assertGreater(
+            cheap_real.distance_from_start_mi,
+            self.TANK_RANGE_MI,
+            "witness setup error: A must sit beyond the initial tank range "
+            "(condition 4d) so the counterfactual isn't blocked by the "
+            "starting-fuel guard for a reason unrelated to condition 4c",
         )
 
     def test_removing_the_real_priced_station_raises_the_oracle_optimum_at_production_margin(
         self,
     ):
-        tank_range_mi = Decimal("700")
-        total_route_mi = Decimal("1000")
-        mpg = Decimal("6.5")
-        starting_fuel = Decimal("1")
-        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
+        gateway, alt_pricier_estimate, cheap_real = self._stations()
 
-        alt_pricier_estimate = replace(
-            _candidate(opis_id=1, price="3.60", position=300),
-            price_source=ESTIMATE_PRICE_SOURCE,
-        )
-        cheap_real = _candidate(opis_id=2, price="3.50", position=650)
-
-        both_stations = [alt_pricier_estimate, cheap_real]
-        naively_pruned = [alt_pricier_estimate]  # A removed, per the naive reading
+        all_three_stations = [gateway, alt_pricier_estimate, cheap_real]
+        naively_pruned = [gateway, alt_pricier_estimate]  # A removed, per the naive reading
 
         full_plan = optimal_fixed_charge_plan(
-            both_stations,
-            total_route_mi,
-            penalty=penalty,
-            tank_range_mi=tank_range_mi,
-            mpg=mpg,
-            starting_fuel=starting_fuel,
+            all_three_stations,
+            self.TOTAL_ROUTE_MI,
+            penalty=self.PENALTY,
+            tank_range_mi=self.TANK_RANGE_MI,
+            mpg=self.MPG,
+            starting_fuel=self.STARTING_FUEL,
             trust_margin=ADOPTED_MARGIN_USD,
         )
         naive_plan = optimal_fixed_charge_plan(
             naively_pruned,
-            total_route_mi,
-            penalty=penalty,
-            tank_range_mi=tank_range_mi,
-            mpg=mpg,
-            starting_fuel=starting_fuel,
+            self.TOTAL_ROUTE_MI,
+            penalty=self.PENALTY,
+            tank_range_mi=self.TANK_RANGE_MI,
+            mpg=self.MPG,
+            starting_fuel=self.STARTING_FUEL,
             trust_margin=ADOPTED_MARGIN_USD,
         )
         self.assertIsNotNone(full_plan)
@@ -1408,23 +1431,14 @@ class PenaltyDominationMarginSensitivityWitnessTests(SimpleTestCase):
         )
 
     def test_shipped_rule_does_not_remove_the_real_priced_station(self):
-        tank_range_mi = Decimal("700")
-        total_route_mi = Decimal("1000")
-        mpg = Decimal("6.5")
-        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
-
-        alt_pricier_estimate = replace(
-            _candidate(opis_id=1, price="3.60", position=300),
-            price_source=ESTIMATE_PRICE_SOURCE,
-        )
-        cheap_real = _candidate(opis_id=2, price="3.50", position=650)
+        gateway, alt_pricier_estimate, cheap_real = self._stations()
 
         shipped_retained = prune_dominated_candidates(
-            [alt_pricier_estimate, cheap_real],
-            tank_range_mi=tank_range_mi,
-            total_route_mi=total_route_mi,
-            mpg=mpg,
-            penalty=penalty,
+            [gateway, alt_pricier_estimate, cheap_real],
+            tank_range_mi=self.TANK_RANGE_MI,
+            total_route_mi=self.TOTAL_ROUTE_MI,
+            mpg=self.MPG,
+            penalty=self.PENALTY,
         )
         retained_opis_ids = {c.opis_id for c in shipped_retained}
         self.assertIn(

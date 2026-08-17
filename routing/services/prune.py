@@ -147,6 +147,56 @@ already shipped in this codebase's own vocabulary:
 ``routing.services.solver.PurchaseReason.BYPASS_CHEAPER_NOT_WORTH_STOP``,
 which today's greedy structurally cannot produce and today's DP can.
 
+**Bound, precisely: strictly less than `penalty`, not zero.** Unlike
+conditions 1-3's exact substitution (which never raises cost by even a
+cent, proved pointwise in "Soundness" below), condition 4's guarantee is
+weaker and must be stated exactly as that, not rounded up to "no change":
+removing A can raise the true optimum, but never by `penalty` or more.
+This is discovered, not assumed -- a Hypothesis-generated counterexample
+at a degenerate `tank_range_mi >> total_route_mi` ratio raised the true
+optimum by a small but nonzero amount (`$0.00077`, comfortably under the
+drawn `penalty=$0.16` but over this suite's `COST_TOLERANCE=$0.0001`)
+when condition 4 substituted a pricier B for a strictly cheaper, solely-
+reachable A. The proof: let `P*` be the true optimum over the full
+candidate set (A included) and `P'` the true optimum with A removed.
+
+  - If `P*` never buys at A, `P*` is itself a valid plan over the reduced
+    set, so `cost(P') <= cost(P*)` -- removal never raises cost. Done.
+  - If `P*` buys `q` gallons at A (`q <= tank_range_mi / mpg`, a single
+    station's fill is capped at one tank), build `P''`: identical to `P*`
+    except that same `q` gallons is bought at B instead of A. `P''` is
+    feasible by the supply-interval lemma's Backward direction -- B's
+    interval contains A's, so every mile A's purchase covered, B's
+    purchase can cover too, and reassigning that coverage from A to B and
+    reconstructing per the lemma changes nothing about any OTHER station's
+    assignment. Two sub-cases for `P''`'s cost relative to `P*`'s:
+
+      - B already had a purchase in `P*` (elsewhere): folding `q` more
+        gallons into that existing stop costs no new penalty, so
+        `cost(P'') - cost(P*) = (price_B - price_A) * q - penalty`
+        (A's whole stop, principal and penalty, is removed; only the
+        price difference on `q` gallons and B's already-paid-for stop
+        remain) -- at most `4b`'s bound minus a full `penalty`, i.e.
+        strictly negative under 4b. Removal is a net **improvement** here.
+      - B had no purchase in `P*`: A's stop is replaced one-for-one by a
+        new stop at B, so the stop count is unchanged and both penalty
+        terms cancel exactly:
+        `cost(P'') - cost(P*) = (price_B - price_A) * q`, bounded above by
+        4b's own quantity, `(price_B - price_A) * tank_range_mi / mpg`,
+        which is `< penalty` by construction. This is the binding case,
+        and it is exactly where 4b's bound is spent, not slack.
+
+  `cost(P') <= cost(P'')` (`P'` is optimal over the reduced set; `P''` is
+  merely a valid candidate for it), so in both sub-cases
+  `cost(P') - cost(P*) < penalty`. This is the whole guarantee -- an
+  upper bound on regret, not an equality -- and it degenerates to EXACT
+  equality precisely at `penalty = Decimal(0)`, which is D-07(b)'s own
+  byte-identical reduction anchor (`routing/tests/test_prune_soundness.py`).
+  The counterexample above is not a bug in this bound; it is a direct,
+  now-witnessed instance of the second sub-case, and it is why this
+  section says "strictly less than `penalty`" rather than repeating
+  conditions 1-3's stronger "never raises cost" claim.
+
 Condition 4c is **load-bearing for soundness, not defensive** -- exactly
 like condition 3 above, and for the identical underlying reason: the
 objective charges a per-gallon trust margin on ``eia_regional_estimate``-
@@ -614,7 +664,12 @@ def prune_dominated_candidates(
                 # dominate this candidate -- so `candidate` was not
                 # already removed above, meaning its price is strictly
                 # below witness_price already, and the gap computed below
-                # is always strictly positive here.
+                # is always strictly positive here. See the function
+                # docstring's "Bound, precisely" paragraph: this test
+                # bounds the cost increase from removal by `penalty`
+                # itself, not by zero -- an intentionally weaker guarantee
+                # than conditions 1-3's exact substitution, proved sound
+                # to that bound by the relocation argument there.
                 witness_price = (
                     running_min_price_any if estimate_priced else running_min_price_real
                 )
