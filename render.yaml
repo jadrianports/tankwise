@@ -75,6 +75,14 @@ services:
       # specific Mapbox account.
       - key: MAPBOX_PUBLIC_TOKEN
         sync: false
+      # D-06's gated dispatch-verdict probe seam (routing/probe_seam.py).
+      # Normally UNSET -- provisioned here only for the duration of a probe
+      # round (Phase 26 Round 2) and un-set again afterwards, returning the
+      # seam to permanent inertness. sync: false means Render never stores
+      # a value for this key in this file; a human sets it by hand in the
+      # dashboard when a probe round is active.
+      - key: DISPATCH_PROBE_SECRET
+        sync: false
 
       # --- Committed non-secret configuration ---
       - key: DJANGO_SETTINGS_MODULE

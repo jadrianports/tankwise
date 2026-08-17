@@ -133,6 +133,18 @@ MAPBOX_PUBLIC_TOKEN = _env("MAPBOX_PUBLIC_TOKEN")
 # permanently in frozen-snapshot mode with a startup warning (D-20), never
 # a hard failure. Register a free key at https://www.eia.gov/opendata/.
 EIA_API_KEY = _env("EIA_API_KEY")
+
+# D-06's gated dispatch-verdict probe seam (routing/probe_seam.py). Unset by
+# default -- the same no-default, permanently-optional shape EIA_API_KEY
+# uses above, chosen for the same reason: a human provisions this in
+# Render's dashboard only for the duration of a probe round (Phase 26
+# Round 2), then un-sets it again afterwards, returning
+# routing.probe_seam.resolve_probe_budget() to permanent inertness for
+# every request. Never read inside routing/services/ -- resolved in
+# routing/views.py only (plan 26-06), keeping the AST-gated pure solver
+# boundary (SOLVER_FILES, routing/tests/test_boundaries.py) intact.
+DISPATCH_PROBE_SECRET = _env("DISPATCH_PROBE_SECRET")
+
 CORRIDOR_ROOFTOP_MI = _env("CORRIDOR_ROOFTOP_MI", "5")
 CORRIDOR_CITY_MI = _env("CORRIDOR_CITY_MI", "20")
 
