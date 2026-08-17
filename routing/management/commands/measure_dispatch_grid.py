@@ -128,6 +128,13 @@ class CellResult:
     demo_stop_detail: list = field(default_factory=list)
     censored: bool = False
     censored_reason: str = ""
+    # [Amended 2026-08-17, Phase 25] The chosen stops' opis_id values, as a
+    # tuple, populated from untimed_plan.stops for EVERY cell (not only
+    # demo cells). Consumer: plan 25-05's measure_prune_dispatch_diff
+    # command, ROADMAP criterion 4's plan-identity gate -- stops (a count)
+    # plus total_cost cannot detect a same-count, same-cost station
+    # substitution, so the chosen set itself must be comparable.
+    stop_opis_ids: tuple = ()
 
 
 def _parse_cell_filter(raw_cells):
@@ -267,7 +274,9 @@ class Command(BaseCommand):
         self._print_probe_selection(results, adopted_rung)
         self._print_disclaimer()
 
-    def _measure_cell(self, row, repeats, trust_margin=Decimal(0)):
+    def _measure_cell(
+        self, row, repeats, trust_margin=Decimal(0), *, strengthened_prune=False
+    ):
         slug = row["slug"]
         tank_range_mi = row["tank_range_mi"]
         loader = row["loader"]
@@ -285,10 +294,26 @@ class Command(BaseCommand):
         raw_candidates = corridor.candidates(route, factor_for=factor_for)
         result.raw_candidates = len(raw_candidates)
 
+        # [Amended 2026-08-17, Phase 25] `strengthened_prune` (plan 25-05,
+        # D-18/D-19) selects which prune rule this cell is measured under.
+        # `handle()`'s own call (`results = [self._measure_cell(row,
+        # repeats) for row in grid]`) passes neither this parameter nor
+        # `trust_margin`, so it always takes the False branch below --
+        # this method's published behaviour at its existing call site is
+        # therefore unmoved. False (the default): mpg=None, penalty=None
+        # are passed EXPLICITLY, which is byte-identical to omitting them
+        # -- `prune_dominated_candidates` defaults both to `None`, and the
+        # "Penalty domination" branch in `prune.py` only activates when
+        # BOTH are supplied (D-04). True: the cell's own `row["mpg"]` and
+        # this module's pinned `PENALTY` constant are threaded through,
+        # activating the strengthened rule for this cell's search set
+        # alone -- `routing/services/solver.py` is never touched (D-14).
         search_set = prune_dominated_candidates(
             raw_candidates,
             tank_range_mi=tank_range_mi,
             total_route_mi=route.total_route_mi,
+            mpg=mpg if strengthened_prune else None,
+            penalty=PENALTY if strengthened_prune else None,
         )
         result.kept = len(search_set)
 
@@ -333,6 +358,44 @@ class Command(BaseCommand):
             starting_fuel=starting_fuel,
         )
 
+        # [Amended 2026-08-17, Phase 25] Which candidate list solve()
+        # searches, and whether it is asked to prune that list itself,
+        # both now depend on `strengthened_prune`. False (the only branch
+        # `handle()`'s own call ever takes): `solve_candidates` is the
+        # FULL `raw_candidates` and `solve_prune` is `True` -- solve()
+        # receives no explicit `prune=` difference from before this
+        # amendment and runs its own internal, unstrengthened
+        # `prune_dominated_candidates` call (`solver.py`'s own
+        # `mpg=`/`penalty=None`, always -- `PruneInertnessGateTest`'s
+        # subject). True: `solve_candidates` is the already-strengthened-
+        # pruned `search_set` computed above and `solve_prune` is `False`,
+        # so the DP searches exactly that reduced set without `solve()`
+        # itself ever supplying `mpg=`/`penalty=` to the prune -- the
+        # strengthened rule is reached entirely through this measurement
+        # seam, never through `solve()` (D-14).
+        #
+        # Fidelity note: in production, `solve()` runs
+        # `dp.preflight_gap_check` over the UNPRUNED candidate list, then
+        # prunes afterwards (see `solve()`'s own docstring, step (2)
+        # before step (3)). Passing an already-pruned `search_set` with
+        # `prune=False` instead runs that same check over the PRUNED list
+        # -- the one genuine fidelity deviation this measurement seam
+        # introduces relative to a real strengthened-rule deployment.
+        # `prune.py`'s D-05 structural reach-safety ("Reach-safety (D-05)
+        # restated for this condition") is what makes the two equivalent:
+        # removal never manufactures a new infeasibility, so a gap
+        # invisible in the pruned list was never a real gap in the
+        # unpruned one either. A divergence here -- an
+        # `InfeasibleRouteError` on the after world for a cell the before
+        # world solves -- is itself a finding, evidence of an unsound
+        # removal, not a measurement artifact to route around; such a
+        # cell must be CENSORED with an explicit reason (the
+        # `result.censored`/`result.censored_reason` branches below
+        # already carry one) rather than silently dropped from the
+        # report.
+        solve_candidates = search_set if strengthened_prune else raw_candidates
+        solve_prune = not strengthened_prune
+
         # Untimed column (deadline=None), worst-of-`repeats` -- the input
         # to D-17's largest-offline-solve-time live-probe selection rule.
         worst_untimed = Decimal(0)
@@ -341,11 +404,12 @@ class Command(BaseCommand):
             for _ in range(repeats):
                 started = time.perf_counter()
                 plan = solve(
-                    raw_candidates,
+                    solve_candidates,
                     route.total_route_mi,
                     deadline=None,
                     penalty=PENALTY,
                     trust_margin=trust_margin,
+                    prune=solve_prune,
                     **solve_kwargs,
                 )
                 elapsed = Decimal(str(time.perf_counter() - started))
@@ -361,6 +425,7 @@ class Command(BaseCommand):
         result.untimed_strategy = untimed_plan.strategy
         result.stops = len(untimed_plan.stops)
         result.total_cost = untimed_plan.total_cost
+        result.stop_opis_ids = tuple(stop.opis_id for stop in untimed_plan.stops)
         if row["is_demo_cell"]:
             result.demo_stop_detail = [
                 (stop.name, stop.gallons, stop.purchase_reason)
@@ -373,10 +438,11 @@ class Command(BaseCommand):
         try:
             started = time.perf_counter()
             timed_plan = solve(
-                raw_candidates,
+                solve_candidates,
                 route.total_route_mi,
                 penalty=PENALTY,
                 trust_margin=trust_margin,
+                prune=solve_prune,
                 **solve_kwargs,
             )
             elapsed = Decimal(str(time.perf_counter() - started))
