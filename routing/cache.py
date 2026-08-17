@@ -53,6 +53,54 @@ new prefix. This clarification is pinned before the pipeline's first real
 refresh measures it; the next plan to merge a real refresh must verify
 empirically that the derived `s:` segment actually moved.
 
+[Recorded 2026-08-17, Phase 25 -- NOT a bump] Nothing in Phase 25 reaches
+production (D-14: `prune_dominated_candidates` gained a strengthened,
+penalty-aware branch, but it ships INERT -- `solve()` never supplies the
+new `mpg=`/`penalty=` keywords, `PruneInertnessGateTest` is the
+CI-enforcing backstop), so INTG-03 is not triggered here and the prefix
+stays `route:v11:`. Bumping it anyway, with no observable change behind
+the bump, would flush every warm plan for nothing. Two things are
+recorded instead, for whichever plan in Phase 26 actually wires the rule
+in and needs to bump the prefix:
+
+1. **Target prefix: `route:v12:`.** Verified free at write time:
+   `grep -rn "route:v12:" --include=*.py .` returned zero hits before this
+   paragraph was added. Because this paragraph itself now CONTAINS the
+   string `route:v12:`, a future re-run of that exact grep will return
+   exactly one hit -- this docstring paragraph -- and that hit is a
+   RECORDING of the target, not a competing consumer or an already-taken
+   bump, exactly the "returned exactly one hit" reading the `route:v11:`
+   paragraph above already gives its own forward-reference. The standing
+   rule is unchanged by this note: whoever actually bumps the prefix at
+   Phase 26 must re-verify it is still free at that time, not trust this
+   recording as a substitute for that check -- a second, unrelated commit
+   could in principle take `v12:` for something else in the interim.
+
+2. **`_dispatch_policy_token()` must widen in the SAME change as the
+   bump.** As shipped today, `_dispatch_policy_token()` (below) derives
+   from exactly two runtime facts -- `dp.DP_TRANSITION_BUDGET` and
+   `dp.DP_DEADLINE_SECONDS` -- and carries no identity for the prune rule
+   at all, because the prune has never before been a keyed input to
+   caching: today's shipped (default, three-condition) prune is a pure
+   function of the candidate list, `tank_range_mi`, and `total_route_mi`,
+   none of which vary independently of what the key already namespaces.
+   Phase 25's strengthened rule breaks that: once `mpg`/`penalty` are
+   genuinely supplied at a real call site, prune output becomes
+   PENALTY-DEPENDENT, and `penalty` is already a per-request value
+   (`_penalty_token`, the `p:` segment) that can differ between two
+   otherwise-identical requests -- so two such requests could now select
+   genuinely different pruned search sets, and therefore genuinely
+   different plans, while the current `d:` token cannot tell them apart.
+   Bumping the shape prefix to `route:v12:` while leaving
+   `_dispatch_policy_token()`'s derivation untouched would reintroduce the
+   exact unguarded coupling `18-VERIFICATION.md` found and plan 18-12
+   closed (`route:v6:` keyed on the penalty but not on the dispatch
+   policy) -- one layer over, on the prune rule instead of the transition
+   budget. Whoever lands Phase 26's wiring must widen
+   `_dispatch_policy_token()`'s derivation to cover the prune rule's
+   identity in the SAME commit as the prefix bump, per this module's own
+   standing same-commit rule (INTG-03), not as a follow-up.
+
 Still `route:v10:` as of the `bypassed_estimate_count`/
 `bypassed_estimate_saving_forgone` rationale pair (Phase 21 plan 21-07,
 PROV-03) -- deliberately NOT bumped. Assessed against the `solver_strategy`
