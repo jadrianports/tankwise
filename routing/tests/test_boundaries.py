@@ -881,9 +881,20 @@ def _collect_prune_inertness_violations(path):
 # call-node count rises from 37 to 40 in this same walk; the file-count
 # above still names 7 files, unchanged). Production count is untouched --
 # this plan adds no production code. 51 test, 56 total.
-PRUNE_CALL_SITE_PRODUCTION_COUNT = 5
+#
+# [Amended 2026-08-17, plan 25-05] Re-walked after plan 25-05 added
+# `routing/management/commands/measure_prune_dispatch_diff.py`. Its
+# `_attribute_cell` helper calls `prune_dominated_candidates` directly
+# (with `mpg=`/`penalty=` supplied) to independently rebuild each grid
+# row's retained set for `classify_removals`' attribution -- a call
+# `_measure_cell` itself does not expose, since it returns only counts.
+# One new production call site; test count untouched -- this plan adds no
+# new test-module call to `prune_dominated_candidates` (its own test
+# module mocks the seams instead of running a real sweep). 6 production,
+# 51 test, 57 total.
+PRUNE_CALL_SITE_PRODUCTION_COUNT = 6
 PRUNE_CALL_SITE_TEST_COUNT = 51
-PRUNE_CALL_SITE_TOTAL_COUNT = 56
+PRUNE_CALL_SITE_TOTAL_COUNT = 57
 
 
 class PruneInertnessGateTest(SimpleTestCase):
