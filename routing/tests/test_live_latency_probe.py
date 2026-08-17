@@ -136,6 +136,20 @@ from pathlib import Path
 
 from django.test import SimpleTestCase
 
+from routing.cache import FUEL_PRECISION
+from routing.services.solver import SolverStrategy
+from routing.tests.test_corridor_fixtures import (
+    CORRIDORS,
+    DEMO_CHIP_VEHICLE,
+    DEMO_CHIPS,
+    TANK_RANGES_MI,
+)
+from routing.tests.test_solver_dispatch import (
+    ADMISSION_MANIFEST,
+    ADMISSION_MANIFEST_VEHICLE,
+    STARTING_FUEL,
+)
+
 # --- LIVE_PROBE_BASE_URL ----------------------------------------------------
 #
 # The deployed origin this probe measures. Overridable via the
@@ -359,6 +373,221 @@ RECOVERY_PROBE_CELLS = (
         "pre_phase_shipped_arm": "exact_dp",
     },
 )
+
+
+# --- VERDICT_PROBE_CELLS (Phase 26 D-11, 2026-08-18) -------------------------
+#
+# The full 26-cell deployed-hardware verdict matrix D-11 needs to express
+# 26 cells x 3 repeats, worst-of-3, plus K=5 on any band-admitted cell.
+# DERIVED, not hand-written: the cross product of CORRIDORS (twelve slugs)
+# x TANK_RANGES_MI (two pinned tank ranges) at ADMISSION_MANIFEST_VEHICLE's
+# vehicle, plus both DEMO_CHIPS at DEMO_CHIP_VEHICLE's vehicle -- exactly
+# ADMISSION_MANIFEST's own 26-cell key set
+# (routing.tests.test_solver_dispatch), asserted identical by
+# VerdictProbeMatrixGuardTests below, never re-typed by hand. This set is
+# never hand-adjusted after a measurement -- the same pinned-before-
+# measurement discipline every other threshold in this codebase follows.
+#
+# `offline_admitted` is read directly from ADMISSION_MANIFEST, never
+# recomputed. `pre_phase_shipped_arm` is that boolean translated to the
+# same SolverStrategy literal strings RECOVERY_PROBE_CELLS already
+# carries.
+#
+# `base_starting_fuel` is each cell's OWN pinned starting fuel -- STARTING_
+# FUEL (0.5) for the twelve corridor slugs, DEMO_CHIP_VEHICLE["starting_
+# fuel"] (1) for the two demo slugs -- the concrete fix for RESEARCH.md's
+# Pitfall 2: LIVE_PROBE_CACHE_BUST_LADDER perturbs starting_fuel around
+# ~1.0, a DIFFERENT vehicle than the 0.5 ADMISSION_MANIFEST's twelve
+# corridor cells were actually computed against. Plan 26-04's per-cell-
+# vehicle-relative cache-bust (relative_cache_bust_starting_fuel, below)
+# perturbs around THIS value instead, never a hardcoded 1.0. The
+# `vehicle` dict's own `starting_fuel` string equals it exactly.
+def build_verdict_probe_cells():
+    """Pure derivation of the 26-cell verdict matrix -- see the module
+    comment immediately above. Returns a tuple of per-cell dicts, never a
+    literal tuple of 26 hand-written dicts."""
+    cells = []
+
+    for corridor in CORRIDORS:
+        for tank_range_mi in TANK_RANGES_MI:
+            key = (corridor.slug, int(tank_range_mi))
+            cells.append(
+                {
+                    "slug": corridor.slug,
+                    "label": corridor.label,
+                    "start": f"{corridor.start[0]},{corridor.start[1]}",
+                    "finish": f"{corridor.finish[0]},{corridor.finish[1]}",
+                    "waypoints": (),
+                    "tank_range_mi": tank_range_mi,
+                    "vehicle": {
+                        "mpg": str(ADMISSION_MANIFEST_VEHICLE["mpg"]),
+                        "tank_range_mi": str(tank_range_mi),
+                        "starting_fuel": str(STARTING_FUEL),
+                    },
+                    "base_starting_fuel": STARTING_FUEL,
+                    "pre_phase_shipped_arm": (
+                        SolverStrategy.EXACT_DP
+                        if ADMISSION_MANIFEST[key]
+                        else SolverStrategy.PENALTY_AWARE_HEURISTIC
+                    ),
+                    "offline_admitted": ADMISSION_MANIFEST[key],
+                }
+            )
+
+    for chip in DEMO_CHIPS:
+        key = (chip.slug, int(DEMO_CHIP_VEHICLE["tank_range_mi"]))
+        waypoints = tuple(f"{lat},{lng}" for lat, lng in chip.waypoints)
+        cells.append(
+            {
+                "slug": chip.slug,
+                "label": chip.label,
+                "start": f"{chip.start[0]},{chip.start[1]}",
+                "finish": f"{chip.finish[0]},{chip.finish[1]}",
+                "waypoints": waypoints,
+                "tank_range_mi": DEMO_CHIP_VEHICLE["tank_range_mi"],
+                "vehicle": {
+                    "mpg": str(DEMO_CHIP_VEHICLE["mpg"]),
+                    "tank_range_mi": str(DEMO_CHIP_VEHICLE["tank_range_mi"]),
+                    "starting_fuel": str(DEMO_CHIP_VEHICLE["starting_fuel"]),
+                },
+                "base_starting_fuel": DEMO_CHIP_VEHICLE["starting_fuel"],
+                "pre_phase_shipped_arm": (
+                    SolverStrategy.EXACT_DP
+                    if ADMISSION_MANIFEST[key]
+                    else SolverStrategy.PENALTY_AWARE_HEURISTIC
+                ),
+                "offline_admitted": ADMISSION_MANIFEST[key],
+            }
+        )
+    return tuple(cells)
+
+
+VERDICT_PROBE_CELLS = build_verdict_probe_cells()
+
+# --- VERDICT_PROBE_REPEATS (Phase 26 D-11, 2026-08-18) -----------------------
+#
+# Worst-of-3 matches recovery_verdict()'s own field shape
+# (worst_of_repeats_total_response_seconds) and survives free-tier CPU
+# sharing. DEMOTION_GUARD_PROBE_REPEATS=5 (test_dispatch_recovery.py) is
+# deliberately NOT reused here -- it is reserved for the demotion-guard
+# rewrite bar it was pinned as; using it everywhere would inflate this
+# sweep's request cost without strengthening the pinned claim.
+VERDICT_PROBE_REPEATS = 3
+
+
+# --- relative_cache_bust_starting_fuel / VERDICT_PROBE_CACHE_BUST_FRACTIONS /
+# PROBE_SEAM_CACHE_BUST_FRACTIONS (Phase 26 D-11, 2026-08-18) ----------------
+def relative_cache_bust_starting_fuel(base_starting_fuel, fraction):
+    """Perturb `base_starting_fuel` DOWNWARD by `fraction` (both `Decimal`),
+    quantized to the SAME decimal precision `routing/cache.py`'s
+    `_vehicle_token` quantizes `starting_fuel` to (`FUEL_PRECISION`,
+    imported rather than restated as a literal) -- so the perturbed value
+    always produces a distinct cache key, the same guarantee
+    `LIVE_PROBE_CACHE_BUST_LADDER`'s absolute values already give.
+
+    Downward only, and small: RESEARCH.md's Pitfall 2 is that
+    `LIVE_PROBE_CACHE_BUST_LADDER` perturbs `starting_fuel` around ~1.0,
+    while `ADMISSION_MANIFEST`'s twelve corridor cells are pinned at
+    `STARTING_FUEL=0.5` -- probing that ladder verbatim on those cells
+    measures a different vehicle than the manifest was computed against.
+    This function perturbs RELATIVE TO EACH CELL'S OWN base fuel instead.
+
+    Reducing starting fuel reduces the DP's reachable-state count from
+    START and therefore the transition-count estimate `solve()` computes
+    before dispatching -- it can only push a cell TOWARD the heuristic
+    side of the `DP_TRANSITION_BUDGET` boundary, never toward the exact-DP
+    side, so a near-boundary already-admitted cell (e.g.
+    `houston_tx-chicago_il`@500mi at 48,926 of 50,000, 97.9%) cannot be
+    pushed ACROSS the boundary by this perturbation alone. An UPWARD
+    perturbation could, which would confound D-13's live-versus-offline
+    comparison with a self-inflicted methodological cause. The magnitude
+    is small either way: at most a 4% relative reduction (this module's
+    lowest verdict rung, 0.96), a few miles of usable range on a
+    500-mile tank -- far too small to affect feasibility on its own.
+
+    Residual honesty note (D-13): the live column this ladder measures is
+    taken at a starting fuel within 4% of ADMISSION_MANIFEST's own pinned
+    value, not exactly at it. That deviation is recorded here rather than
+    assumed immaterial.
+
+    Never returns zero or a negative value -- both ladders below stay
+    strictly inside (0, 1), so the product of a positive base and a
+    strictly-positive fraction under 1 is always strictly positive; this
+    is asserted defensively rather than trusted silently, because a
+    zero/negative starting fuel would make every DP state at START
+    unreachable (`InfeasibleRouteError`), not merely produce a distinct
+    cache key.
+    """
+    value = Decimal(base_starting_fuel) * Decimal(fraction)
+    quantum = Decimal(1).scaleb(-FUEL_PRECISION)
+    quantized = value.quantize(quantum)
+    if quantized <= 0:
+        raise ValueError(
+            f"relative_cache_bust_starting_fuel produced a non-positive "
+            f"value ({quantized}) from base={base_starting_fuel!r} "
+            f"fraction={fraction!r} -- refusing to return it."
+        )
+    return quantized
+
+
+# Four rungs: VERDICT_PROBE_REPEATS(3) plus exactly one spare rung for the
+# single permitted cache-hit retry `_measure_one_repeat` performs.
+VERDICT_PROBE_CACHE_BUST_FRACTIONS = (
+    Decimal("0.99"),
+    Decimal("0.98"),
+    Decimal("0.97"),
+    Decimal("0.96"),
+)
+
+# Six rungs, STRICTLY DISJOINT from the ladder above -- covers Round 2's
+# worst case (DEMOTION_GUARD_PROBE_REPEATS=5 plus one spare). Disjointness
+# is load-bearing, not cosmetic: Round 2 re-probes stop chains Round 1
+# already warmed on the same cache prefix, so a colliding rung would
+# silently degrade a Round 2 repeat into a cache hit -- an
+# indistinguishable-from-fast false reading, exactly the failure class
+# this module's whole cache-busting protocol exists to prevent.
+PROBE_SEAM_CACHE_BUST_FRACTIONS = (
+    Decimal("0.95"),
+    Decimal("0.94"),
+    Decimal("0.93"),
+    Decimal("0.92"),
+    Decimal("0.91"),
+    Decimal("0.90"),
+)
+
+
+# --- DAILY_PER_IP_ROUTE_THROTTLE / VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_
+# REPEAT / VERDICT_PROBE_MAX_REQUESTS (Phase 26 D-11, 2026-08-18) -----------
+#
+# A NEW, mode-scoped ceiling for the verdict sweep -- deliberately NOT a
+# raise of LIVE_PROBE_MAX_REQUESTS. RESEARCH.md's own Pitfall 4
+# recommends raising the existing constant; this plan deviates from that
+# recommendation, because LIVE_PROBE_MAX_REQUESTS is also the exact budget
+# `_enforce_budget()` checks the two EXISTING sweeps (the 2-cell main
+# matrix, and RECOVERY_PROBE_CELLS) against -- raising it to fit the
+# 26-cell verdict matrix would silently widen both of those unrelated
+# guards' tolerance too. A mode-scoped constant keeps each sweep's own
+# budget assertion exactly as strict as it was before this plan.
+DAILY_PER_IP_ROUTE_THROTTLE = 200  # render.yaml ROUTE_THROTTLE_SUSTAINED_RATE
+
+# `_measure_one_repeat`'s true per-repeat worst case is a primary attempt
+# plus at most ONE retry, never more -- not `len(ladder)`. The legacy
+# sweeps' `x len(ladder)` formula is a conservative superset of this bound
+# at their (small) ladder sizes and is left unchanged.
+VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_REPEAT = 2
+
+# Round 1's worst case: 26 cells x VERDICT_PROBE_REPEATS(3) x
+# VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_REPEAT(2) + 1 wake = 157 -- 78.5%
+# of DAILY_PER_IP_ROUTE_THROTTLE (200/day, charged to the OPERATOR's own
+# address, not to reviewer traffic), 5.2% of the deployment-wide
+# MAPBOX_DAILY_CALL_CAP=3000 (nowhere near binding). Round 1's EXPECTED
+# case (one attempt per repeat, no cache-hit retries) is 79. Round 2's own
+# worst case -- four PROBE_SEAM_CACHE_BUST_FRACTIONS rungs x 3 repeats x 2
+# attempts (=24), plus the DEMOTION_GUARD_PROBE_REPEATS=5 bar x 2 attempts
+# (=10), plus a wake (=1) -- totals 35, independently well under 170.
+# Each round enforces this SAME ceiling separately, at the point it runs;
+# the two rounds are never summed into one combined budget check.
+VERDICT_PROBE_MAX_REQUESTS = 170
 
 
 # --- The 422-after-55s anomaly reproduction ----------------------------------
@@ -597,3 +826,126 @@ class LiveLatencyProbeGuardTests(SimpleTestCase):
             self.assertTrue(base_shape.issubset(cell.keys()))
             self.assertIn("tank_range_mi", cell)
             self.assertIn("pre_phase_shipped_arm", cell)
+
+
+class VerdictProbeMatrixGuardTests(SimpleTestCase):
+    """Anti-vacuity guard for the widened 26-cell verdict matrix (Phase 26
+    D-11): every acceptance criterion Tasks 1-3 name, covering the derived
+    cell set, both fraction ladders, and the new mode-scoped request
+    ceiling. Runs entirely offline, no network access."""
+
+    # --- Task 1: VERDICT_PROBE_CELLS -----------------------------------
+
+    def test_verdict_probe_cells_count_is_26(self):
+        self.assertEqual(len(VERDICT_PROBE_CELLS), 26)
+
+    def test_verdict_probe_cells_key_set_matches_admission_manifest_exactly(self):
+        derived_keys = {
+            (cell["slug"], int(cell["tank_range_mi"])) for cell in VERDICT_PROBE_CELLS
+        }
+        self.assertEqual(derived_keys, set(ADMISSION_MANIFEST))
+
+    def test_every_cell_carries_the_full_field_shape(self):
+        required_keys = {
+            "slug",
+            "label",
+            "start",
+            "finish",
+            "waypoints",
+            "tank_range_mi",
+            "vehicle",
+            "base_starting_fuel",
+            "pre_phase_shipped_arm",
+            "offline_admitted",
+        }
+        for cell in VERDICT_PROBE_CELLS:
+            self.assertTrue(required_keys.issubset(cell.keys()))
+            self.assertIsInstance(cell["waypoints"], tuple)
+
+    def test_exactly_two_cells_are_demo_chips_and_the_multi_leg_one_has_one_waypoint(self):
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        demo_cells = [cell for cell in VERDICT_PROBE_CELLS if cell["slug"] in demo_slugs]
+        self.assertEqual(len(demo_cells), 2)
+        self.assertEqual(sorted(len(cell["waypoints"]) for cell in demo_cells), [0, 1])
+
+    def test_corridor_cells_use_the_manifest_pinned_starting_fuel(self):
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        for cell in VERDICT_PROBE_CELLS:
+            if cell["slug"] in demo_slugs:
+                continue
+            self.assertEqual(cell["base_starting_fuel"], STARTING_FUEL)
+            self.assertEqual(
+                Decimal(cell["vehicle"]["starting_fuel"]), cell["base_starting_fuel"]
+            )
+
+    def test_demo_chip_cells_use_the_demo_chip_vehicle(self):
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        for cell in VERDICT_PROBE_CELLS:
+            if cell["slug"] not in demo_slugs:
+                continue
+            self.assertEqual(cell["base_starting_fuel"], DEMO_CHIP_VEHICLE["starting_fuel"])
+            self.assertEqual(Decimal(cell["vehicle"]["mpg"]), DEMO_CHIP_VEHICLE["mpg"])
+
+    def test_verdict_probe_cells_is_produced_by_the_derivation_function(self):
+        self.assertEqual(VERDICT_PROBE_CELLS, build_verdict_probe_cells())
+
+    def test_verdict_probe_repeats_is_3(self):
+        self.assertEqual(VERDICT_PROBE_REPEATS, 3)
+
+    # --- Task 2: the two disjoint fraction ladders -----------------------
+
+    def test_relative_cache_bust_reproduces_the_legacy_ladder_at_base_1(self):
+        for value, fraction in zip(
+            LIVE_PROBE_CACHE_BUST_LADDER, VERDICT_PROBE_CACHE_BUST_FRACTIONS
+        ):
+            self.assertEqual(relative_cache_bust_starting_fuel(Decimal(1), fraction), value)
+
+    def test_verdict_ladder_yields_four_pairwise_distinct_values_at_base_half(self):
+        values = {
+            relative_cache_bust_starting_fuel(Decimal("0.5"), fraction)
+            for fraction in VERDICT_PROBE_CACHE_BUST_FRACTIONS
+        }
+        self.assertEqual(len(values), 4)
+
+    def test_probe_seam_ladder_yields_six_distinct_values_disjoint_from_verdict_ladder(self):
+        verdict_values = {
+            relative_cache_bust_starting_fuel(Decimal("0.5"), fraction)
+            for fraction in VERDICT_PROBE_CACHE_BUST_FRACTIONS
+        }
+        seam_values = {
+            relative_cache_bust_starting_fuel(Decimal("0.5"), fraction)
+            for fraction in PROBE_SEAM_CACHE_BUST_FRACTIONS
+        }
+        self.assertEqual(len(seam_values), 6)
+        self.assertEqual(verdict_values & seam_values, set())
+
+    def test_fraction_ladders_are_disjoint_and_downward_only(self):
+        self.assertEqual(
+            set(VERDICT_PROBE_CACHE_BUST_FRACTIONS) & set(PROBE_SEAM_CACHE_BUST_FRACTIONS),
+            set(),
+        )
+        for fraction in VERDICT_PROBE_CACHE_BUST_FRACTIONS + PROBE_SEAM_CACHE_BUST_FRACTIONS:
+            self.assertGreater(fraction, 0)
+            self.assertLess(fraction, 1)
+
+    def test_ladder_lengths_match_their_repeat_counts_plus_one_spare(self):
+        from routing.tests.test_dispatch_recovery import DEMOTION_GUARD_PROBE_REPEATS
+
+        self.assertEqual(len(VERDICT_PROBE_CACHE_BUST_FRACTIONS), VERDICT_PROBE_REPEATS + 1)
+        self.assertGreaterEqual(
+            len(PROBE_SEAM_CACHE_BUST_FRACTIONS), DEMOTION_GUARD_PROBE_REPEATS + 1
+        )
+
+    # --- Task 3: the mode-scoped request ceiling -------------------------
+
+    def test_round_1_worst_case_is_at_or_under_the_verdict_request_ceiling(self):
+        worst_case = (
+            26 * VERDICT_PROBE_REPEATS * VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_REPEAT + 1
+        )
+        self.assertLessEqual(worst_case, VERDICT_PROBE_MAX_REQUESTS)
+
+    def test_verdict_ceiling_never_exceeds_the_per_ip_daily_throttle(self):
+        self.assertLessEqual(VERDICT_PROBE_MAX_REQUESTS, DAILY_PER_IP_ROUTE_THROTTLE)
+
+    def test_legacy_live_probe_max_requests_is_still_20(self):
+        self.assertEqual(LIVE_PROBE_MAX_REQUESTS, 20)
