@@ -347,6 +347,7 @@ def solve(
     trust_margin=Decimal(0),
     prune=True,
     deadline=dp.DP_DEADLINE_SECONDS,
+    transition_budget=dp.DP_TRANSITION_BUDGET,
 ) -> FuelPlan:
     """Return the cheapest feasible fueling plan for a route of
     ``total_route_mi`` miles, given an iterable of ``Candidate`` stations.
@@ -468,6 +469,23 @@ def solve(
     exists to do safely, call site by call site, rather than leaving any
     of them to inherit it by accident.
 
+    ``transition_budget`` is D-06's caller-supplied dispatch-budget hatch,
+    keyword-only and mirroring ``deadline``'s own shape exactly: it
+    defaults to ``dp.DP_TRANSITION_BUDGET``, production-on rather than
+    opt-in, so every existing call site that omits it is compared against
+    the exact same module constant the pre-hatch code read directly, and
+    dispatches byte-identically to before this parameter existed. It
+    exists so a gated, secret-header probe request -- resolved in
+    ``routing/views.py``, never here (``routing.probe_seam.resolve_probe_budget``,
+    plan 26-06) -- can raise the transition-count ceiling for exactly one
+    request, to measure whether a higher rung is safe to ship (D-05's
+    peak-RSS band decision), without ever touching
+    ``dp.DP_TRANSITION_BUDGET`` itself or exposing normal traffic to a
+    raised ceiling during the measurement window. It replaces only the
+    bare ``dp.DP_TRANSITION_BUDGET`` read in the ``estimate <= ...``
+    comparison below -- the single place that constant is consulted
+    inside this function -- nothing else about the dispatch logic changes.
+
     Infeasibility has exactly one source in this codebase --
     ``dp.preflight_gap_check`` above -- so ``dp.solve_fixed_charge`` itself
     is total and never raises (D-17); it is only ever called once this
@@ -517,7 +535,7 @@ def solve(
     )
     deadline_breached = False
     deadline_breach_elapsed_s = None
-    if estimate <= dp.DP_TRANSITION_BUDGET:
+    if estimate <= transition_budget:
         strategy = SolverStrategy.EXACT_DP
         try:
             raw_plan = dp.solve_fixed_charge(

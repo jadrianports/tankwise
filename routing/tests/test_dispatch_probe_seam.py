@@ -20,6 +20,14 @@ from routing.probe_seam import (
     resolve_probe_budget,
     rss_delta_mb,
 )
+from routing.services import dp
+from routing.services.solver import SolverStrategy, solve
+from routing.tests.test_solver_dispatch import (
+    MPG,
+    PENALTY,
+    STARTING_FUEL,
+    RealCorridorDispatchTestCase,
+)
 
 # The same non-`None` ladder rungs `DP_TRANSITION_BUDGET_LADDER`
 # (`routing/tests/test_dispatch_recovery.py`) carries -- the only legal set
@@ -205,4 +213,94 @@ class ProbeSeamGateResolutionTests(SimpleTestCase):
             [],
             "routing/probe_seam.py must never compare 'secret' with a plain "
             f"==/!=: offending line(s) {plain_equality_against_secret}",
+        )
+
+
+class TransitionBudgetHatchTests(RealCorridorDispatchTestCase):
+    """`solve()`'s caller-supplied `transition_budget=` hatch -- Task 3.
+    Three directions, proving the hatch is non-vacuous: (1) omitting the
+    keyword dispatches byte-identically to passing the production default
+    explicitly; (2) a tiny value CLOSES the gate on a cell the manifest
+    already admits; (3) a raised value OPENS the gate on a cell the
+    manifest demotes. Direction 3 asserts on the ATTEMPT, not a latency
+    figure -- the production `deadline=` hatch is left at its default
+    throughout this class, so a slow box may legitimately breach it and
+    fall back; that is still proof the transition_budget gate opened, not
+    a test failure.
+    """
+
+    def test_omitting_the_keyword_matches_the_explicit_default(self):
+        # houston_tx-chicago_il@1050mi: estimate 23 (ADMISSION_MANIFEST) --
+        # trivially fast under either arm, so no deadline flakiness risk.
+        route, candidates = self._route_and_candidates("houston_tx-chicago_il")
+        common_kwargs = dict(
+            tank_range_mi=Decimal(1050),
+            mpg=MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+        )
+        plan_default = solve(candidates, route.total_route_mi, **common_kwargs)
+        plan_explicit = solve(
+            candidates,
+            route.total_route_mi,
+            transition_budget=dp.DP_TRANSITION_BUDGET,
+            **common_kwargs,
+        )
+        self.assertEqual(plan_default.strategy, plan_explicit.strategy)
+        self.assertEqual(
+            tuple(s.opis_id for s in plan_default.stops),
+            tuple(s.opis_id for s in plan_explicit.stops),
+        )
+
+    def test_a_tiny_budget_closes_the_gate_on_an_admitted_cell(self):
+        # Same admitted cell as above (estimate 23) -- a budget of 1
+        # forces the over-budget branch even though the production
+        # default would have admitted it, proving the parameter is
+        # actually consulted rather than merely accepted and ignored.
+        route, candidates = self._route_and_candidates("houston_tx-chicago_il")
+        plan = solve(
+            candidates,
+            route.total_route_mi,
+            tank_range_mi=Decimal(1050),
+            mpg=MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+            transition_budget=1,
+        )
+        self.assertEqual(plan.strategy, SolverStrategy.PENALTY_AWARE_HEURISTIC)
+        self.assertFalse(
+            plan.deadline_breached,
+            "the over-budget branch never attempts the DP, so it must "
+            "never set deadline_breached",
+        )
+
+    def test_a_raised_budget_opens_the_gate_on_a_demoted_cell(self):
+        # dallas_tx-seattle_wa@1050mi: estimate 117,895 -- demoted under
+        # the production 50,000 budget (ADMISSION_MANIFEST), but under the
+        # 130,000 rung dp.py's own dated note names as the measured
+        # (never-shipped) qualifying rung for this exact cell.
+        route, candidates = self._route_and_candidates("dallas_tx-seattle_wa")
+        plan = solve(
+            candidates,
+            route.total_route_mi,
+            tank_range_mi=Decimal(1050),
+            mpg=MPG,
+            starting_fuel=STARTING_FUEL,
+            penalty=PENALTY,
+            transition_budget=130_000,
+        )
+        # Assert on the ATTEMPT, not a latency figure: with the estimate
+        # now clearing the raised budget, the DP is attempted either way
+        # -- it either completes (strategy == EXACT_DP) or breaches the
+        # still-in-force production deadline and falls back
+        # (deadline_breached == True). Both are proof the gate opened;
+        # neither is a test failure. The failure this guards against is
+        # NEITHER happening -- the same non-attempt the tiny-budget
+        # direction above exercises deliberately.
+        attempted = plan.strategy == SolverStrategy.EXACT_DP or plan.deadline_breached
+        self.assertTrue(
+            attempted,
+            "transition_budget=130_000 should have made the DP attempt "
+            "dallas_tx-seattle_wa@1050mi (estimate 117,895); got "
+            f"strategy={plan.strategy}, deadline_breached={plan.deadline_breached}",
         )

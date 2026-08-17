@@ -89,6 +89,51 @@ class ImportBoundaryTest(SimpleTestCase):
             self.assertEqual(violations, [], f"{path}: imports {violations}")
 
 
+class ProbeSeamIsolationTest(SimpleTestCase):
+    """D-06 (Phase 26 plan 26-03, Task 3): `routing/probe_seam.py` holds
+    the dispatch-verdict probe seam's OS/proc instrumentation
+    (`read_current_rss_kb`) and secret-gated resolution
+    (`resolve_probe_budget`) -- neither belongs inside the AST-gated pure
+    solver boundary `SolverPurityTest` below enforces. This gate asserts
+    both directions: `routing/probe_seam.py` is not itself a member of
+    `SOLVER_FILES`, and no `SOLVER_FILES` module imports it.
+
+    Mutation check performed manually at authoring time (recorded verbatim
+    in 26-03-SUMMARY.md, this file's own convention -- see
+    `PruneInertnessGateTest`'s non-vacuity test for the analogous
+    in-repository precedent): a temporary `import routing.probe_seam` line
+    added to `routing/services/dp.py`, this test class run, the failure
+    message confirmed to name `dp.py` and `routing.probe_seam` exactly,
+    then reverted.
+    """
+
+    def test_probe_seam_is_not_a_solver_file(self):
+        probe_seam_path = ROUTING_DIR / "probe_seam.py"
+        self.assertNotIn(
+            probe_seam_path,
+            SOLVER_FILES,
+            "routing/probe_seam.py must never be added to SOLVER_FILES -- "
+            "it holds OS/proc instrumentation, header-name contract "
+            "constants, and gate resolution, none of which belong inside "
+            "the AST-gated pure solver boundary.",
+        )
+
+    def test_no_solver_file_imports_probe_seam(self):
+        violations = []
+        for path in SOLVER_FILES:
+            for name in _collect_import_names(path):
+                if name == "routing.probe_seam" or name.startswith(
+                    "routing.probe_seam."
+                ):
+                    violations.append(f"{path}: imports {name}")
+
+        self.assertEqual(
+            violations,
+            [],
+            f"no SOLVER_FILES module may import routing.probe_seam: {violations}",
+        )
+
+
 class SolverPurityTest(SimpleTestCase):
     """Statically enforces that the solver (routing/services/solver.py,
     routing/services/exceptions.py, routing/services/prune.py,
@@ -443,9 +488,17 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # ._solve_probe`, the single shared helper every West Coast feasibility test
 # in that module calls) -- 11 production unchanged, 76 -> 77 test, 87 -> 88
 # total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 88
+#
+# Updated again in Phase 26 plan 26-03: `routing/tests/test_dispatch_probe_seam.py`
+# gained four new TEST `solve()` call sites (`TransitionBudgetHatchTests` --
+# two calls in `test_omitting_the_keyword_matches_the_explicit_default`, one
+# each in `test_a_tiny_budget_closes_the_gate_on_an_admitted_cell` and
+# `test_a_raised_budget_opens_the_gate_on_a_demoted_cell`), proving D-06's new
+# `transition_budget=` hatch is non-vacuous in both directions. 11 production
+# unchanged, 77 -> 81 test, 88 -> 92 total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 92
 TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
-TRUST_MARGIN_CALL_SITE_TEST_COUNT = 77
+TRUST_MARGIN_CALL_SITE_TEST_COUNT = 81
 
 
 class SolveTrustMarginKwargGateTest(SimpleTestCase):
