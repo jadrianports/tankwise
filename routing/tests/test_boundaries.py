@@ -603,9 +603,19 @@ def _collect_seed_stations_calls_with_literal_path(path):
 # `station_csv_paths.py`'s own `reseed_all()` is production call site #1
 # (its `call_command("seed_stations", *[...])` call is itself scanned and
 # found compliant, not exempted).
+#
+# [Amended 2026-08-18, Phase 26 plan 26-02] Re-walked after plan 26-02
+# added `routing/tests/test_heuristic_candidate_diff.py`. Its
+# `RealCorridorTestCase.setUpTestData` calls `call_command("seed_stations",
+# stdout=io.StringIO())` once, with no extra positional path argument --
+# one new TEST call site, compliant with D-29 (no literal path).
+# Production count untouched -- this plan's own production command
+# (`measure_heuristic_candidate_diff.py`) reseeds via `reseed_all()`, not
+# a direct `call_command("seed_stations", ...)` call. 8 production, 37
+# test, 45 total.
 SEED_STATIONS_CALL_SITE_PRODUCTION_COUNT = 8
-SEED_STATIONS_CALL_SITE_TEST_COUNT = 36
-SEED_STATIONS_CALL_SITE_TOTAL_COUNT = 44
+SEED_STATIONS_CALL_SITE_TEST_COUNT = 37
+SEED_STATIONS_CALL_SITE_TOTAL_COUNT = 45
 
 
 class SeedStationsCallSiteGateTest(SimpleTestCase):
