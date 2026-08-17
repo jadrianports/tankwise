@@ -2642,3 +2642,233 @@ def _expected_penalty_domination_retention(params):
 PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION = _expected_penalty_domination_retention(
     PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS
 )
+
+
+# D-06's permanent boundary witness (Assertion 3 below): a single
+# hand-built three-station geometry exercising condition 4b at BOTH edges
+# of `penalty` at once, rather than two separate lists. WB is the
+# tail-reaching pricier alternative; WA_BELOW and WA_ABOVE are two
+# cheaper, ALSO tail-reaching alternatives at DIFFERENT positions, each
+# compared against the SAME witness (WB's price) -- a candidate removed
+# by condition 4 never updates the running-minimum tracker (see
+# prune_dominated_candidates' pass-2 loop: the running_min update lines
+# sit strictly after "if removed: continue"), so WA_ABOVE is compared
+# against WB's own price regardless of WA_BELOW's fate, never against
+# WA_BELOW's -- verified by the standalone trace recorded in
+# 25-03-SUMMARY.md before this witness was pinned. tank_range_mi=mpg=1
+# so max_saving = price_gap directly, with no scaling to account for by
+# hand.
+#
+# gap(WB, WA_BELOW) = 40.00 - 5.01 = 34.99 -- $0.01 BELOW
+# PENALTY_ANCHORS[1] ($35.00). Condition 4b's test (max_saving < penalty)
+# is TRUE: WA_BELOW is removed.
+# gap(WB, WA_ABOVE) = 40.00 - 4.99 = 35.01 -- $0.01 ABOVE $35.00.
+# Condition 4b's test is FALSE: WA_ABOVE is retained.
+#
+# This witness pins the bound's behaviour at the boundary and is not to
+# be regenerated, mirroring SLIVER_WITNESS_EQUAL_PRICE/SLIVER_WITNESS_
+# STRICT_INEQUALITY's own permanence framing above.
+PENALTY_BOUNDARY_WITNESS_TANK_RANGE_MI = Decimal("1")
+PENALTY_BOUNDARY_WITNESS_TOTAL_ROUTE_MI = Decimal("1")
+PENALTY_BOUNDARY_WITNESS_MPG = Decimal("1")
+PENALTY_BOUNDARY_WITNESS_PENALTY = PENALTY_ANCHORS[1]
+
+PENALTY_BOUNDARY_WITNESS = [
+    _candidate(opis_id=0, price="40.00", position="0", name="WB"),
+    _candidate(opis_id=1, price="5.01", position="0.5", name="WA-below"),
+    _candidate(opis_id=2, price="4.99", position="0.75", name="WA-above"),
+]
+
+
+class PenaltyDominationSoundnessTests(SimpleTestCase):
+    """Phase 25 D-06: the strengthened (condition 4) domination rule is
+    sound, and provably non-vacuous, on a corpus purpose-built to exercise
+    it. Three assertions:
+
+    1. Differential soundness against this module's own imported oracle
+       (optimal_fixed_charge_plan), at both PENALTY_ANCHORS rungs and at
+       the adopted TRUST_MARGIN_USD default (ADOPTED_MARGIN_USD) -- never
+       argued, always checked. Tolerance is `penalty + COST_TOLERANCE`,
+       not bare COST_TOLERANCE: condition 4's own proof in prune.py
+       ("Bound, precisely") guarantees regret strictly less than
+       `penalty`, not zero, on the same station that condition 4 itself
+       removed -- the identical weaker bound PrunePenaltyInvarianceTests
+       already checks to. Using COST_TOLERANCE here (IdenticalPriceCluster
+       PruneSoundnessTests' own tolerance) would be wrong for this corpus
+       specifically: that class's dominator/dominated pair share one
+       price, so its own removals are cost-neutral by construction, while
+       this corpus's removals cross a genuine, if small, price gap by
+       design -- see 25-03-SUMMARY.md's "Tolerance" note for the standalone
+       trace that first surfaced this.
+    2. A closed-form retention equality
+       (PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION), catching both a
+       no-op prune (which would over-retain the fails-the-bar routes
+       relative to the derived expectation) and an over-pruning
+       implementation (which would under-retain the clears-the-bar
+       routes) -- the two directions a one-sided floor
+       (PRUNE_REDUCTION_FLOOR's own shape) cannot both catch at once.
+    3. A permanent hand-built witness on the SAME two-alternative
+       geometry, varying only the price gap, proving condition 4 removes
+       a station whose maximum saving sits a cent-scale amount below
+       `penalty` and retains one whose maximum saving sits a cent-scale
+       amount above it.
+
+    Every assertion below calls prune_dominated_candidates directly, never
+    solver.solve() (D-14) -- grep this class body for `solve(` to confirm.
+    """
+
+    def test_prune_regret_stays_under_penalty_on_the_penalty_domination_corpus(self):
+        params = PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS
+        margins = (Decimal(0), ADOPTED_MARGIN_USD)
+        routes = build_penalty_domination_corpus()
+
+        for route_index, (candidates, clears_bar) in enumerate(routes):
+            self.assertLessEqual(
+                len(candidates),
+                MAX_STATIONS,
+                f"route {route_index}: build_penalty_domination_corpus() "
+                f"drew more than MAX_STATIONS candidates: {candidates!r} "
+                f"-- the oracle's subset enumeration cannot terminate "
+                f"over this input.",
+            )
+
+            for penalty in PENALTY_ANCHORS:
+                retained = prune_dominated_candidates(
+                    candidates,
+                    tank_range_mi=params.tank_range_mi,
+                    total_route_mi=params.total_route_mi,
+                    mpg=params.mpg,
+                    penalty=penalty,
+                )
+
+                for margin in margins:
+                    unpruned_plan = optimal_fixed_charge_plan(
+                        candidates,
+                        params.total_route_mi,
+                        penalty=penalty,
+                        tank_range_mi=params.tank_range_mi,
+                        mpg=params.mpg,
+                        trust_margin=margin,
+                    )
+                    pruned_plan = optimal_fixed_charge_plan(
+                        retained,
+                        params.total_route_mi,
+                        penalty=penalty,
+                        tank_range_mi=params.tank_range_mi,
+                        mpg=params.mpg,
+                        trust_margin=margin,
+                    )
+
+                    context = (
+                        f"route_index={route_index}, clears_bar={clears_bar}, "
+                        f"candidates={candidates!r}, retained={retained!r}, "
+                        f"penalty={penalty}, margin={margin}"
+                    )
+
+                    self.assertEqual(
+                        unpruned_plan is None,
+                        pruned_plan is None,
+                        f"feasibility verdicts disagree between pruned and "
+                        f"unpruned solves on the penalty-domination corpus; "
+                        f"{context}",
+                    )
+                    if unpruned_plan is None:
+                        continue
+
+                    self.assertLess(
+                        abs(unpruned_plan.objective - pruned_plan.objective),
+                        penalty + COST_TOLERANCE,
+                        f"pruned objective ({pruned_plan.objective}) differs "
+                        f"from the unpruned objective "
+                        f"({unpruned_plan.objective}) by penalty or more; "
+                        f"condition 4's own proof bounds regret strictly "
+                        f"under `penalty`, never more; {context}",
+                    )
+
+    def test_retained_count_equals_the_closed_form_expectation(self):
+        """Anti-vacuity by closed-form equality, not by floor alone (see
+        this class's own docstring). `prune(x) -> x` passes assertion 1
+        above vacuously (a no-op removes nothing, so pruned == unpruned
+        trivially, and feasibility trivially agrees too); only this
+        equality -- derived from the rule, never measured -- catches it,
+        and catches over-pruning too.
+        """
+        params = PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS
+        routes = build_penalty_domination_corpus()
+        total_retained = 0
+        for candidates, _clears_bar in routes:
+            retained = prune_dominated_candidates(
+                candidates,
+                tank_range_mi=params.tank_range_mi,
+                total_route_mi=params.total_route_mi,
+                mpg=params.mpg,
+                penalty=params.penalty,
+            )
+            total_retained += len(retained)
+
+        self.assertEqual(
+            total_retained,
+            PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION,
+            f"retained {total_retained} candidates across "
+            f"PRUNE_PENALTY_DOMINATION_CORPUS_PARAMS.n_routes="
+            f"{params.n_routes} penalty-domination routes at "
+            f"penalty={params.penalty}; expected exactly "
+            f"PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION="
+            f"{PRUNE_PENALTY_DOMINATION_RETENTION_EXPECTATION}. A smaller "
+            f"measured total means the rule over-pruned a clears-the-bar "
+            f"route; a larger one means it under-pruned (or is a no-op) "
+            f"on a fails-the-bar route -- either way the rule and an "
+            f"independent reading of its own stated conditions (4a, 4b, "
+            f"4c) disagree.",
+        )
+
+    def test_build_penalty_domination_corpus_is_deterministic_across_two_calls(self):
+        """Without random.Random(seed) freshly seeded per call, a corpus
+        that quietly consumed global RNG state would make the two guards
+        above unreproducible."""
+        first = build_penalty_domination_corpus()
+        second = build_penalty_domination_corpus()
+        self.assertEqual(
+            [
+                [
+                    (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                    for c in candidates
+                ]
+                for candidates, _clears_bar in first
+            ],
+            [
+                [
+                    (c.opis_id, c.price_per_gallon, c.distance_from_start_mi, c.price_source)
+                    for c in candidates
+                ]
+                for candidates, _clears_bar in second
+            ],
+            "build_penalty_domination_corpus() returned different corpora "
+            "across two consecutive calls -- it must be freshly seeded on "
+            "every call, never consuming global RNG state.",
+        )
+
+    def test_penalty_bound_boundary_witness(self):
+        """Assertion 3: the permanent hand-built witness. A single
+        three-station list exercising condition 4b at both edges of
+        `penalty` at once -- see PENALTY_BOUNDARY_WITNESS' own comment
+        for the full geometry and the running-minimum argument for why
+        the two edges do not interfere with each other.
+        """
+        result = prune_dominated_candidates(
+            PENALTY_BOUNDARY_WITNESS,
+            tank_range_mi=PENALTY_BOUNDARY_WITNESS_TANK_RANGE_MI,
+            total_route_mi=PENALTY_BOUNDARY_WITNESS_TOTAL_ROUTE_MI,
+            mpg=PENALTY_BOUNDARY_WITNESS_MPG,
+            penalty=PENALTY_BOUNDARY_WITNESS_PENALTY,
+        )
+        self.assertEqual(
+            tuple(c.opis_id for c in result),
+            (0, 2),
+            f"penalty boundary witness (WB $40.00@0mi; WA-below "
+            f"$5.01@0.5mi, gap $34.99, $0.01 below penalty; WA-above "
+            f"$4.99@0.75mi, gap $35.01, $0.01 above penalty; "
+            f"tank_range_mi=mpg=1, penalty=$35.00): WA-below (opis_id=1) "
+            f"must be removed and WA-above (opis_id=2) must be retained, "
+            f"alongside WB (opis_id=0). Got retained={result!r}",
+        )
