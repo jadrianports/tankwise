@@ -33,6 +33,7 @@ call.
 """
 import inspect
 import io
+import itertools
 import random
 from dataclasses import dataclass, replace
 from decimal import Decimal
@@ -1116,28 +1117,67 @@ class PrunePenaltyInvarianceTests(SimpleTestCase):
     signature, and the behavioral property re-invokes the prune separately
     per penalty rather than comparing a single result to itself, so a
     future penalty-dependent prune has somewhere real to disagree.
+
+    [Amended 2026-08-17, Phase 25] The description above is superseded, not
+    deleted, per this project's invert-a-guard-never-delete-it rule (D-07).
+    `prune_dominated_candidates` now DOES take `mpg`/`penalty` keyword-only
+    parameters, defaulting to `None` (D-04's 2026-08-17 amendment) -- the
+    strengthened branch activates only when both are supplied. This class
+    no longer proves an INVARIANCE (the retained set no longer stays fixed
+    as `penalty` varies, once `mpg` is also supplied); it proves a
+    TRANSITION instead: the retained set is non-increasing in `penalty`
+    (D-07(a)), and at `penalty = Decimal(0)` it is byte-identical to the
+    unstrengthened default path (D-07(b), the reduction anchor -- see
+    below). Both halves still break the build if the strengthening is
+    anything other than purely additive.
     """
 
-    def test_signature_has_no_penalty_and_no_undeclared_knobs(self):
-        """This test exists to break the build the moment someone threads
-        a penalty parameter through prune_dominated_candidates. It pins
-        three claims at once: no `penalty` parameter (D-04); no
-        `gap <= W` window or prefilter-width parameter (D-09 -- the exact
-        rule is the whole rule, and shipping a tunable constant alongside
-        the theorem would leave exactly one unproven number in the
-        deliverable); and no other undeclared knob, since the parameter
-        tuple must equal exactly three names, not merely contain them.
+    def test_signature_has_no_undeclared_knob_beyond_mpg_and_penalty(self):
+        """D-04's widened parameter tuple, and the "no undeclared knob"
+        property this test has always guarded -- unchanged in substance,
+        only in which names are enumerated. Three claims: (1) the exact
+        parameter tuple, now five names, not three; (2) `penalty=` alone
+        (no `mpg`) must NOT activate the strengthened branch -- D-04's
+        "only when BOTH are supplied" contract, strictly stronger than the
+        old `assertRaises(TypeError)` this replaces, since it proves the
+        keyword is now valid AND inert alone, not merely valid; (3) an
+        unknown keyword such as `window_mi=` must still raise `TypeError`
+        -- no `gap <= W` window or prefilter-width parameter exists (D-09
+        below), and no other undeclared knob either.
         """
         self.assertEqual(
             tuple(inspect.signature(prune_dominated_candidates).parameters),
-            ("candidates", "tank_range_mi", "total_route_mi"),
+            ("candidates", "tank_range_mi", "total_route_mi", "mpg", "penalty"),
         )
+
+        candidates = [
+            _candidate(opis_id=1, price="3.50", position=0),
+            _candidate(opis_id=2, price="3.00", position=0),
+            _candidate(opis_id=3, price="2.90", position=500),
+        ]
+        default = prune_dominated_candidates(
+            candidates, tank_range_mi=Decimal(500), total_route_mi=Decimal(1000)
+        )
+        penalty_only = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=Decimal(500),
+            total_route_mi=Decimal(1000),
+            penalty=Decimal("35"),
+        )
+        self.assertEqual(
+            tuple(c.opis_id for c in penalty_only),
+            tuple(c.opis_id for c in default),
+            "penalty= supplied alone (mpg omitted) must not change the "
+            "retained set -- the strengthened branch activates only when "
+            "BOTH mpg and penalty are supplied (D-04)",
+        )
+
         with self.assertRaises(TypeError):
             prune_dominated_candidates(
-                [],
+                candidates,
                 tank_range_mi=Decimal(500),
                 total_route_mi=Decimal(1000),
-                penalty=Decimal("35"),
+                window_mi=Decimal("10"),
             )
 
     @given(
@@ -1154,18 +1194,64 @@ class PrunePenaltyInvarianceTests(SimpleTestCase):
     # above), following the Phase 16 precedent where the discretionary
     # consistency class ran at 50 while the anchor classes stayed at 200.
     @settings(deadline=None, max_examples=100)
-    def test_retained_set_is_byte_identical_across_penalties(self, drawn_route, penalties):
+    def test_penalty_domination_is_a_non_increasing_additive_transition(
+        self, drawn_route, penalties
+    ):
+        """[Amended 2026-08-17, Phase 25] Renamed from
+        `test_retained_set_is_byte_identical_across_penalties`, whose old
+        name is actively misleading now that D-01 makes the retained set
+        genuinely penalty-sensitive once `mpg` is also supplied. Parts (a)
+        feasibility agreement and (b) objective agreement within
+        COST_TOLERANCE are unchanged in substance below. The old part (c)
+        (byte-identity across every drawn penalty) is replaced by D-07's
+        two halves: (a) the retained set is non-increasing in `penalty` --
+        a higher penalty may remove more, never less; (b) at
+        `penalty = Decimal(0)` (with `mpg` supplied) the retained set is
+        byte-identical to the unstrengthened default path (no `mpg`, no
+        `penalty`) -- the reduction anchor, checked on every drawn example
+        rather than only when Hypothesis happens to draw exactly zero.
+        """
         candidates, total_route_mi, tank_range_mi, mpg, starting_fuel = drawn_route
 
-        retained_opis_ids_by_penalty = {}
+        default_retained = prune_dominated_candidates(
+            candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+        )
+        default_opis_ids = tuple(c.opis_id for c in default_retained)
+
+        # D-07(b): penalty=Decimal(0) with mpg supplied is byte-identical
+        # to the default (no-mpg/no-penalty) path -- checked unconditionally
+        # on every example, not only when Hypothesis happens to draw zero.
+        retained_at_zero = prune_dominated_candidates(
+            candidates,
+            tank_range_mi=tank_range_mi,
+            total_route_mi=total_route_mi,
+            mpg=mpg,
+            penalty=Decimal("0"),
+        )
+        self.assertEqual(
+            tuple(c.opis_id for c in retained_at_zero),
+            default_opis_ids,
+            f"D-07(b): retained set at penalty=0 (mpg supplied) must be "
+            f"byte-identical to the default no-mpg/no-penalty path; "
+            f"candidates={candidates!r}, tank_range_mi={tank_range_mi}, "
+            f"total_route_mi={total_route_mi}, mpg={mpg}",
+        )
+
+        retained_opis_sets_by_penalty = {Decimal("0"): frozenset(default_opis_ids)}
         for penalty in penalties:
             # Called fresh inside the loop, once per penalty -- never
             # computed once outside it and compared to itself, since that
             # would have nothing real to disagree with.
             retained = prune_dominated_candidates(
-                candidates, tank_range_mi=tank_range_mi, total_route_mi=total_route_mi
+                candidates,
+                tank_range_mi=tank_range_mi,
+                total_route_mi=total_route_mi,
+                mpg=mpg,
+                penalty=penalty,
             )
-            retained_opis_ids_by_penalty[penalty] = tuple(c.opis_id for c in retained)
+            retained_opis_sets_by_penalty[penalty] = frozenset(
+                c.opis_id for c in retained
+            )
 
             unpruned_plan = optimal_fixed_charge_plan(
                 candidates,
@@ -1204,14 +1290,150 @@ class PrunePenaltyInvarianceTests(SimpleTestCase):
                     f"at penalty={penalty}; {context}",
                 )
 
-        distinct_retained_sets = set(retained_opis_ids_by_penalty.values())
-        self.assertEqual(
-            len(distinct_retained_sets),
-            1,
-            f"retained opis_id tuple was not byte-identical across "
-            f"penalties (D-04): {retained_opis_ids_by_penalty!r}; "
-            f"candidates={candidates!r}, tank_range_mi={tank_range_mi}, "
-            f"total_route_mi={total_route_mi}",
+        # D-07(a): non-increasing in penalty -- for any two penalties
+        # (including the pinned zero anchor above), the retained set at
+        # the higher penalty must be a subset of the retained set at the
+        # lower penalty. A higher penalty may remove more, never less.
+        for p1, p2 in itertools.combinations(sorted(retained_opis_sets_by_penalty), 2):
+            lower_penalty, higher_penalty = p1, p2
+            lower_set = retained_opis_sets_by_penalty[lower_penalty]
+            higher_set = retained_opis_sets_by_penalty[higher_penalty]
+            self.assertTrue(
+                higher_set <= lower_set,
+                f"D-07(a): retained set at penalty={higher_penalty} "
+                f"({sorted(higher_set)}) is not a subset of the retained "
+                f"set at penalty={lower_penalty} ({sorted(lower_set)}) -- "
+                f"the retained set must be non-increasing in penalty; "
+                f"candidates={candidates!r}, tank_range_mi={tank_range_mi}, "
+                f"total_route_mi={total_route_mi}, mpg={mpg}",
+            )
+
+
+class PenaltyDominationMarginSensitivityWitnessTests(SimpleTestCase):
+    """D-09(b): the non-vacuous witness that makes condition 4c's
+    provenance guard falsifiable rather than merely asserted. Permanently
+    pinned, hand-built, never Hypothesis-drawn -- the whole point is a
+    SPECIFIC, reproducible counterexample, not a property over a
+    distribution.
+
+    On one hand-built two-station input (a pricier, estimate-priced B at
+    an earlier tail-reaching position, and a cheaper, real-priced A at a
+    later tail-reaching position, both directly reachable from START so
+    neither is a mandatory waypoint for the other): a PRICE-ONLY reading of
+    condition 4b (ignoring condition 4c's provenance guard entirely) would
+    remove A, because the raw price gap, scaled by a full tank, clears the
+    penalty bar. But removing A is NOT actually safe at the production
+    trust margin (`ADOPTED_MARGIN_USD`) -- with A gone, the fixed-charge
+    oracle's own optimum is forced onto B, which is estimate-priced and so
+    pays `ADOPTED_MARGIN_USD` on top of a higher raw price, raising the
+    true optimum by well over COST_TOLERANCE. The shipped rule does NOT
+    make this mistake: condition 4c forbids exactly this pairing (B
+    estimate, A real), so `prune_dominated_candidates` retains both
+    stations. Together, these two facts are D-09's paired proof in test
+    form: the "retained counts do not move with the margin's dollar value"
+    claim survives for the shipped rule, but only because of condition 4c
+    -- and this witness is what shows the claim would be FALSE without it.
+    """
+
+    def test_naive_price_only_reading_would_remove_the_real_priced_station(self):
+        tank_range_mi = Decimal("700")
+        total_route_mi = Decimal("1000")
+        mpg = Decimal("6.5")
+        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
+
+        alt_pricier_estimate = _candidate(
+            opis_id=1, price="3.60", position=300
+        )
+        alt_pricier_estimate = replace(
+            alt_pricier_estimate, price_source=ESTIMATE_PRICE_SOURCE
+        )
+        cheap_real = _candidate(opis_id=2, price="3.50", position=650)
+
+        raw_price_gap = alt_pricier_estimate.price_per_gallon - cheap_real.price_per_gallon
+        raw_bound = raw_price_gap * tank_range_mi / mpg
+        self.assertLess(
+            raw_bound,
+            penalty,
+            "witness setup error: the raw price-only bound must clear the "
+            "penalty bar (a naive reading must want to remove the cheap "
+            "real-priced station) for this to be a meaningful counterfactual",
+        )
+
+    def test_removing_the_real_priced_station_raises_the_oracle_optimum_at_production_margin(
+        self,
+    ):
+        tank_range_mi = Decimal("700")
+        total_route_mi = Decimal("1000")
+        mpg = Decimal("6.5")
+        starting_fuel = Decimal("1")
+        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
+
+        alt_pricier_estimate = replace(
+            _candidate(opis_id=1, price="3.60", position=300),
+            price_source=ESTIMATE_PRICE_SOURCE,
+        )
+        cheap_real = _candidate(opis_id=2, price="3.50", position=650)
+
+        both_stations = [alt_pricier_estimate, cheap_real]
+        naively_pruned = [alt_pricier_estimate]  # A removed, per the naive reading
+
+        full_plan = optimal_fixed_charge_plan(
+            both_stations,
+            total_route_mi,
+            penalty=penalty,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            trust_margin=ADOPTED_MARGIN_USD,
+        )
+        naive_plan = optimal_fixed_charge_plan(
+            naively_pruned,
+            total_route_mi,
+            penalty=penalty,
+            tank_range_mi=tank_range_mi,
+            mpg=mpg,
+            starting_fuel=starting_fuel,
+            trust_margin=ADOPTED_MARGIN_USD,
+        )
+        self.assertIsNotNone(full_plan)
+        self.assertIsNotNone(naive_plan)
+        objective_increase = naive_plan.objective - full_plan.objective
+        self.assertGreater(
+            objective_increase,
+            COST_TOLERANCE,
+            "the counterfactual claim failed: removing the real-priced "
+            "station on the naive (condition-4c-blind) reading must raise "
+            "the fixed-charge oracle's optimum at ADOPTED_MARGIN_USD by "
+            f"more than COST_TOLERANCE; got increase={objective_increase}",
+        )
+
+    def test_shipped_rule_does_not_remove_the_real_priced_station(self):
+        tank_range_mi = Decimal("700")
+        total_route_mi = Decimal("1000")
+        mpg = Decimal("6.5")
+        penalty = PENALTY_ANCHORS[1]  # Decimal("35")
+
+        alt_pricier_estimate = replace(
+            _candidate(opis_id=1, price="3.60", position=300),
+            price_source=ESTIMATE_PRICE_SOURCE,
+        )
+        cheap_real = _candidate(opis_id=2, price="3.50", position=650)
+
+        shipped_retained = prune_dominated_candidates(
+            [alt_pricier_estimate, cheap_real],
+            tank_range_mi=tank_range_mi,
+            total_route_mi=total_route_mi,
+            mpg=mpg,
+            penalty=penalty,
+        )
+        retained_opis_ids = {c.opis_id for c in shipped_retained}
+        self.assertIn(
+            cheap_real.opis_id,
+            retained_opis_ids,
+            "condition 4c must forbid this pairing (B estimate-priced, A "
+            "real-priced) -- the shipped rule removed the real-priced "
+            "station anyway, which is exactly the unsound behaviour "
+            "condition 4c exists to prevent",
         )
 
 
