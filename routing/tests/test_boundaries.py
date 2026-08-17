@@ -803,3 +803,176 @@ class SourceGersIdPurityTest(SimpleTestCase):
             "D-23's allowlist must stay empty -- a future widening must "
             "edit this assertion consciously, not pass it silently.",
         )
+
+
+_PRUNE_CALL_FORBIDDEN_KWARGS = frozenset({"mpg", "penalty"})
+
+
+def _is_prune_dominated_candidates_call(node):
+    """True when `node` is an `ast.Call` whose `func` resolves to
+    `prune_dominated_candidates` -- a bare `ast.Name`
+    (`prune_dominated_candidates(...)`) or an `ast.Attribute`
+    (`prune.prune_dominated_candidates(...)`), matching the same
+    shape-matching idiom `_collect_solve_calls_missing_kwarg` above already
+    uses for `solve()`. The module-level `def prune_dominated_candidates`
+    statement itself is an `ast.FunctionDef`, never an `ast.Call`, so it is
+    never matched here -- only actual invocations are in scope.
+    """
+    func = node.func
+    if isinstance(func, ast.Name) and func.id == "prune_dominated_candidates":
+        return True
+    if isinstance(func, ast.Attribute) and func.attr == "prune_dominated_candidates":
+        return True
+    return False
+
+
+def _collect_prune_inertness_violations_from_tree(tree, label):
+    """Find every `prune_dominated_candidates(...)` call in `tree` that
+    supplies an `mpg=` or `penalty=` keyword, and return
+    `f"{label}:{lineno}: ..."` violation strings -- the shared walker both
+    `_collect_prune_inertness_violations` (real files) and the D-14 gate's
+    own non-vacuity test (an in-test source string, never written to disk)
+    call, so the AST-matching logic is defined exactly once.
+    """
+    violations = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_prune_dominated_candidates_call(node):
+            continue
+        offending = sorted(
+            kw.arg for kw in node.keywords if kw.arg in _PRUNE_CALL_FORBIDDEN_KWARGS
+        )
+        if offending:
+            violations.append(
+                f"{label}:{node.lineno}: prune_dominated_candidates() call "
+                f"supplies forbidden kwarg(s) {offending}"
+            )
+    return violations
+
+
+def _collect_prune_inertness_violations(path):
+    """`path`-reading specialization of
+    `_collect_prune_inertness_violations_from_tree` -- see that function's
+    own docstring."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return _collect_prune_inertness_violations_from_tree(tree, str(path))
+
+
+# D-14 call-site inventory (Phase 25, 2026-08-17): every
+# `prune_dominated_candidates` CALL site (never the `def` statement itself)
+# found repo-wide under `routing/` by a fresh AST walk at write time --
+# verified against the working tree directly, not transcribed from
+# 25-RESEARCH.md's own "~35 call sites across 15 files" estimate, which
+# undercounts because it approximated rather than walked the tree after
+# this plan's own test additions. 53 total: 5 production (the only solver
+# call, `routing/services/solver.py:505`, plus the four command sites
+# `routing/management/commands/measure_dispatch_grid.py:288`,
+# `measure_prune_reduction.py:406`, `measure_dispatch_predictor.py:296`,
+# and `measure_solver_latency.py:189`) and 48 test, across 7 files
+# (`test_prune_soundness.py`, `test_solver_dispatch.py`,
+# `test_dispatch_predictor.py`, `test_dp_differential.py`,
+# `test_dp_real_corridor_regression.py`, `test_dp_deadline.py`,
+# `test_heuristic.py`).
+PRUNE_CALL_SITE_PRODUCTION_COUNT = 5
+PRUNE_CALL_SITE_TEST_COUNT = 48
+PRUNE_CALL_SITE_TOTAL_COUNT = 53
+
+
+class PruneInertnessGateTest(SimpleTestCase):
+    """D-14: `solve()` must never supply `mpg=` or `penalty=` to
+    `prune_dominated_candidates`. D-04 made those two parameters keyword-
+    only and defaulting to `None` specifically so all existing call sites
+    (`PRUNE_CALL_SITE_TOTAL_COUNT` of them) keep compiling untouched --
+    which means Phase 25's inertness is by CONVENTION, not by
+    CONSTRUCTION: nothing structurally stops a future edit from wiring the
+    strengthened rule into production and silently flipping
+    `ADMISSION_MANIFEST` cells that DISP-03 (Phase 26) exists to ratify.
+    This gate is the structural backstop for that convention -- Phase 26
+    is the phase that will deliberately remove or invert this gate when it
+    wires the strengthened rule into `solve()`.
+    """
+
+    def test_solver_prune_call_never_supplies_mpg_or_penalty(self):
+        path = SERVICES_DIR / "solver.py"
+        violations = _collect_prune_inertness_violations(path)
+        self.assertEqual(
+            violations,
+            [],
+            f"solver.py's prune_dominated_candidates() call must never "
+            f"supply mpg= or penalty= (D-14): {violations}",
+        )
+
+    def test_walker_reports_a_real_violation_and_nothing_on_clean_source(self):
+        """Proves the gate non-vacuous: the walker must actually report a
+        violation on an in-test source string containing a
+        `prune_dominated_candidates(..., penalty=...)` call, and report
+        nothing on an otherwise-identical clean source -- never written to
+        disk, exercising `_collect_prune_inertness_violations_from_tree`
+        directly rather than `_collect_prune_inertness_violations`'s
+        file-reading wrapper.
+        """
+        violating_source = (
+            "from routing.services.prune import prune_dominated_candidates\n"
+            "def f(candidates, tank_range_mi, total_route_mi, penalty):\n"
+            "    return prune_dominated_candidates(\n"
+            "        candidates,\n"
+            "        tank_range_mi=tank_range_mi,\n"
+            "        total_route_mi=total_route_mi,\n"
+            "        penalty=penalty,\n"
+            "    )\n"
+        )
+        clean_source = (
+            "from routing.services.prune import prune_dominated_candidates\n"
+            "def f(candidates, tank_range_mi, total_route_mi):\n"
+            "    return prune_dominated_candidates(\n"
+            "        candidates,\n"
+            "        tank_range_mi=tank_range_mi,\n"
+            "        total_route_mi=total_route_mi,\n"
+            "    )\n"
+        )
+        violating_tree = ast.parse(violating_source, filename="<violating>")
+        clean_tree = ast.parse(clean_source, filename="<clean>")
+
+        violations = _collect_prune_inertness_violations_from_tree(
+            violating_tree, "<violating>"
+        )
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("penalty", violations[0])
+
+        self.assertEqual(
+            _collect_prune_inertness_violations_from_tree(clean_tree, "<clean>"),
+            [],
+        )
+
+    def test_call_site_counts_match_pinned_totals(self):
+        production_count = 0
+        test_count = 0
+        for path in ROUTING_DIR.rglob("*.py"):
+            is_test_path = "tests" in path.relative_to(ROUTING_DIR).parts
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call) and _is_prune_dominated_candidates_call(node):
+                    if is_test_path:
+                        test_count += 1
+                    else:
+                        production_count += 1
+
+        self.assertEqual(
+            production_count,
+            PRUNE_CALL_SITE_PRODUCTION_COUNT,
+            "production prune_dominated_candidates call-site count drifted "
+            f"from the pinned D-14 classification: found {production_count}, "
+            f"pinned {PRUNE_CALL_SITE_PRODUCTION_COUNT}",
+        )
+        self.assertEqual(
+            test_count,
+            PRUNE_CALL_SITE_TEST_COUNT,
+            "test prune_dominated_candidates call-site count drifted from "
+            f"the pinned D-14 classification: found {test_count}, pinned "
+            f"{PRUNE_CALL_SITE_TEST_COUNT}",
+        )
+        self.assertEqual(
+            production_count + test_count,
+            PRUNE_CALL_SITE_TOTAL_COUNT,
+            "production + test prune_dominated_candidates call-site counts "
+            "do not sum to the pinned D-14 total",
+        )

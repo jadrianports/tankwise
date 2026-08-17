@@ -411,14 +411,31 @@ def _render_measurement_basis_section(production_trust_margin, baseline_trust_ma
             "sections."
         ),
         (
+            # [Amended 2026-08-17, Phase 25] The prior wording below stated
+            # the four fields cannot move with the margin BECAUSE
+            # prune_dominated_candidates takes no trust-margin argument at
+            # all. That causal claim no longer holds: Phase 25 widened the
+            # function's signature with keyword-only mpg/penalty parameters
+            # (both defaulting to None), so it now CAN read a dollar-valued
+            # penalty. The conclusion below is still literally true of THIS
+            # command, though, because measure_dispatch_grid (which this
+            # command drives) always calls the unstrengthened default path
+            # -- Phase 25 lands the strengthened rule INERT (D-14), and a
+            # dedicated AST gate (test_boundaries.PruneInertnessGateTest)
+            # proves solve() and every measure_dispatch_grid call site never
+            # supply those two parameters. The narrowed, TRUE cause is
+            # stated below in place of the superseded one.
             "- Margin independence: the trust margin can move only "
             "stops and total_cost. raw_candidates, kept, estimate and "
-            "admitted_at_current_budget cannot move with it, because "
-            "prune_dominated_candidates takes no trust-margin argument at "
-            "all and reads provenance as a binary rather than as a dollar "
-            "value. Four identical column pairs is therefore the "
-            "expected result below, not a rendering bug -- proven against "
-            "real committed data by TwoMarginWorldRenderTests."
+            "admitted_at_current_budget cannot move with it for the rule "
+            "this command drives -- the unstrengthened, margin-blind "
+            "default path prune_dominated_candidates() always runs on here "
+            "(Phase 25 landed a strengthened, penalty-aware branch of that "
+            "same function, but it ships inert: this command never "
+            "supplies the two parameters that would activate it). Four "
+            "identical column pairs is therefore the expected result "
+            "below, not a rendering bug -- proven against real committed "
+            "data by TwoMarginWorldRenderTests."
         ),
         (
             "- Direction of the bias: every Overture row is priced as an "

@@ -373,7 +373,25 @@ class RenderReportTests(TestCase):
 class TwoMarginWorldRenderTests(TestCase):
     """D-01/D-09/D-10/D-11 -- both margin worlds render in the per-cell
     table, the report states its own measurement basis above that table,
-    and render_report stays one unforked function returning one string."""
+    and render_report stays one unforked function returning one string.
+
+    [Amended 2026-08-17, Phase 25] `prune_dominated_candidates` gained a
+    strengthened, penalty-aware branch this phase (keyword-only
+    `mpg`/`penalty`, both defaulting to `None`), so the ORIGINAL reason the
+    "Margin independence" bullet gave -- "the function takes no
+    trust-margin argument at all" -- is no longer true of the function in
+    general. `test_measurement_basis_names_margin_independent_and_movable_fields`
+    below is strengthened accordingly: it no longer only checks that the
+    six field names appear (a check the report would still pass even if
+    the causal prose regressed to the superseded claim), it also asserts
+    the section states the narrowed, still-true cause. A new method,
+    `test_measurement_basis_does_not_claim_the_prune_function_is_margin_blind`,
+    guards the negative: the section must not present margin-blindness of
+    `prune_dominated_candidates` ITSELF as the reason four fields cannot
+    move, since that claim is now false in general and only holds here
+    because `measure_dispatch_grid` always drives the unstrengthened
+    default path (D-14 inertness). Plan 25-05's new command clones this
+    file's rendering pattern and must not inherit the superseded claim."""
 
     def _render(self, production_diffs, baseline_diffs, **overrides):
         kwargs = dict(
@@ -439,6 +457,36 @@ class TwoMarginWorldRenderTests(TestCase):
             "total_cost",
         ):
             self.assertIn(field_name, section)
+        # [Amended 2026-08-17, Phase 25] Strengthened: the six field names
+        # alone would still pass even if the causal prose regressed to the
+        # superseded "the function takes no trust-margin argument at all"
+        # claim. The narrowed, still-true cause -- this command always
+        # drives the unstrengthened default path -- must appear too.
+        self.assertIn("unstrengthened", section)
+        self.assertIn("default path", section)
+
+    def test_measurement_basis_does_not_claim_the_prune_function_is_margin_blind(self):
+        """[Amended 2026-08-17, Phase 25] Anti-regression guard: the
+        section must not present margin-blindness of
+        prune_dominated_candidates ITSELF as the reason the four fields
+        cannot move -- that claim became false the moment Phase 25 gave the
+        function a strengthened, penalty-aware branch. Fails if the
+        superseded causal clause ("takes no trust-margin argument at all")
+        is restored -- plan 25-05's new command clones this file's
+        rendering pattern and must not inherit a superseded causal claim.
+        """
+        report = self._render([], [])
+        section = self._measurement_basis_section(report)
+        self.assertNotIn(
+            "takes no trust-margin argument at all",
+            section,
+            "the measurement-basis section must not explain margin "
+            "independence by claiming prune_dominated_candidates takes no "
+            "trust-margin argument at all -- that is false in general "
+            "since Phase 25 (D-01); plan 25-05's new command clones this "
+            "file's rendering pattern and must not inherit the superseded "
+            "claim",
+        )
 
     def test_measurement_basis_states_bias_direction(self):
         report = self._render([], [])
