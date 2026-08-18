@@ -1,8 +1,9 @@
 """Tests for `routing/probe_seam.py` -- D-06's gated dispatch-verdict probe
 seam: the fail-soft current-RSS reader (`ProbeSeamRssReaderTests`), the
 pure constant-time gate-resolution function (`ProbeSeamGateResolutionTests`),
-and `solve()`'s caller-supplied `transition_budget=` hatch
-(`TransitionBudgetHatchTests`).
+`solve()`'s caller-supplied `transition_budget=` hatch
+(`TransitionBudgetHatchTests`), and `RouteView`'s own wiring of all three
+(`GatedProbeSeamViewTests`).
 """
 import ast
 import pathlib
@@ -11,7 +12,10 @@ import unittest
 from decimal import Decimal
 from unittest import mock
 
-from django.test import SimpleTestCase
+from django.core.cache import cache
+from django.test import SimpleTestCase, override_settings
+from rest_framework import status
+from rest_framework.test import APITestCase
 
 from routing.probe_seam import (
     PROBE_BUDGET_HEADER,
@@ -21,6 +25,7 @@ from routing.probe_seam import (
     rss_delta_mb,
 )
 from routing.services import dp
+from routing.services.corridor import reset_index
 from routing.services.solver import SolverStrategy, solve
 from routing.tests.test_solver_dispatch import (
     MPG,
@@ -28,6 +33,17 @@ from routing.tests.test_solver_dispatch import (
     STARTING_FUEL,
     RealCorridorDispatchTestCase,
 )
+from routing.tests.test_views import (
+    FINISH_COORD,
+    MOCK_TARGET,
+    ROUTE_URL,
+    START_COORD,
+    _directions_response,
+    _long_directions_payload,
+    _make_station,
+)
+from routing.throttles import RouteBurstThrottle, RouteSustainedThrottle
+from routing.views import RouteView
 
 # The same non-`None` ladder rungs `DP_TRANSITION_BUDGET_LADDER`
 # (`routing/tests/test_dispatch_recovery.py`) carries -- the only legal set
@@ -303,4 +319,180 @@ class TransitionBudgetHatchTests(RealCorridorDispatchTestCase):
             "transition_budget=130_000 should have made the DP attempt "
             "dallas_tx-seattle_wa@1050mi (estimate 117,895); got "
             f"strategy={plan.strategy}, deadline_breached={plan.deadline_breached}",
+        )
+
+
+def _header_env_name(header_name):
+    """Convert an HTTP header name (e.g. `PROBE_KEY_HEADER`) into the WSGI
+    environ key Django's test client accepts as an `**extra` kwarg."""
+    return "HTTP_" + header_name.upper().replace("-", "_")
+
+
+_PROBE_KEY_KWARG = _header_env_name(PROBE_KEY_HEADER)
+_PROBE_BUDGET_KWARG = _header_env_name(PROBE_BUDGET_HEADER)
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class GatedProbeSeamViewTests(APITestCase):
+    """`RouteView.post()`'s D-06 wiring -- Task 1: probe-budget resolution,
+    the `transition_budget=` thread-through, and the cache-write bypass.
+
+    Every request below goes through DRF's real test client and the real
+    corridor/solve/serialize pipeline against a mocked Mapbox transport --
+    `solver.solve` is only ever wrapped with a thin kwargs-recording
+    passthrough that still delegates to the genuine implementation, so an
+    assertion here is on WHAT was passed to `solve()`, never on a
+    synthetic stand-in double.
+    """
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+        _make_station(97_001)
+
+    @staticmethod
+    def _headers(key=None, budget=None):
+        headers = {}
+        if key is not None:
+            headers[_PROBE_KEY_KWARG] = key
+        if budget is not None:
+            headers[_PROBE_BUDGET_KWARG] = str(budget)
+        return headers
+
+    @staticmethod
+    def _mapbox_mock():
+        return mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        )
+
+    def _post(self, headers=None):
+        return self.client.post(
+            ROUTE_URL,
+            {"start": START_COORD, "finish": FINISH_COORD},
+            format="json",
+            **(headers or {}),
+        )
+
+    @staticmethod
+    def _solve_kwargs_recorder():
+        """Return `(captured, patch)`: `captured` accumulates the kwargs of
+        every `solve()` call made while `patch` is active, and each call
+        still delegates to the real, already-imported `solve` -- so the
+        request pipeline runs genuinely rather than against a fake plan.
+        """
+        captured = []
+        real_solve = solve
+
+        def _recording(*args, **kwargs):
+            captured.append(kwargs)
+            return real_solve(*args, **kwargs)
+
+        return captured, mock.patch("routing.views.solver.solve", side_effect=_recording)
+
+    def test_secret_unset_probe_headers_produce_identical_response_to_no_headers(self):
+        # The default posture in every environment except a deliberately
+        # provisioned probe window: settings.DISPATCH_PROBE_SECRET is
+        # unset, so a request carrying a correct-looking header pair must
+        # behave identically to one carrying neither. cache.clear() +
+        # reset_index() between the two calls forces both through a fresh
+        # dispatch rather than letting the second short-circuit on the
+        # first's cached response (the cache key does not vary with the
+        # probe headers, by design).
+        with self._mapbox_mock():
+            without_headers = self._post()
+        cache.clear()
+        reset_index()
+        with self._mapbox_mock():
+            with_headers = self._post(
+                headers=self._headers(key="whatever-looks-correct", budget=130_000)
+            )
+
+        self.assertEqual(without_headers.status_code, with_headers.status_code)
+        self.assertEqual(
+            without_headers.data["solver_strategy"],
+            with_headers.data["solver_strategy"],
+        )
+        self.assertNotIn("peak_rss_mb", without_headers["Server-Timing"])
+        self.assertNotIn("peak_rss_mb", with_headers["Server-Timing"])
+
+    @override_settings(DISPATCH_PROBE_SECRET="probe-secret")
+    def test_correct_secret_and_permitted_rung_reaches_solve_with_transition_budget(
+        self,
+    ):
+        captured, recorder = self._solve_kwargs_recorder()
+        with self._mapbox_mock(), recorder:
+            response = self._post(
+                headers=self._headers(key="probe-secret", budget=130_000)
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(captured, "solve() was never called")
+        self.assertEqual(captured[0]["transition_budget"], 130_000)
+
+    @override_settings(DISPATCH_PROBE_SECRET="probe-secret")
+    def test_wrong_key_header_does_not_pass_transition_budget(self):
+        captured, recorder = self._solve_kwargs_recorder()
+        with self._mapbox_mock(), recorder:
+            response = self._post(
+                headers=self._headers(key="wrong-secret", budget=130_000)
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(captured, "solve() was never called")
+        self.assertNotIn("transition_budget", captured[0])
+
+    @override_settings(DISPATCH_PROBE_SECRET="probe-secret")
+    def test_rung_outside_ladder_does_not_pass_transition_budget(self):
+        captured, recorder = self._solve_kwargs_recorder()
+        with self._mapbox_mock(), recorder:
+            response = self._post(
+                headers=self._headers(key="probe-secret", budget=999_999_999)
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(captured, "solve() was never called")
+        self.assertNotIn("transition_budget", captured[0])
+
+    @staticmethod
+    def _route_cache_set_calls(mock_cache_set):
+        """Filter `cache.set` calls down to the RouteView response cache
+        write alone -- `django.core.cache.cache` is one shared singleton,
+        so patching its `.set` also captures the throttle classes' own
+        rate-limit bookkeeping (`throttle_route_*`) and `eia`'s cooldown
+        marker (`eia:cooldown`), neither of which this plan changes.
+        `build_cache_key` (`routing/cache.py`) always prefixes a route
+        cache key `route:...`, which none of those other keys share.
+        """
+        return [
+            call
+            for call in mock_cache_set.call_args_list
+            if call.args and str(call.args[0]).startswith("route:")
+        ]
+
+    @override_settings(DISPATCH_PROBE_SECRET="probe-secret")
+    def test_probe_gated_request_does_not_write_the_cache(self):
+        with self._mapbox_mock(), mock.patch(
+            "routing.views.cache.set"
+        ) as mock_cache_set:
+            response = self._post(
+                headers=self._headers(key="probe-secret", budget=130_000)
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(self._route_cache_set_calls(mock_cache_set), [])
+
+    def test_non_probe_request_still_writes_the_cache(self):
+        # The inverse of the assertion above -- proves the bypass guard is
+        # non-vacuous rather than accidentally skipping every cache write.
+        with self._mapbox_mock(), mock.patch(
+            "routing.views.cache.set"
+        ) as mock_cache_set:
+            response = self._post()
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(self._route_cache_set_calls(mock_cache_set)), 1)
+
+    def test_throttle_classes_unchanged(self):
+        self.assertEqual(
+            RouteView.throttle_classes, [RouteBurstThrottle, RouteSustainedThrottle]
         )

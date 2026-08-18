@@ -64,6 +64,7 @@ from routing.cache import build_cache_key
 from routing.map_url import build_map_url
 from routing.models import Station
 from routing.pipeline.bbox import is_valid as bbox_is_valid
+from routing.probe_seam import read_current_rss_kb, resolve_probe_budget, rss_delta_mb
 from routing.serializers import (
     RouteRequestSerializer,
     RouteResponseSerializer,
@@ -606,6 +607,15 @@ _ROUTE_REQUEST_EXAMPLE = OpenApiExample(
 )
 
 
+# D-06: the non-`None` members of `DP_TRANSITION_BUDGET_LADDER`
+# (`routing/tests/test_dispatch_recovery.py:78`) -- the only rung values a
+# gated probe request (`routing/probe_seam.py`) may request. Transcribed
+# here rather than imported: production code must never import a name out
+# of `routing/tests/` (see `routing/probe_seam.py`'s own module docstring),
+# so this list is kept in sync by hand against that pinned tuple.
+_PROBE_ALLOWED_RUNGS = (50_000, 70_000, 130_000, 200_000, 400_000)
+
+
 class RouteView(APIView):
     """`POST /api/route` -- see module docstring."""
 
@@ -626,6 +636,18 @@ class RouteView(APIView):
             factor_table, price_index_status = eia.get_factor_table()
         eia_vintage = (
             factor_table["week"] if price_index_status != "frozen" else "frozen"
+        )
+
+        # D-06: resolved once per request, exactly like `penalty` and
+        # `trust_margin` below -- `None` for every request outside a
+        # deliberately provisioned probe window (default-inert by
+        # construction; see `routing/probe_seam.py`). Threaded through to
+        # `solve()` as `transition_budget=` and used below to skip the
+        # cache write for a probe-gated request.
+        probe_budget = resolve_probe_budget(
+            request.headers,
+            secret=settings.DISPATCH_PROBE_SECRET,
+            allowed_rungs=_PROBE_ALLOWED_RUNGS,
         )
 
         cache_key = build_cache_key(
@@ -663,7 +685,7 @@ class RouteView(APIView):
 
             factor_for = eia.make_factor_lookup(factor_table)
             results = self._solve_all_alternatives(
-                routes, vehicle, factor_for, ordered_coords
+                routes, vehicle, factor_for, ordered_coords, probe_budget=probe_budget
             )
             winner = self._select_winner(results)
 
@@ -733,13 +755,23 @@ class RouteView(APIView):
             )
             payload = response_serializer.data
 
-            cache.set(cache_key, payload, timeout=settings.CACHE_TTL_SECONDS)
+            # T-26-20: a raised-budget plan must never be served to an
+            # ordinary user on a shared key, and probe traffic must not
+            # poison the keys Round 1 and Round 3 measure against -- a
+            # probe-gated request (`probe_budget is not None`) skips the
+            # cache write entirely. The cache READ above is unaffected: a
+            # probe request may legitimately hit a warm key and return
+            # early, and the probe client already detects and retries that.
+            if probe_budget is None:
+                cache.set(cache_key, payload, timeout=settings.CACHE_TTL_SECONDS)
 
         response = Response(payload)
         response["Server-Timing"] = self._timing.header_value()
         return response
 
-    def _solve_all_alternatives(self, routes, vehicle, factor_for, ordered_stop_coords=None):
+    def _solve_all_alternatives(
+        self, routes, vehicle, factor_for, ordered_stop_coords=None, probe_budget=None
+    ):
         """Solve every route alternative Mapbox returned, catching only
         `InfeasibleRouteError` per alternative -- the project's one
         sanctioned deviation from the no-try/except pipeline shape,
@@ -756,6 +788,14 @@ class RouteView(APIView):
         no multi-stop context), passed through to `_enrich_infeasible_leg`
         so the re-raised smallest-gap error can additively name its
         failing leg (D-07).
+
+        `probe_budget`: D-06's resolved gated rung (an `int`, or `None`
+        for every non-probe request -- the default). `None` reproduces
+        today's `solve()` call byte-for-byte -- no `transition_budget=`
+        keyword is passed at all. A resolved rung is threaded into
+        `solve()` as `transition_budget=`, and the DP attempt it gates is
+        bracketed by a current-RSS sample so its memory cost can be
+        reported out of band; a non-probe request never samples RSS.
 
         Returns a list of `_AlternativeResult`, one per route, in Mapbox
         order. When every alternative is infeasible, re-raises the
@@ -783,16 +823,53 @@ class RouteView(APIView):
             with self._timing.stage("corridor"):
                 cands = corridor.candidates(route, factor_for=factor_for)
             try:
-                with self._timing.stage("solver"):
-                    plan = solver.solve(
-                        cands,
-                        route.total_route_mi,
-                        tank_range_mi=vehicle["tank_range_mi"],
-                        mpg=vehicle["mpg"],
-                        starting_fuel=vehicle["starting_fuel"],
-                        penalty=settings.FUEL_STOP_PENALTY_USD,
-                        trust_margin=settings.TRUST_MARGIN_USD,
-                    )
+                # D-06: two literal call sites, not one call built from a
+                # kwargs dict -- `SolvePenaltyKwargGateTest`/
+                # `SolveTrustMarginKwargGateTest` (test_boundaries.py)
+                # statically require an explicit `penalty=`/`trust_margin=`
+                # keyword at every production `solve()` call site, which an
+                # `**kwargs`-unpacked call would not satisfy. The branch is
+                # otherwise byte-identical: `transition_budget=` is the
+                # only keyword either literal call adds over the other, so
+                # a non-probe request's call is unchanged from the
+                # pre-seam build.
+                if probe_budget is not None:
+                    # RSS is sampled only around a probe-gated attempt --
+                    # never on a normal request's code path.
+                    rss_before_kb = read_current_rss_kb()
+                    with self._timing.stage("solver"):
+                        plan = solver.solve(
+                            cands,
+                            route.total_route_mi,
+                            tank_range_mi=vehicle["tank_range_mi"],
+                            mpg=vehicle["mpg"],
+                            starting_fuel=vehicle["starting_fuel"],
+                            penalty=settings.FUEL_STOP_PENALTY_USD,
+                            trust_margin=settings.TRUST_MARGIN_USD,
+                            transition_budget=probe_budget,
+                        )
+                    # D-06: this reuses the Server-Timing transport shape
+                    # (`name;dur=value`), not its duration semantics -- the
+                    # value recorded here is a memory delta in megabytes,
+                    # not a duration. That is syntactically valid (the
+                    # header format does not know or care what the number
+                    # means) and semantically not a duration; only this
+                    # project's own probe parser (plan 26-06) reads it.
+                    rss_after_kb = read_current_rss_kb()
+                    peak_rss_mb = rss_delta_mb(rss_before_kb, rss_after_kb)
+                    if peak_rss_mb is not None:
+                        self._timing.record("peak_rss_mb", float(peak_rss_mb))
+                else:
+                    with self._timing.stage("solver"):
+                        plan = solver.solve(
+                            cands,
+                            route.total_route_mi,
+                            tank_range_mi=vehicle["tank_range_mi"],
+                            mpg=vehicle["mpg"],
+                            starting_fuel=vehicle["starting_fuel"],
+                            penalty=settings.FUEL_STOP_PENALTY_USD,
+                            trust_margin=settings.TRUST_MARGIN_USD,
+                        )
                 if plan.deadline_breached:
                     # D-08: the breach is visible via a Server-Timing
                     # metric and a structured log line ONLY -- no response

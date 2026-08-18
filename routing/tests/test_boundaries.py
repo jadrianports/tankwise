@@ -496,8 +496,17 @@ class SolvePenaltyKwargGateTest(SimpleTestCase):
 # `test_a_raised_budget_opens_the_gate_on_a_demoted_cell`), proving D-06's new
 # `transition_budget=` hatch is non-vacuous in both directions. 11 production
 # unchanged, 77 -> 81 test, 88 -> 92 total.
-TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 92
-TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 11
+#
+# Updated again in Phase 26 plan 26-06: `routing/views.py`'s
+# `RouteView._solve_all_alternatives` gained a SECOND literal `solve()` call
+# site (the `probe_budget is not None` branch, which adds `transition_budget=`
+# alongside the same literal `penalty=`/`trust_margin=`) rather than building
+# one call from a shared kwargs dict -- an `**kwargs`-unpacked call would not
+# satisfy this file's own `SolvePenaltyKwargGateTest`/
+# `SolveTrustMarginKwargGateTest`, which require the literal keyword at the
+# call site. 11 -> 12 production, 81 test unchanged, 92 -> 93 total.
+TRUST_MARGIN_CALL_SITE_TOTAL_COUNT = 93
+TRUST_MARGIN_CALL_SITE_PRODUCTION_COUNT = 12
 TRUST_MARGIN_CALL_SITE_TEST_COUNT = 81
 
 
