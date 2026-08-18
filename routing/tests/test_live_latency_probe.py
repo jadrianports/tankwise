@@ -137,6 +137,9 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from routing.cache import FUEL_PRECISION
+from routing.probe_seam import PROBE_BUDGET_HEADER, PROBE_KEY_HEADER
+from routing.services import dp
+from routing.services.prune import prune_dominated_candidates
 from routing.services.solver import SolverStrategy
 from routing.tests.test_corridor_fixtures import (
     CORRIDORS,
@@ -148,6 +151,7 @@ from routing.tests.test_solver_dispatch import (
     ADMISSION_MANIFEST,
     ADMISSION_MANIFEST_VEHICLE,
     STARTING_FUEL,
+    RealCorridorDispatchTestCase,
 )
 
 # --- LIVE_PROBE_BASE_URL ----------------------------------------------------
@@ -554,6 +558,79 @@ PROBE_SEAM_CACHE_BUST_FRACTIONS = (
     Decimal("0.91"),
     Decimal("0.90"),
 )
+
+
+# --- BAND_LADDER_RUNG_CELLS (Phase 26 D-05/D-06/D-11, plan 26-06) -----------
+#
+# For each real (non-`None`) `DP_TRANSITION_BUDGET_LADDER`
+# (`test_dispatch_recovery.py`) rung ABOVE the shipped 50,000 baseline, the
+# HEAVIEST cell that rung newly admits -- read off `25-MEASUREMENTS.md`
+# section 2's CURRENT before-world estimates (which
+# `ADMISSION_MANIFEST`'s own inline comments below now also carry, having
+# been updated to the post-Phase-22-gap-fill figures), **NEVER** the STALE
+# inline comments a re-pin can leave behind elsewhere in that file -- e.g.
+# `san_diego_ca-jacksonville_fl`@500mi's own comment reads 66,571 there but
+# measures 600,415 today; that class of drift is exactly why this mapping
+# cites its source explicitly rather than being re-derived from a comment
+# string at import time:
+#
+#   70,000  admits exactly one cell: dallas_tx-seattle_wa@500 (61,944)
+#   130,000 additionally admits dallas_tx-seattle_wa@1050 (117,895)
+#   200,000 adds atlanta_ga-denver_co@500 (150,905) AND
+#           miami_fl-boston_ma@500 (182,506) -- the HEAVIER of the two,
+#           miami_fl-boston_ma@500, is the one probed at this rung
+#   400,000 adds jacksonville_fl-bangor_me@500 (356,085)
+#
+# Nothing else on the 26-cell grid is reachable by any real rung (both demo
+# chips sit at tens of millions; see 26-CONTEXT.md's own `<specifics>`
+# block for the full accounting).
+#
+# Each mapped value is the EXACT `VERDICT_PROBE_CELLS` entry for that
+# `(slug, tank_range_mi)` pair -- never a hand-duplicated dict -- so the
+# ladder sweep probes with the identical start/finish/vehicle/
+# base_starting_fuel the 26-cell verdict matrix already pins.
+def _verdict_cell(slug, tank_range_mi):
+    for cell in VERDICT_PROBE_CELLS:
+        if cell["slug"] == slug and int(cell["tank_range_mi"]) == tank_range_mi:
+            return cell
+    raise KeyError(
+        f"no VERDICT_PROBE_CELLS entry for slug={slug!r} "
+        f"tank_range_mi={tank_range_mi!r}"
+    )
+
+
+BAND_LADDER_RUNG_CELLS = {
+    70_000: _verdict_cell("dallas_tx-seattle_wa", 500),
+    130_000: _verdict_cell("dallas_tx-seattle_wa", 1050),
+    200_000: _verdict_cell("miami_fl-boston_ma", 500),
+    400_000: _verdict_cell("jacksonville_fl-bangor_me", 500),
+}
+
+
+# --- DEMOTION_BAR_PROBE_CELL (Phase 26 D-05/D-16, plan 26-06) --------------
+#
+# dallas_tx-seattle_wa@500mi at the EXACT API-default vehicle (`mpg=10`,
+# `tank_range_mi=500`, `starting_fuel=1` -- `routing/serializers.py`'s
+# `DEFAULT_MPG`/`DEFAULT_TANK_RANGE_MI`/`DEFAULT_STARTING_FUEL`) -- the
+# precise request `routing/services/dp.py`'s own HOTFIX comment block
+# names as the evidence the demotion guard rests on: "POST /api/route,
+# Dallas -> Seattle, API default vehicle (10 mpg / 500 mi) -- exceeds
+# GUNICORN_TIMEOUT=30 and returns HTTP 500. Reproduced 5/5 at
+# 30.5s-35.7s." DELIBERATELY NOT the same cell `RECOVERY_PROBE_CELLS`' own
+# `dallas_tx-seattle_wa` entry probes (that one is @1050mi at
+# `ADMISSION_MANIFEST_VEHICLE`'s `starting_fuel=0.5`) -- Phase 25 D-16's
+# evidence bar is scoped to THIS exact request shape, and
+# `demotion_guard_rewrite_qualifies()` must be fed rows measured against
+# it, never a different tank range or vehicle.
+DEMOTION_BAR_PROBE_CELL = {
+    "slug": "dallas_tx-seattle_wa",
+    "label": "Dallas, TX -> Seattle, WA (API default vehicle)",
+    "start": "32.7767,-96.7970",
+    "finish": "47.6062,-122.3321",
+    "tank_range_mi": Decimal(500),
+    "vehicle": {"mpg": "10", "tank_range_mi": "500", "starting_fuel": "1"},
+    "base_starting_fuel": Decimal("1"),
+}
 
 
 # --- DAILY_PER_IP_ROUTE_THROTTLE / VERDICT_PROBE_WORST_CASE_ATTEMPTS_PER_
@@ -1380,9 +1457,11 @@ class VerdictSweepGuardTests(SimpleTestCase):
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "_measure_one_repeat"
         ]
-        # _run_sweep, _run_recovery_sweep, and _run_verdict_sweep each
-        # call it exactly once -- three call sites total.
-        self.assertEqual(len(call_sites), 3)
+        # _run_sweep, _run_recovery_sweep, _run_verdict_sweep,
+        # _run_band_ladder_sweep, and _run_demotion_bar_sweep each call it
+        # exactly once -- five call sites total (updated in plan 26-06,
+        # which added the last two, both keyword call sites).
+        self.assertEqual(len(call_sites), 5)
         legacy_call_sites = [c for c in call_sites if not c.keywords]
         self.assertEqual(len(legacy_call_sites), 2)
         for call in legacy_call_sites:
@@ -1562,3 +1641,368 @@ class VerdictSweepGuardTests(SimpleTestCase):
         output = out.getvalue()
         self.assertIn(bad_cell["slug"], output)
         self.assertNotIn("DISPATCH VERDICT:", output)
+
+
+class BandLadderProbeGuardTests(RealCorridorDispatchTestCase):
+    """Anti-vacuity guard for the D-05/D-06 gated-probe extensions (plan
+    26-06): `BAND_LADDER_RUNG_CELLS`' rung-to-cell mapping, the
+    `--band-ladder`/`--demotion-bar` sweeps, and the
+    `DISPATCH_PROBE_SECRET` environment gate. Every HTTP-issuing test
+    below mocks `requests.get`/`requests.post` and `time.sleep` -- ZERO
+    live requests are ever issued here; this plan wires the seam, it does
+    not run Round 2's actual measurement.
+
+    Subclasses `RealCorridorDispatchTestCase` (DB-backed) rather than
+    `SimpleTestCase`, because the rung-to-band-membership test below needs
+    the real seeded station dataset to compute a genuine
+    `dp.estimate_transition_count` -- the same reproduction pattern
+    `DispatchAdmissionManifestTests` (`test_solver_dispatch.py`) already
+    uses for `ADMISSION_MANIFEST` itself.
+    """
+
+    @staticmethod
+    def _fake_route_response(status_code=200, stages="solver;dur=5.0, total;dur=10.0"):
+        from unittest.mock import MagicMock
+
+        response = MagicMock()
+        response.status_code = status_code
+        response.headers = {"Server-Timing": stages}
+        response.json.return_value = {
+            "solver_strategy": "exact_dp",
+            "price_index_status": "current",
+            "total_cost": "10.00",
+            "fuel_stops": [],
+            "map_url": "https://api.mapbox.com/directions/...",
+        }
+        return response
+
+    @staticmethod
+    def _fake_wake():
+        def fake_wake(self_):
+            self_._confirmed_commit_sha = "deadbeef1234"
+            return 0.01
+
+        return fake_wake
+
+    # --- BAND_LADDER_RUNG_CELLS mapping -----------------------------
+
+    def test_rung_to_cell_mapping_covers_every_real_rung_above_shipped_budget(self):
+        from routing.tests.test_dispatch_recovery import DP_TRANSITION_BUDGET_LADDER
+
+        expected_rungs = {
+            rung
+            for rung in DP_TRANSITION_BUDGET_LADDER
+            if rung is not None and rung > dp.DP_TRANSITION_BUDGET
+        }
+        self.assertEqual(set(BAND_LADDER_RUNG_CELLS.keys()), expected_rungs)
+
+    def test_each_mapped_cells_estimate_falls_inside_its_rungs_band(self):
+        """Reproduces each mapped cell's REAL `estimate_transition_count`
+        over the pruned search set -- the same computation
+        `DispatchAdmissionManifestTests` uses to reproduce
+        `ADMISSION_MANIFEST` -- and asserts it falls strictly inside the
+        band its own rung newly opens: greater than the previous rung
+        (the estimate was NOT already admitted there) and at or under
+        this rung (the estimate IS newly admitted here)."""
+        from routing.tests.test_dispatch_recovery import DP_TRANSITION_BUDGET_LADDER
+
+        non_none = [r for r in DP_TRANSITION_BUDGET_LADDER if r is not None]
+        for rung, cell in BAND_LADDER_RUNG_CELLS.items():
+            route, candidates = self._route_and_candidates(cell["slug"])
+            tank = cell["tank_range_mi"]
+            search_set = prune_dominated_candidates(
+                candidates, tank_range_mi=tank, total_route_mi=route.total_route_mi
+            )
+            estimate = dp.estimate_transition_count(
+                search_set,
+                total_route_mi=route.total_route_mi,
+                tank_range_mi=tank,
+                starting_fuel=Decimal(cell["vehicle"]["starting_fuel"]),
+            )
+            rung_index = non_none.index(rung)
+            lower_bound = (
+                non_none[rung_index - 1] if rung_index > 0 else dp.DP_TRANSITION_BUDGET
+            )
+            with self.subTest(rung=rung, slug=cell["slug"]):
+                self.assertGreater(
+                    estimate,
+                    lower_bound,
+                    f"{cell['slug']}@{tank}mi estimate {estimate} does not "
+                    f"exceed the lower bound {lower_bound} for rung {rung} "
+                    "-- this cell is not NEWLY admitted here.",
+                )
+                self.assertLessEqual(
+                    estimate,
+                    rung,
+                    f"{cell['slug']}@{tank}mi estimate {estimate} exceeds "
+                    f"rung {rung} -- this cell is not admitted by this "
+                    "rung at all.",
+                )
+
+    # --- --band-ladder sweep -----------------------------------------
+
+    def test_mocked_band_ladder_run_rows_match_contract_and_hand_computed_ceiling(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+        from routing.tests.test_dispatch_recovery import derive_band_ceiling
+
+        # Deliberately chosen so qualification is genuinely mixed (not
+        # every rung, not none): budget_limit = 512 * 0.50 = 256,
+        # peak_rss_mb * ROUTE_ALTERNATIVES_FANOUT(3) <= 256 requires
+        # peak_rss_mb <= 85.33 -- 70,000 and 130,000 qualify, 200,000 and
+        # 400,000 do not, so the hand-computed ceiling is 130,000, not
+        # the trivial largest-or-smallest rung.
+        peak_by_rung = {70_000: "10.0", 130_000: "40.0", 200_000: "90.0", 400_000: "300.0"}
+
+        def fake_post(url, **kwargs):
+            rung = int(kwargs["headers"][PROBE_BUDGET_HEADER])
+            self.assertEqual(kwargs["headers"][PROBE_KEY_HEADER], "test-secret")
+            peak = peak_by_rung[rung]
+            return self._fake_route_response(
+                stages=f"solver;dur=5.0, peak_rss_mb;dur={peak}, total;dur=10.0"
+            )
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        captured = {}
+
+        def fake_derive(rows):
+            captured["rows"] = list(rows)
+            return derive_band_ceiling(rows)
+
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}), \
+            mock.patch.object(Command, "_wake", self._fake_wake()), \
+            mock.patch(
+                "routing.management.commands.probe_live_latency.requests.post",
+                side_effect=fake_post,
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.time.sleep"
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.derive_band_ceiling",
+                side_effect=fake_derive,
+            ):
+            ceiling = command._run_band_ladder_sweep()
+
+        self.assertEqual(len(captured["rows"]), 4)
+        for row in captured["rows"]:
+            self.assertEqual(set(row.keys()), {"rung", "peak_rss_mb"})
+            self.assertIsInstance(row["peak_rss_mb"], Decimal)
+        self.assertEqual(ceiling, 130_000)
+        self.assertIn("DERIVED BAND_CEILING: 130000", out.getvalue())
+
+    def test_mocked_band_ladder_run_with_one_rung_missing_peak_rss_mb_is_unmeasured_and_excluded(
+        self,
+    ):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+        from routing.tests.test_dispatch_recovery import derive_band_ceiling
+
+        peak_by_rung = {70_000: "10.0", 130_000: "40.0", 200_000: "90.0"}
+
+        def fake_post(url, **kwargs):
+            rung = int(kwargs["headers"][PROBE_BUDGET_HEADER])
+            if rung == 400_000:
+                # Simulates the RSS reader returning None (e.g. off-Linux)
+                # -- no peak_rss_mb token in Server-Timing at all.
+                return self._fake_route_response(stages="solver;dur=5.0, total;dur=10.0")
+            peak = peak_by_rung[rung]
+            return self._fake_route_response(
+                stages=f"solver;dur=5.0, peak_rss_mb;dur={peak}, total;dur=10.0"
+            )
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        captured = {}
+
+        def fake_derive(rows):
+            captured["rows"] = list(rows)
+            return derive_band_ceiling(rows)
+
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}), \
+            mock.patch.object(Command, "_wake", self._fake_wake()), \
+            mock.patch(
+                "routing.management.commands.probe_live_latency.requests.post",
+                side_effect=fake_post,
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.time.sleep"
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.derive_band_ceiling",
+                side_effect=fake_derive,
+            ):
+            command._run_band_ladder_sweep()
+
+        self.assertEqual(len(captured["rows"]), 3)
+        self.assertNotIn(400_000, [row["rung"] for row in captured["rows"]])
+        self.assertIn("rung=400000", out.getvalue())
+        self.assertIn("UNMEASURED", out.getvalue())
+
+    # --- --demotion-bar sweep -----------------------------------------
+
+    def test_mocked_demotion_bar_run_emits_exactly_five_rows_with_the_five_required_keys(self):
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+        from routing.tests.test_dispatch_recovery import (
+            DEMOTION_GUARD_PROBE_REPEATS,
+            demotion_guard_rewrite_qualifies,
+        )
+
+        def fake_post(url, **kwargs):
+            self.assertEqual(kwargs["headers"][PROBE_BUDGET_HEADER], "70000")
+            self.assertEqual(kwargs["headers"][PROBE_KEY_HEADER], "test-secret")
+            return self._fake_route_response(stages="solver;dur=500.0, total;dur=600.0")
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        captured = {}
+
+        def fake_qualifies(rows):
+            captured["rows"] = list(rows)
+            return demotion_guard_rewrite_qualifies(rows)
+
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}), \
+            mock.patch.object(Command, "_wake", self._fake_wake()), \
+            mock.patch(
+                "routing.management.commands.probe_live_latency.requests.post",
+                side_effect=fake_post,
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.time.sleep"
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.demotion_guard_rewrite_qualifies",
+                side_effect=fake_qualifies,
+            ):
+            qualifies = command._run_demotion_bar_sweep(70_000)
+
+        rows = captured["rows"]
+        self.assertEqual(len(rows), DEMOTION_GUARD_PROBE_REPEATS)
+        expected_keys = {"source", "host", "cache_miss", "status_code", "solver_stage_seconds"}
+        for row in rows:
+            self.assertEqual(set(row.keys()), expected_keys)
+        self.assertTrue(qualifies)
+        self.assertIn("DEMOTION-GUARD REWRITE QUALIFIES: True", out.getvalue())
+
+    def test_demotion_bar_run_with_one_cache_hit_repeat_still_emits_five_rows_and_fails(self):
+        """The failing repeat's REAL row (cache_miss=False) is passed
+        through, never synthesised as a passing one -- the pinned
+        `demotion_guard_rewrite_qualifies` is what returns `False`."""
+        import io
+        from unittest import mock
+
+        from routing.management.commands.probe_live_latency import Command
+        from routing.tests.test_dispatch_recovery import (
+            DEMOTION_GUARD_PROBE_REPEATS,
+            demotion_guard_rewrite_qualifies,
+        )
+
+        call_count = {"n": 0}
+
+        def fake_post(url, **kwargs):
+            call_count["n"] += 1
+            # Repeat 0's BOTH attempts (the primary at rung_index=0 and
+            # its one permitted retry at rung_index=1) return a cache
+            # hit, so _measure_one_repeat exhausts its retry and returns
+            # a row with cache_hit=True (never a genuine miss). Every
+            # later repeat's single attempt returns a genuine miss.
+            if call_count["n"] in (1, 2):
+                return self._fake_route_response(stages="cache;dur=1.0")  # cache hit
+            return self._fake_route_response(stages="solver;dur=500.0, total;dur=600.0")
+
+        out = io.StringIO()
+        command = Command(stdout=out)
+        captured = {}
+
+        def fake_qualifies(rows):
+            captured["rows"] = list(rows)
+            return demotion_guard_rewrite_qualifies(rows)
+
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}), \
+            mock.patch.object(Command, "_wake", self._fake_wake()), \
+            mock.patch(
+                "routing.management.commands.probe_live_latency.requests.post",
+                side_effect=fake_post,
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.time.sleep"
+            ), mock.patch(
+                "routing.management.commands.probe_live_latency.demotion_guard_rewrite_qualifies",
+                side_effect=fake_qualifies,
+            ):
+            qualifies = command._run_demotion_bar_sweep(70_000)
+
+        self.assertEqual(len(captured["rows"]), DEMOTION_GUARD_PROBE_REPEATS)
+        self.assertFalse(captured["rows"][0]["cache_miss"])
+        self.assertFalse(qualifies)
+
+    # --- missing-secret environment gate --------------------------------
+
+    def test_missing_secret_environment_variable_raises_command_error_for_both_modes(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("DISPATCH_PROBE_SECRET", None)
+
+            out = io.StringIO()
+            command = Command(stdout=out)
+            with mock.patch.object(Command, "_wake", self._fake_wake()):
+                with self.assertRaises(CommandError) as ctx:
+                    command._run_band_ladder_sweep()
+                self.assertIn("DISPATCH_PROBE_SECRET", str(ctx.exception))
+                self.assertNotIn("DISPATCH_PROBE_SECRET", out.getvalue())
+
+                out2 = io.StringIO()
+                command2 = Command(stdout=out2)
+                with self.assertRaises(CommandError) as ctx2:
+                    command2._run_demotion_bar_sweep(70_000)
+                self.assertIn("DISPATCH_PROBE_SECRET", str(ctx2.exception))
+
+    # --- mode plumbing --------------------------------------------------
+
+    def test_band_ladder_and_demotion_bar_are_mutually_exclusive(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("probe_live_latency", "--band-ladder", "--demotion-bar")
+
+    def test_band_ladder_and_verdict_are_mutually_exclusive(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("probe_live_latency", "--band-ladder", "--verdict")
+
+    def test_demotion_bar_without_rung_raises_command_error(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}):
+            with self.assertRaises(CommandError) as ctx:
+                command._run_demotion_bar_sweep(None)
+        self.assertIn("--rung", str(ctx.exception))
+
+    def test_demotion_bar_with_off_ladder_rung_raises_command_error(self):
+        import io
+        from unittest import mock
+
+        from django.core.management.base import CommandError
+
+        from routing.management.commands.probe_live_latency import Command
+
+        command = Command(stdout=io.StringIO())
+        with mock.patch.dict(os.environ, {"DISPATCH_PROBE_SECRET": "test-secret"}):
+            with self.assertRaises(CommandError):
+                command._run_demotion_bar_sweep(12_345)

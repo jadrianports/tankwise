@@ -973,9 +973,19 @@ def _collect_prune_inertness_violations(path):
 # untouched -- `test_heuristic_candidate_diff.py` calls the command
 # module's own `_measure_cell`/`_row_for_cell` helpers rather than
 # `prune_dominated_candidates` directly. 7 production, 51 test, 58 total.
+#
+# [Amended 2026-08-18, Phase 26 plan 26-06] Re-walked after plan 26-06
+# added `BandLadderProbeGuardTests.test_each_mapped_cells_estimate_falls_
+# inside_its_rungs_band` (`test_live_latency_probe.py`, an EIGHTH file --
+# the D-05/D-06 rung-to-cell mapping guard, which reproduces each mapped
+# cell's real estimate via the SAME `prune_dominated_candidates` ->
+# `dp.estimate_transition_count` pattern `DispatchAdmissionManifestTests`
+# already uses). One new test call site; production count untouched --
+# this plan adds no new `prune_dominated_candidates` production call.
+# 7 production, 52 test, 59 total.
 PRUNE_CALL_SITE_PRODUCTION_COUNT = 7
-PRUNE_CALL_SITE_TEST_COUNT = 51
-PRUNE_CALL_SITE_TOTAL_COUNT = 58
+PRUNE_CALL_SITE_TEST_COUNT = 52
+PRUNE_CALL_SITE_TOTAL_COUNT = 59
 
 
 class PruneInertnessGateTest(SimpleTestCase):

@@ -15,7 +15,7 @@ per-IP `ROUTE_THROTTLE_SUSTAINED_RATE=200/day` throttle -- exactly why its
 budget is enforced in code (`LIVE_PROBE_MAX_REQUESTS`, checked BEFORE a
 single request is issued) rather than trusted to whoever runs it.
 
-Four modes, one shared protocol (wake -- now confirming the deployed
+Six modes, one shared protocol (wake -- now confirming the deployed
 commit SHA before trusting anything below it, D-12 fact 1 -- then
 measure, never print a response body):
 
@@ -31,12 +31,32 @@ measure, never print a response body):
     `VERDICT_PROBE_CELLS` matrix, printing each cell's pinned OFFLINE
     admission beside its LIVE observed arm (never reconciled), then the
     same D-18-style measurement floor and headline verdict.
+  - `--band-ladder` (Phase 26 D-05/D-06, plan 26-06): probe
+    `BAND_LADDER_RUNG_CELLS` through the GATED probe seam
+    (`routing/probe_seam.py`, `routing/views.py`), one genuine DP attempt
+    per rung per repeat, reading `peak_rss_mb` back out of each response's
+    `Server-Timing` header, then derive `BAND_CEILING` via
+    `derive_band_ceiling()`. Requires `DISPATCH_PROBE_SECRET` in this
+    shell's environment.
+  - `--demotion-bar` (Phase 26 D-05/D-16, plan 26-06): probe
+    `DEMOTION_BAR_PROBE_CELL` through the same gated seam,
+    `DEMOTION_GUARD_PROBE_REPEATS` times at a caller-supplied `--rung`,
+    then apply `demotion_guard_rewrite_qualifies()` -- Phase 25 D-16's
+    full, pre-pinned evidence bar for rewriting
+    `DispatchDemotionGuardTests`. Also requires `DISPATCH_PROBE_SECRET`.
 
 `--expect-commit <sha>` overrides the default expected commit (the local
 `git rev-parse HEAD`) for every mode -- the wake step now hard-fails,
 naming both SHAs, if the deployed build does not match. An unconfirmable
 build (missing/null `commit` field) is treated the same way: no
 measurement below it may be trusted.
+
+`--band-ladder`/`--demotion-bar` are the ONLY two modes that ever send the
+D-06 gated probe headers (`X-Dispatch-Probe-Key`/`X-Dispatch-Probe-Budget`)
+-- every other mode's requests are byte-identical to the pre-seam build.
+The shared secret is read once per rung from the `DISPATCH_PROBE_SECRET`
+process environment variable, NEVER from a committed file, and is NEVER
+printed -- the same operational shape `EIA_API_KEY` already uses.
 
 Response bodies never reach stdout: a `/api/route` response carries the
 Mapbox `pk.` token in `map_url` (the same hygiene rule
@@ -55,18 +75,25 @@ are reported as unmeasurable-by-this-probe, with the already-recorded
 censored evidence (the pre-hotfix HTTP 500s, `18-VERIFICATION.md`) cited
 instead of ever being estimated.
 """
+import os
 import subprocess
 import time
 from dataclasses import dataclass, field
 from decimal import Decimal
+from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
+from routing.probe_seam import PROBE_BUDGET_HEADER, PROBE_KEY_HEADER
 from routing.services.solver import SolverStrategy
 from routing.tests.test_dispatch_recovery import (
+    DEMOTION_GUARD_PROBE_REPEATS,
+    DP_TRANSITION_BUDGET_LADDER,
     RESPONSE_BAR_SECONDS,
+    demotion_guard_rewrite_qualifies,
+    derive_band_ceiling,
     measurement_floor_violations,
     recovery_verdict,
 )
@@ -74,6 +101,8 @@ from routing.tests.test_live_latency_probe import (
     ANOMALY_FALSIFICATION_THRESHOLD_SECONDS,
     ANOMALY_REQUEST,
     ANOMALY_SOLVER_STAGE_MAX_MS,
+    BAND_LADDER_RUNG_CELLS,
+    DEMOTION_BAR_PROBE_CELL,
     LIVE_PROBE_BASE_URL,
     LIVE_PROBE_CACHE_BUST_LADDER,
     LIVE_PROBE_CELLS,
@@ -82,6 +111,7 @@ from routing.tests.test_live_latency_probe import (
     LIVE_PROBE_REPEATS,
     LIVE_PROBE_REQUEST_TIMEOUT_SECONDS,
     LIVE_PROBE_WAKE_TIMEOUT_SECONDS,
+    PROBE_SEAM_CACHE_BUST_FRACTIONS,
     RECOVERY_PROBE_CELLS,
     VERDICT_PROBE_CACHE_BUST_FRACTIONS,
     VERDICT_PROBE_CELLS,
@@ -207,6 +237,39 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--band-ladder",
+            action="store_true",
+            help=(
+                "Probe BAND_LADDER_RUNG_CELLS through the D-06 gated probe "
+                "seam, one genuine DP attempt per rung per repeat, and "
+                "derive BAND_CEILING from the measured peak-RSS ladder via "
+                "derive_band_ceiling(). Requires DISPATCH_PROBE_SECRET in "
+                "this shell's environment."
+            ),
+        )
+        parser.add_argument(
+            "--demotion-bar",
+            action="store_true",
+            help=(
+                "Probe DEMOTION_BAR_PROBE_CELL through the D-06 gated probe "
+                "seam, DEMOTION_GUARD_PROBE_REPEATS times at --rung, and "
+                "apply demotion_guard_rewrite_qualifies() -- Phase 25 "
+                "D-16's full evidence bar for rewriting "
+                "DispatchDemotionGuardTests. Requires --rung and "
+                "DISPATCH_PROBE_SECRET in this shell's environment."
+            ),
+        )
+        parser.add_argument(
+            "--rung",
+            type=int,
+            default=None,
+            help=(
+                "The DP_TRANSITION_BUDGET_LADDER rung to request via the "
+                "D-06 gated probe seam. Required by --demotion-bar; "
+                "ignored by every other mode."
+            ),
+        )
+        parser.add_argument(
             "--expect-commit",
             default=None,
             help=(
@@ -219,11 +282,18 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         self._expect_commit = options.get("expect_commit")
         modes_selected = sum(
-            [bool(options["anomaly"]), bool(options["recovery"]), bool(options["verdict"])]
+            [
+                bool(options["anomaly"]),
+                bool(options["recovery"]),
+                bool(options["verdict"]),
+                bool(options["band_ladder"]),
+                bool(options["demotion_bar"]),
+            ]
         )
         if modes_selected > 1:
             raise CommandError(
-                "--anomaly, --recovery, and --verdict are mutually exclusive."
+                "--anomaly, --recovery, --verdict, --band-ladder, and "
+                "--demotion-bar are mutually exclusive."
             )
         if options["anomaly"]:
             self._run_anomaly()
@@ -231,6 +301,10 @@ class Command(BaseCommand):
             self._run_recovery_sweep()
         elif options["verdict"]:
             self._run_verdict_sweep()
+        elif options["band_ladder"]:
+            self._run_band_ladder_sweep()
+        elif options["demotion_bar"]:
+            self._run_demotion_bar_sweep(options.get("rung"))
         else:
             self._run_sweep()
 
@@ -246,6 +320,32 @@ class Command(BaseCommand):
                 "budget in test_live_latency_probe.py. This command does "
                 "not silently trim the matrix to fit."
             )
+
+    def _probe_headers(self, rung):
+        """The two D-06 gated-probe HTTP headers requesting `rung` --
+        `PROBE_KEY_HEADER`/`PROBE_BUDGET_HEADER` (`routing/probe_seam.py`,
+        the exact same names `resolve_probe_budget` reads server-side).
+
+        The shared secret is read from the PROCESS ENVIRONMENT, never from
+        a committed file, and never printed anywhere this command writes.
+        Raises `CommandError` immediately, naming the environment
+        variable, if it is absent -- the same operational shape
+        `EIA_API_KEY` already uses: a human must provision it in Render's
+        dashboard for the probe window (`render.yaml`'s own `sync: false`
+        declaration) and export the identical value locally before
+        `--band-ladder`/`--demotion-bar` can run.
+        """
+        secret = os.environ.get("DISPATCH_PROBE_SECRET")
+        if not secret:
+            raise CommandError(
+                "DISPATCH_PROBE_SECRET is not set in this shell's "
+                "environment. A human must provision it in Render's "
+                "dashboard for the probe window (render.yaml declares it "
+                "sync: false, with no committed value) and export the "
+                "identical value locally before this mode can run -- the "
+                "same operational shape EIA_API_KEY already uses."
+            )
+        return {PROBE_KEY_HEADER: secret, PROBE_BUDGET_HEADER: str(rung)}
 
     def _local_head_sha(self):
         """Resolve the local `git rev-parse HEAD` SHA -- the default
@@ -329,7 +429,13 @@ class Command(BaseCommand):
         )
         return elapsed
 
-    def _post_route(self, start, finish, vehicle, waypoints=()):
+    def _post_route(self, start, finish, vehicle, waypoints=(), headers=None):
+        """`headers`: the D-06 gated-probe header pair (`_probe_headers`),
+        or `None` (the default -- every call site before plan 26-06, and
+        every mode except `--band-ladder`/`--demotion-bar`). `requests.
+        post`'s own `headers=None` default means an omitted `headers` here
+        produces a byte-identical request to before this parameter
+        existed."""
         url = f"{LIVE_PROBE_BASE_URL}/api/route"
         body = {"start": start, "finish": finish, "vehicle": vehicle}
         if waypoints:
@@ -343,7 +449,10 @@ class Command(BaseCommand):
         started = time.perf_counter()
         try:
             response = requests.post(
-                url, json=body, timeout=LIVE_PROBE_REQUEST_TIMEOUT_SECONDS
+                url,
+                json=body,
+                headers=headers,
+                timeout=LIVE_PROBE_REQUEST_TIMEOUT_SECONDS,
             )
         except requests.Timeout:
             elapsed = time.perf_counter() - started
@@ -413,7 +522,15 @@ class Command(BaseCommand):
         self._print_request_accounting(requests_issued, implied_count)
         self._print_disclaimer()
 
-    def _measure_one_repeat(self, cell, repeat_index, ladder_rungs, *, ladder=LIVE_PROBE_CACHE_BUST_LADDER):
+    def _measure_one_repeat(
+        self,
+        cell,
+        repeat_index,
+        ladder_rungs,
+        *,
+        ladder=LIVE_PROBE_CACHE_BUST_LADDER,
+        headers=None,
+    ):
         """Issue at most two attempts for one (cell, repeat): the primary
         attempt at `ladder[repeat_index]`, and -- if and only if that
         attempt is a cache hit -- exactly ONE retry at the next ladder
@@ -434,7 +551,14 @@ class Command(BaseCommand):
         no `base_starting_fuel` (every `LIVE_PROBE_CELLS`/
         `RECOVERY_PROBE_CELLS` entry), the rung is used directly as the
         absolute `starting_fuel` value, byte-identical to this method's
-        pre-Phase-26 behaviour."""
+        pre-Phase-26 behaviour.
+
+        `headers` (Phase 26 D-06, plan 26-06): passed straight through to
+        every `_post_route` attempt this repeat makes, unchanged across a
+        cache-hit retry -- the same requested rung applies to both
+        attempts of one repeat. Defaults to `None`, so every pre-existing
+        call site (every mode except `--band-ladder`/`--demotion-bar`)
+        stays byte-identical."""
         attempts = 0
         row = None
         for attempt_num in range(2):
@@ -460,7 +584,11 @@ class Command(BaseCommand):
                 stop_count,
                 total_cost,
             ) = self._post_route(
-                cell["start"], cell["finish"], vehicle, waypoints=cell.get("waypoints", ())
+                cell["start"],
+                cell["finish"],
+                vehicle,
+                waypoints=cell.get("waypoints", ()),
+                headers=headers,
             )
             attempts += 1
 
@@ -991,6 +1119,160 @@ class Command(BaseCommand):
                 }
             )
         return verdict_rows, floor_rows
+
+    # --- band-ladder sweep (--band-ladder, D-05/D-06) --------------------
+
+    def _run_band_ladder_sweep(self):
+        """Round 2 (D-05/D-06, plan 26-06): probe `BAND_LADDER_RUNG_CELLS`
+        through the D-06 gated probe seam, `VERDICT_PROBE_REPEATS` times
+        per rung on `PROBE_SEAM_CACHE_BUST_FRACTIONS`, reading
+        `peak_rss_mb` back out of each response's `Server-Timing` header
+        via the existing generic parser. Takes the WORST (largest)
+        `peak_rss_mb` across a rung's repeats, emits one
+        `derive_band_ceiling`-shaped row per rung (`rung`, `peak_rss_mb`),
+        then calls `derive_band_ceiling()` and prints the result. A rung
+        with no `peak_rss_mb` value across any repeat is printed
+        UNMEASURED and excluded from the derivation entirely -- never
+        substituted with a zero, which would look like a qualifying
+        (tiny-footprint) measurement rather than an absent one.
+        """
+        implied_count = len(BAND_LADDER_RUNG_CELLS) * VERDICT_PROBE_REPEATS * 2 + 1
+        self._enforce_budget(
+            implied_count, "band-ladder sweep", ceiling=VERDICT_PROBE_MAX_REQUESTS
+        )
+        self.stdout.write(
+            f"BAND-LADDER SWEEP -- Budget check: implied worst-case "
+            f"requests={implied_count} <= VERDICT_PROBE_MAX_REQUESTS="
+            f"{VERDICT_PROBE_MAX_REQUESTS}. Proceeding against "
+            f"{LIVE_PROBE_BASE_URL}."
+        )
+        self.stdout.write("")
+
+        self._wake()
+        requests_issued = 1
+
+        ladder_rungs = len(PROBE_SEAM_CACHE_BUST_FRACTIONS)
+        rss_rows = []
+        self.stdout.write(self.style.SUCCESS("PEAK-RSS LADDER:"))
+        for rung, cell in BAND_LADDER_RUNG_CELLS.items():
+            headers = self._probe_headers(rung)
+            peak_values = []
+            for repeat_index in range(VERDICT_PROBE_REPEATS):
+                row, attempts = self._measure_one_repeat(
+                    cell,
+                    repeat_index,
+                    ladder_rungs,
+                    ladder=PROBE_SEAM_CACHE_BUST_FRACTIONS,
+                    headers=headers,
+                )
+                requests_issued += attempts
+                peak_mb = row.stages_ms.get("peak_rss_mb") if row else None
+                if peak_mb is not None:
+                    peak_values.append(Decimal(str(peak_mb)))
+            if peak_values:
+                worst = max(peak_values)
+                rss_rows.append({"rung": rung, "peak_rss_mb": worst})
+                self.stdout.write(
+                    f"    rung={rung} cell={cell['label']}: peak_rss_mb "
+                    f"(worst of {len(peak_values)}) = {worst}"
+                )
+            else:
+                self.stdout.write(
+                    f"    rung={rung} cell={cell['label']}: UNMEASURED -- "
+                    "no peak_rss_mb value across any repeat. Excluded from "
+                    "the derivation below, never substituted with zero."
+                )
+        self.stdout.write("")
+
+        self._print_request_accounting(requests_issued, implied_count)
+
+        band_ceiling = derive_band_ceiling(rss_rows)
+        self.stdout.write(self.style.SUCCESS(f"DERIVED BAND_CEILING: {band_ceiling}"))
+        return band_ceiling
+
+    # --- demotion-bar sweep (--demotion-bar, D-05/D-16) -------------------
+
+    def _run_demotion_bar_sweep(self, rung):
+        """Round 2 (D-05/D-16, plan 26-06): probe
+        `DEMOTION_BAR_PROBE_CELL` through the D-06 gated probe seam,
+        EXACTLY `DEMOTION_GUARD_PROBE_REPEATS` times, each at a distinct
+        `PROBE_SEAM_CACHE_BUST_FRACTIONS` rung, all at the caller-supplied
+        `rung`. Builds one row per repeat carrying exactly the five keys
+        `demotion_guard_rewrite_qualifies` reads, then applies that
+        pinned function verbatim. A repeat that did not produce a genuine
+        cache miss is NEVER synthesised into a passing row -- its real
+        (failing) values are passed straight through, and the pinned
+        function itself is what returns `False` on them.
+        """
+        if rung is None:
+            raise CommandError(
+                "--demotion-bar requires --rung <N>, a member of "
+                "DP_TRANSITION_BUDGET_LADDER's non-None rungs (e.g. "
+                "70000)."
+            )
+        non_none_rungs = [r for r in DP_TRANSITION_BUDGET_LADDER if r is not None]
+        if rung not in non_none_rungs:
+            raise CommandError(
+                f"--rung {rung} is not a member of "
+                f"DP_TRANSITION_BUDGET_LADDER's non-None rungs "
+                f"({non_none_rungs})."
+            )
+
+        implied_count = DEMOTION_GUARD_PROBE_REPEATS * 2 + 1
+        self._enforce_budget(
+            implied_count, "demotion-bar sweep", ceiling=VERDICT_PROBE_MAX_REQUESTS
+        )
+        self.stdout.write(
+            f"DEMOTION-BAR SWEEP -- Budget check: implied worst-case "
+            f"requests={implied_count} <= VERDICT_PROBE_MAX_REQUESTS="
+            f"{VERDICT_PROBE_MAX_REQUESTS}. rung={rung}. Proceeding "
+            f"against {LIVE_PROBE_BASE_URL}."
+        )
+        self.stdout.write("")
+
+        self._wake()
+        requests_issued = 1
+
+        ladder_rungs = len(PROBE_SEAM_CACHE_BUST_FRACTIONS)
+        host = urlparse(LIVE_PROBE_BASE_URL).hostname
+        headers = self._probe_headers(rung)
+        live_rows = []
+        self.stdout.write(self.style.SUCCESS("DEMOTION-BAR ROWS:"))
+        for repeat_index in range(DEMOTION_GUARD_PROBE_REPEATS):
+            row, attempts = self._measure_one_repeat(
+                DEMOTION_BAR_PROBE_CELL,
+                repeat_index,
+                ladder_rungs,
+                ladder=PROBE_SEAM_CACHE_BUST_FRACTIONS,
+                headers=headers,
+            )
+            requests_issued += attempts
+            solver_ms = row.stages_ms.get("solver") if row else None
+            solver_stage_seconds = (
+                Decimal(str(solver_ms)) / Decimal(1000) if solver_ms is not None else None
+            )
+            live_row = {
+                "source": "live",
+                "host": host,
+                "cache_miss": row.is_genuine_miss if row else False,
+                "status_code": row.status_code if row else None,
+                "solver_stage_seconds": solver_stage_seconds,
+            }
+            live_rows.append(live_row)
+            self.stdout.write(
+                f"    repeat={repeat_index} status={live_row['status_code']} "
+                f"solver_stage_seconds={solver_stage_seconds} "
+                f"cache_miss={live_row['cache_miss']}"
+            )
+        self.stdout.write("")
+
+        self._print_request_accounting(requests_issued, implied_count)
+
+        qualifies = demotion_guard_rewrite_qualifies(live_rows)
+        self.stdout.write(
+            self.style.SUCCESS(f"DEMOTION-GUARD REWRITE QUALIFIES: {qualifies}")
+        )
+        return qualifies
 
     # --- anomaly reproduction -----------------------------------------
 
