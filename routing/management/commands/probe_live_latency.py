@@ -647,6 +647,18 @@ class Command(BaseCommand):
         run capped at the production deadline would silently understate
         how much slower the deployed hardware really is on a cell whose
         untimed time exceeds that cap.
+
+        `baseline[cell["label"]]` below is examined for
+        `_build_verdict_input`'s `cell_label`-collision defect (plan
+        26-06, `26-VERDICT.md` section 1.5) and found GENUINELY
+        UNREACHABLE by it: this method is called ONLY from `_run_sweep`
+        (see that method's own `workstation = self.
+        _measure_workstation_baseline()` call, its one and only call
+        site), always iterating `LIVE_PROBE_CELLS` -- never
+        `VERDICT_PROBE_CELLS`, whose two-tank-range corridors are the
+        ones that actually collide. `LIVE_PROBE_CELLS`' own two entries
+        (`dallas_tx-seattle_wa`, `sacramento_ca-salt_lake_city_ut`) carry
+        distinct labels. Left unchanged.
         """
         import io
 
@@ -883,7 +895,19 @@ class Command(BaseCommand):
         figure that could accidentally look RECOVERED) and
         `all_repeats_genuine_cache_miss=False`, so it always shows up as
         a measurement-floor violation rather than silently vanishing
-        from the verdict input."""
+        from the verdict input.
+
+        Examined for `_build_verdict_input`'s `cell_label`-collision class
+        of defect (plan 26-06, `26-VERDICT.md` section 1.5) and found NOT
+        AFFECTED: `RECOVERY_PROBE_CELLS`' three entries each carry a
+        distinct `label` (`sacramento_ca-salt_lake_city_ut`@500mi,
+        `dallas_tx-seattle_wa`@1050mi ONLY -- its @500mi sibling is not a
+        member of this set -- and the multi-leg
+        `demo_la_ca-denver_co-chicago_il`@1050mi), so reducing on
+        `cell_label` here never merges two cells' rows. Left unchanged
+        rather than switched to `(slug, tank_range_mi)` alongside the
+        genuinely broken site, so this fix stays scoped to the function
+        that was actually wrong."""
         verdict_rows = []
         floor_rows = []
         for cell in RECOVERY_PROBE_CELLS:
@@ -1010,17 +1034,29 @@ class Command(BaseCommand):
             "strategy, because an admitted cell can still breach the "
             "2.8s deadline on a slow box and fall back to the heuristic."
         )
+        # Keyed on (slug, tank_range_mi) -- the row's own full cell
+        # identity -- NEVER on cell_label alone. Two of VERDICT_PROBE_
+        # CELLS' 26 entries share a label (a corridor's 1050mi and 500mi
+        # entries both carry corridor.label, which encodes no tank-range
+        # information); grouping on the label alone silently merges their
+        # rows into one printed section and one another's worst-of-3
+        # figures. Discovered and mechanically proven in plan 26-05
+        # (`26-VERDICT.md` section 1.5) -- the exact bug that produced a
+        # false RECOVERED headline on that round's own raw output.
         by_cell = {}
         for row in rows:
-            by_cell.setdefault(row.cell_label, []).append(row)
-        for label, cell_rows in by_cell.items():
+            by_cell.setdefault((row.slug, row.tank_range_mi), []).append(row)
+        for (slug, tank_range_mi), cell_rows in by_cell.items():
+            label = cell_rows[0].cell_label
             offline_admitted = cell_rows[0].offline_admitted
             offline_arm = (
                 SolverStrategy.EXACT_DP
                 if offline_admitted
                 else SolverStrategy.PENALTY_AWARE_HEURISTIC
             )
-            self.stdout.write(f"    {label} (offline_arm={offline_arm}):")
+            self.stdout.write(
+                f"    {label} @{tank_range_mi}mi (offline_arm={offline_arm}):"
+            )
             for row in cell_rows:
                 solver_ms = row.stages_ms.get("solver")
                 total_ms = row.stages_ms.get("total")
@@ -1083,11 +1119,27 @@ class Command(BaseCommand):
         violations` require -- worst-of-repeats over GENUINE cache misses
         only, exactly as `_build_recovery_verdict_input` already reduces
         `RECOVERY_PROBE_CELLS`' rows. `reported_figure_kind` is fixed at
-        `"worst"` on every row."""
+        `"worst"` on every row.
+
+        Reduced on the row's own full cell identity -- `(slug,
+        tank_range_mi)`, both already carried on `ProbeRow` for exactly
+        this purpose -- NEVER on `cell_label` alone. `VERDICT_PROBE_CELLS`
+        derives each corridor's `label` from `corridor.label`, which
+        carries no tank-range information, so a corridor's 1050mi and
+        500mi entries share one label; reducing on the label alone
+        silently merges their six rows into one union and computes a
+        single worst-of-6 shared by both entries -- proven to fabricate a
+        false `RECOVERED` verdict in plan 26-05 (`26-VERDICT.md` section
+        1.5). `(slug, tank_range_mi)` is unique across the full 26-cell
+        grid by construction (`ADMISSION_MANIFEST`'s own keys)."""
         verdict_rows = []
         floor_rows = []
         for cell in VERDICT_PROBE_CELLS:
-            cell_rows = [r for r in rows if r.cell_label == cell["label"]]
+            cell_rows = [
+                r
+                for r in rows
+                if r.slug == cell["slug"] and r.tank_range_mi == cell["tank_range_mi"]
+            ]
             genuine = [r for r in cell_rows if r.is_genuine_miss]
             all_genuine = bool(cell_rows) and all(r.is_genuine_miss for r in cell_rows)
 

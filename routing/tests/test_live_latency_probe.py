@@ -1568,6 +1568,193 @@ class VerdictSweepGuardTests(SimpleTestCase):
             self.assertEqual(set(row.keys()), expected_floor_keys)
             self.assertEqual(row["reported_figure_kind"], "worst")
 
+    def test_build_verdict_input_partitions_same_label_different_tank_ranges(self):
+        """STRENGTHENS the guard above (never deletes it) -- plan 26-06,
+        `26-VERDICT.md` section 1.5. The guard above builds exactly ONE
+        row per cell (26 rows for 26 cells), which can never exercise the
+        actual collision: a corridor's 1050mi and 500mi
+        `VERDICT_PROBE_CELLS` entries share the SAME `cell_label`
+        (`corridor.label` carries no tank-range information), and the
+        pre-fix `_build_verdict_input` reduced on `cell_label` alone,
+        silently merging their rows into one union and computing a SINGLE
+        worst-of-6 shared by both entries. That defect reproduced a false
+        `RECOVERED` headline on plan 26-05's live sweep.
+
+        This test builds SIX rows for ONE real corridor -- three repeats
+        each at 1050mi and 500mi, all six sharing one `cell_label` -- with
+        DELIBERATELY DISTINCT wall times and strategies per tank range,
+        and asserts the reduction assigns each tank range's OWN
+        worst-of-3 and its OWN repeat count, never the sibling's. A
+        vacuous (unfixed) reduction would report `102.0`s/`exact_dp` and
+        `repeats=6` for BOTH tank ranges; this test fails loudly on
+        exactly that outcome.
+        """
+        import io
+
+        from routing.management.commands.probe_live_latency import Command, ProbeRow
+
+        command = Command(stdout=io.StringIO())
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        corridor_slug = next(
+            cell["slug"] for cell in VERDICT_PROBE_CELLS if cell["slug"] not in demo_slugs
+        )
+        cell_1050 = next(
+            c
+            for c in VERDICT_PROBE_CELLS
+            if c["slug"] == corridor_slug and c["tank_range_mi"] == Decimal(1050)
+        )
+        cell_500 = next(
+            c
+            for c in VERDICT_PROBE_CELLS
+            if c["slug"] == corridor_slug and c["tank_range_mi"] == Decimal(500)
+        )
+        # The collision precondition: both entries genuinely share a label.
+        self.assertEqual(cell_1050["label"], cell_500["label"])
+
+        rows = []
+        for repeat_index in range(3):
+            rows.append(
+                ProbeRow(
+                    cell_label=cell_1050["label"],
+                    repeat_index=repeat_index,
+                    ladder_value=Decimal("0.5"),
+                    status_code=200,
+                    wall_time_s=100.0 + repeat_index,  # worst = 102.0
+                    stages_ms={"solver": 5.0},
+                    censored=False,
+                    cache_hit=False,
+                    solver_strategy="exact_dp",
+                    slug=cell_1050["slug"],
+                    tank_range_mi=cell_1050["tank_range_mi"],
+                    offline_admitted=cell_1050["offline_admitted"],
+                )
+            )
+        for repeat_index in range(3):
+            rows.append(
+                ProbeRow(
+                    cell_label=cell_500["label"],
+                    repeat_index=repeat_index,
+                    ladder_value=Decimal("0.5"),
+                    status_code=200,
+                    wall_time_s=1.0 + repeat_index,  # worst = 3.0
+                    stages_ms={"solver": 5.0},
+                    censored=False,
+                    cache_hit=False,
+                    solver_strategy="penalty_aware_heuristic",
+                    slug=cell_500["slug"],
+                    tank_range_mi=cell_500["tank_range_mi"],
+                    offline_admitted=cell_500["offline_admitted"],
+                )
+            )
+
+        verdict_rows, floor_rows = command._build_verdict_input(rows)
+
+        row_1050 = next(
+            r
+            for r in verdict_rows
+            if r["slug"] == corridor_slug and r["tank_range_mi"] == Decimal(1050)
+        )
+        row_500 = next(
+            r
+            for r in verdict_rows
+            if r["slug"] == corridor_slug and r["tank_range_mi"] == Decimal(500)
+        )
+        self.assertEqual(
+            row_1050["worst_of_repeats_total_response_seconds"], Decimal("102.0")
+        )
+        self.assertEqual(row_1050["worst_of_repeats_solver_strategy"], "exact_dp")
+        self.assertEqual(
+            row_500["worst_of_repeats_total_response_seconds"], Decimal("3.0")
+        )
+        self.assertEqual(
+            row_500["worst_of_repeats_solver_strategy"], "penalty_aware_heuristic"
+        )
+
+        floor_1050 = next(
+            r
+            for r in floor_rows
+            if r["slug"] == corridor_slug and r["tank_range_mi"] == Decimal(1050)
+        )
+        floor_500 = next(
+            r
+            for r in floor_rows
+            if r["slug"] == corridor_slug and r["tank_range_mi"] == Decimal(500)
+        )
+        # Disjoint row sets: each cell sees exactly its OWN 3 repeats,
+        # never the sibling's -- a merged (buggy) reduction would report
+        # 6 for both.
+        self.assertEqual(floor_1050["repeats"], 3)
+        self.assertEqual(floor_500["repeats"], 3)
+
+    def test_print_verdict_table_prints_a_separate_section_per_tank_range(self):
+        """The same `cell_label`-collision defect surfacing at print time
+        (`26-VERDICT.md` section 1.5): `_print_verdict_table` must print
+        TWO separate per-cell sections for a corridor's two tank ranges,
+        each carrying only its own three repeats -- never one merged
+        six-row section under one shared label."""
+        import io
+
+        from routing.management.commands.probe_live_latency import Command, ProbeRow
+
+        command = Command(stdout=io.StringIO())
+        demo_slugs = {chip.slug for chip in DEMO_CHIPS}
+        corridor_slug = next(
+            cell["slug"] for cell in VERDICT_PROBE_CELLS if cell["slug"] not in demo_slugs
+        )
+        cell_1050 = next(
+            c
+            for c in VERDICT_PROBE_CELLS
+            if c["slug"] == corridor_slug and c["tank_range_mi"] == Decimal(1050)
+        )
+        cell_500 = next(
+            c
+            for c in VERDICT_PROBE_CELLS
+            if c["slug"] == corridor_slug and c["tank_range_mi"] == Decimal(500)
+        )
+
+        rows = [
+            ProbeRow(
+                cell_label=cell_1050["label"],
+                repeat_index=i,
+                ladder_value=Decimal("0.5"),
+                status_code=200,
+                wall_time_s=1.0,
+                stages_ms={"solver": 5.0},
+                censored=False,
+                cache_hit=False,
+                solver_strategy="exact_dp",
+                slug=cell_1050["slug"],
+                tank_range_mi=cell_1050["tank_range_mi"],
+                offline_admitted=cell_1050["offline_admitted"],
+            )
+            for i in range(3)
+        ] + [
+            ProbeRow(
+                cell_label=cell_500["label"],
+                repeat_index=i,
+                ladder_value=Decimal("0.5"),
+                status_code=200,
+                wall_time_s=1.0,
+                stages_ms={"solver": 5.0},
+                censored=False,
+                cache_hit=False,
+                solver_strategy="penalty_aware_heuristic",
+                slug=cell_500["slug"],
+                tank_range_mi=cell_500["tank_range_mi"],
+                offline_admitted=cell_500["offline_admitted"],
+            )
+            for i in range(2)  # deliberately fewer repeats than the 1050mi entry
+        ]
+
+        command._print_verdict_table(rows)
+        output = command.stdout.getvalue()
+
+        self.assertIn(f"{cell_1050['label']} @1050mi", output)
+        self.assertIn(f"{cell_500['label']} @500mi", output)
+        # Each printed section carries exactly its own repeat count.
+        self.assertEqual(output.count("repeat=0"), 2)  # once per tank range
+        self.assertEqual(output.count("repeat=2"), 1)  # 1050mi only -- 500mi has 2 repeats
+
     def test_verdict_sweep_all_clean_prints_both_arm_columns_and_reaches_verdict(self):
         import io
         from unittest import mock
