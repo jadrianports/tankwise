@@ -12,6 +12,7 @@ import unittest
 from decimal import Decimal
 from unittest import mock
 
+from django.conf import settings
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
 from rest_framework import status
@@ -31,6 +32,8 @@ from routing.tests.test_solver_dispatch import (
     MPG,
     PENALTY,
     STARTING_FUEL,
+    DispatchAdmissionManifestTests,
+    DispatchDemotionGuardTests,
     RealCorridorDispatchTestCase,
 )
 from routing.tests.test_views import (
@@ -495,4 +498,138 @@ class GatedProbeSeamViewTests(APITestCase):
     def test_throttle_classes_unchanged(self):
         self.assertEqual(
             RouteView.throttle_classes, [RouteBurstThrottle, RouteSustainedThrottle]
+        )
+
+
+@override_settings(MAPBOX_TOKEN="test-token", MAPBOX_PUBLIC_TOKEN="pk.test-public-token")
+class GatedProbeSeamDefaultInertnessTests(APITestCase):
+    """Task 3 -- the phase's STRONGEST default-inertness assertions, in
+    one dedicated class. With `settings.DISPATCH_PROBE_SECRET` unset (the
+    shipped production posture for the entire probe window outside a
+    deliberately provisioned one), every path this plan touched is
+    BEHAVIOURALLY INDISTINGUISHABLE from the pre-seam build:
+
+    1. A real corridor request's full response is byte-identical with
+       and without a syntactically-perfect-looking probe header pair.
+    2. `resolve_probe_budget` returns `None` for that same header pair.
+    3. `cache.set` STILL fires for such a request -- the bypass guard
+       does not accidentally trigger on an unauthenticated header.
+    4. `DispatchDemotionGuardTests`/`DispatchAdmissionManifestTests`
+       (`test_solver_dispatch.py`) still pass, run programmatically here
+       rather than merely trusted to have run elsewhere in the suite --
+       proof that no cell's dispatch arm moved as a side effect of this
+       plan.
+
+    Three mutation checks against these assertions are performed manually
+    (not committed) and recorded verbatim in `26-06-SUMMARY.md`, per the
+    plan's own requirement -- each mutation is applied, the relevant
+    assertion is confirmed to fail with the expected message, then
+    reverted before the next.
+    """
+
+    def setUp(self):
+        cache.clear()
+        reset_index()
+        _make_station(97_201)
+
+    @staticmethod
+    def _headers(key=None, budget=None):
+        headers = {}
+        if key is not None:
+            headers[_PROBE_KEY_KWARG] = key
+        if budget is not None:
+            headers[_PROBE_BUDGET_KWARG] = str(budget)
+        return headers
+
+    @staticmethod
+    def _mapbox_mock():
+        return mock.patch(
+            MOCK_TARGET, return_value=_directions_response(_long_directions_payload())
+        )
+
+    def _post(self, headers=None):
+        return self.client.post(
+            ROUTE_URL,
+            {"start": START_COORD, "finish": FINISH_COORD},
+            format="json",
+            **(headers or {}),
+        )
+
+    @staticmethod
+    def _route_cache_set_calls(mock_cache_set):
+        return [
+            call
+            for call in mock_cache_set.call_args_list
+            if call.args and str(call.args[0]).startswith("route:")
+        ]
+
+    def test_1_response_is_byte_identical_with_and_without_probe_headers(self):
+        with self._mapbox_mock():
+            without_headers = self._post()
+        cache.clear()
+        reset_index()
+        with self._mapbox_mock():
+            with_headers = self._post(
+                headers=self._headers(
+                    key="a-perfectly-well-formed-looking-secret", budget=130_000
+                )
+            )
+
+        self.assertEqual(without_headers.status_code, with_headers.status_code)
+        self.assertEqual(without_headers.data, with_headers.data)
+        # Compare the SET OF STAGE NAMES only, not their measured
+        # durations -- two separate requests' wall-clock timings are
+        # inherently variable and comparing them verbatim would make this
+        # assertion flaky for a reason that has nothing to do with the
+        # probe seam. The name set is what proves no stage (in
+        # particular, "peak_rss_mb") was added or removed by the header
+        # pair.
+        without_stage_names = {
+            part.split(";dur=")[0] for part in without_headers["Server-Timing"].split(", ")
+        }
+        with_stage_names = {
+            part.split(";dur=")[0] for part in with_headers["Server-Timing"].split(", ")
+        }
+        self.assertEqual(without_stage_names, with_stage_names)
+        self.assertNotIn("peak_rss_mb", without_stage_names)
+        self.assertNotIn("peak_rss_mb", with_stage_names)
+
+    def test_2_resolve_probe_budget_returns_none_for_a_syntactically_perfect_header_pair(
+        self,
+    ):
+        headers = {
+            PROBE_KEY_HEADER: "a-perfectly-well-formed-looking-secret",
+            PROBE_BUDGET_HEADER: "130000",
+        }
+        self.assertIsNone(
+            resolve_probe_budget(
+                headers,
+                secret=settings.DISPATCH_PROBE_SECRET,
+                allowed_rungs=(130_000,),
+            )
+        )
+
+    def test_3_cache_set_still_fires_on_an_unauthenticated_probe_looking_request(self):
+        with self._mapbox_mock(), mock.patch(
+            "routing.views.cache.set"
+        ) as mock_cache_set:
+            response = self._post(
+                headers=self._headers(
+                    key="a-perfectly-well-formed-looking-secret", budget=130_000
+                )
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(self._route_cache_set_calls(mock_cache_set)), 1)
+
+    def test_4_demotion_and_admission_manifest_guards_still_pass_unchanged(self):
+        loader = unittest.TestLoader()
+        suite = unittest.TestSuite()
+        suite.addTests(loader.loadTestsFromTestCase(DispatchDemotionGuardTests))
+        suite.addTests(loader.loadTestsFromTestCase(DispatchAdmissionManifestTests))
+        result = unittest.TestResult()
+        suite.run(result)
+        self.assertTrue(
+            result.wasSuccessful(),
+            f"failures={result.failures} errors={result.errors}",
         )
