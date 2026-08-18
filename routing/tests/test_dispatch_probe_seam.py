@@ -32,8 +32,6 @@ from routing.tests.test_solver_dispatch import (
     MPG,
     PENALTY,
     STARTING_FUEL,
-    DispatchAdmissionManifestTests,
-    DispatchDemotionGuardTests,
     RealCorridorDispatchTestCase,
 )
 from routing.tests.test_views import (
@@ -514,11 +512,12 @@ class GatedProbeSeamDefaultInertnessTests(APITestCase):
     2. `resolve_probe_budget` returns `None` for that same header pair.
     3. `cache.set` STILL fires for such a request -- the bypass guard
        does not accidentally trigger on an unauthenticated header.
-    4. `DispatchDemotionGuardTests`/`DispatchAdmissionManifestTests`
-       (`test_solver_dispatch.py`) still pass, run programmatically here
-       rather than merely trusted to have run elsewhere in the suite --
-       proof that no cell's dispatch arm moved as a side effect of this
-       plan.
+    4. No `transition_budget=` keyword reaches `solve()` at all for
+       such a request -- the causal mechanism by which a pinned dispatch
+       admission could have moved as a side effect of this plan. See that
+       test's own docstring for why this supersedes an earlier nested
+       re-run of `DispatchDemotionGuardTests`/
+       `DispatchAdmissionManifestTests`.
 
     Three mutation checks against these assertions are performed manually
     (not committed) and recorded verbatim in `26-06-SUMMARY.md`, per the
@@ -622,14 +621,68 @@ class GatedProbeSeamDefaultInertnessTests(APITestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(len(self._route_cache_set_calls(mock_cache_set)), 1)
 
-    def test_4_demotion_and_admission_manifest_guards_still_pass_unchanged(self):
-        loader = unittest.TestLoader()
-        suite = unittest.TestSuite()
-        suite.addTests(loader.loadTestsFromTestCase(DispatchDemotionGuardTests))
-        suite.addTests(loader.loadTestsFromTestCase(DispatchAdmissionManifestTests))
-        result = unittest.TestResult()
-        suite.run(result)
-        self.assertTrue(
-            result.wasSuccessful(),
-            f"failures={result.failures} errors={result.errors}",
+    def test_4_no_transition_budget_keyword_reaches_solve_when_secret_unset(self):
+        """Pins the MECHANISM by which this plan could have moved a pinned
+        dispatch admission, rather than re-running the guards that would
+        only show the symptom.
+
+        This supersedes a nested-suite meta-test that ran
+        `DispatchDemotionGuardTests` and `DispatchAdmissionManifestTests`
+        through `unittest.TestSuite.run()` from inside this live
+        `APITestCase`. That construction passed under SQLite and FAILED
+        under the Postgres parity job: the nested `TestCase.setUpClass`
+        re-entered `setUpTestData`'s `seed_stations` call on a connection
+        the enclosing test had already closed, raising
+        `psycopg.OperationalError: the connection is closed`. A test that
+        only holds on one of the two backends CI runs is not a guard.
+
+        Re-running those two classes here was redundant regardless: both
+        run in their own right in every suite, so a genuine regression in
+        either fails CI on its own merits. What was NOT covered anywhere
+        is the causal link -- an admission can only move if a
+        `transition_budget=` override actually reaches `solve()`.
+        `routing/views.py` deliberately keeps TWO literal `solve()` call
+        sites (see its own comment on the AST kwarg guards), and the
+        non-probe branch passes no `transition_budget=` keyword at all.
+        Assert that directly, on a request carrying a syntactically
+        perfect but unauthenticated probe header pair -- the hardest case,
+        since every gate except the secret comparison is already
+        satisfied.
+
+        Non-vacuity, two ways: the spy must actually have been called, and
+        the probed rung must differ from the shipped budget, so a build
+        that made the probe branch unconditional would surface the keyword
+        here and fail.
+        """
+        probed_rung = 130_000
+        self.assertNotEqual(
+            probed_rung,
+            dp.DP_TRANSITION_BUDGET,
+            "the probed rung must differ from the shipped budget, or this "
+            "test could not distinguish a leaked override from the default",
         )
+
+        with self._mapbox_mock(), mock.patch(
+            "routing.views.solver.solve", side_effect=solve
+        ) as solve_spy:
+            response = self._post(
+                headers=self._headers(
+                    key="a-perfectly-well-formed-looking-secret",
+                    budget=probed_rung,
+                )
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(
+            solve_spy.called,
+            "solve() was never reached -- the keyword assertion below "
+            "would pass vacuously without a real solver call",
+        )
+        for call in solve_spy.call_args_list:
+            self.assertNotIn(
+                "transition_budget",
+                call.kwargs,
+                "an unauthenticated probe-looking request must reproduce "
+                "the pre-seam solve() call byte-for-byte, passing no "
+                "transition_budget= keyword at all",
+            )
