@@ -49,7 +49,7 @@ from dataclasses import dataclass
 # current release as of 2026-08-08, the latest in an observed monthly
 # sequence extending back through 2026-01-21. Bumping this string to track a
 # later release is Phase 23's refresh pipeline, not a local edit here.
-OVERTURE_RELEASE = "2026-07-22.0"
+OVERTURE_RELEASE = "2026-08-19.0"
 
 OVERTURE_LICENCE = "CDLA-Permissive-2.0"
 

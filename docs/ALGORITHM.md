@@ -38,7 +38,7 @@ this document draw the 6,290 figure from.
 
 *(Updated 2026-08-09, Phase 22: a second, separately-sourced set of 10,051 rows
 now sits alongside this OPIS set — a targeted Overture Maps Places import
-(release `2026-07-22.0`) closing the West Coast coverage gap. Overture rows
+(release `2026-08-19.0`) closing the West Coast coverage gap. Overture rows
 ship real POI coordinates (no geocoding step) and carry a regionally-estimated
 rather than a recorded price. `Station.objects.routable()` now returns both
 sets: 16,341 routable stations combined, 61.5% estimate-priced. See "Known

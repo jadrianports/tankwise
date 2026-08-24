@@ -11,8 +11,8 @@
 - Rows skipped:
   - malformed_coordinate: 0
 - Output byte size: 1544860
-- Query wall-clock duration: 511.9s
+- Query wall-clock duration: 543.0s
 
 ## Forward risk
 
-The `categories` field this extract filters on is deprecated as of the pinned release and is scheduled for removal in the September 2026 Overture release, replaced by `basic_category` and `taxonomy`. A refresh run against a later release must migrate this command's category predicate before that release ships.
+This command's category predicate was migrated off the deprecated `categories` field to `taxonomy.primary` on 2026-08-11, ahead of the September 2026 Overture release in which `categories` is removed. `CATEGORY_FILTER`'s two values are unchanged; only the struct path reading them changed.
